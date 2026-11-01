@@ -114,11 +114,12 @@ export function tx(fn) {
   catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
-// --- Seed: default zone + first admin ---
+// --- Seed or Sync: default zone + admin ---
 if (!db.prepare('SELECT 1 FROM zones').get()) {
   db.prepare('INSERT INTO zones(name) VALUES (?)').run('المزة');
 }
-if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
+const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
+if (!existingAdmin) {
   const phone = process.env.ADMIN_PHONE || '0900000000';
   const pass = process.env.ADMIN_PASSWORD || crypto.randomBytes(9).toString('base64url');
   db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin',?,?,?, 'active',?)")
@@ -127,4 +128,11 @@ if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
   console.log(`الهاتف: ${phone}`);
   if (!process.env.ADMIN_PASSWORD) console.log(`كلمة المرور (تظهر مرة واحدة فقط): ${pass}`);
   console.log('============================\n');
+} else if (process.env.ADMIN_PASSWORD) {
+  const phone = process.env.ADMIN_PHONE || existingAdmin.phone;
+  db.prepare("UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?")
+    .run(phone, bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12), existingAdmin.id);
+  console.log('\n=== تم تحديث بيانات المدير وفك قفل الحساب بنجاح ===');
+  console.log(`الهاتف: ${phone}`);
+  console.log('====================================================\n');
 }
