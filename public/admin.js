@@ -49,7 +49,7 @@ authScreen('admin', (user) => {
         <div class="row"><div><label>النوع</label><select name="role" id="nrole"><option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option></select></div>
         <div><label>المنطقة</label><select name="zone_id">${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}</select></div></div>
         <div class="row"><div><label>الاسم</label><input name="name" required minlength="2"></div><div><label>رقم الهاتف</label><input name="phone" inputmode="tel" required></div></div>
-        <label>كلمة المرور (8 أحرف على الأقل، حروف وأرقام)</label><input name="password" type="text" minlength="8" required autocomplete="off">
+        <label>كلمة المرور (6 أحرف على الأقل، حروف وأرقام)</label><input name="password" type="text" minlength="6" required autocomplete="off">
         <div id="mfields"><label>اسم المنشأة</label><input name="business_name"><label>العنوان</label><input name="address"><label>موقع المنشأة (اضغط على الخريطة)</label><div id="nmap" class="map"></div></div>
         <button class="big ok">إنشاء الحساب</button></form></div><div class="card"><div class="tablewrap"><table><thead><tr><th>النوع</th><th>الاسم</th><th>الهاتف</th><th>المنطقة</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>
       ${rows.map((u) => `<tr><td>${u.role === 'merchant' ? '🏪 منشأة' : '🛵 كابتن'}</td><td>${esc(u.business_name || u.name)}<div class="mut">${esc(u.role === 'merchant' ? u.name + ' — ' + (u.address || '') : '')}</div></td>
@@ -71,7 +71,7 @@ authScreen('admin', (user) => {
       view().onclick = async (e) => {
         const d = e.target.dataset;
         if (d.st) { if (d.st === 'suspended' && !confirm('إيقاف الحساب فوراً؟')) return; await act(() => api(`/admin/users/${d.id}`, 'PATCH', { status: d.st }), 'تم'); views.users(); }
-        if (d.pw) { const p = prompt('كلمة مرور جديدة (8 أحرف على الأقل، حروف وأرقام)'); if (p) act(() => api(`/admin/users/${d.pw}/reset-password`, 'POST', { password: p }), 'تم التغيير'); }
+        if (d.pw) { const p = prompt('كلمة مرور جديدة (6 أحرف على الأقل، حروف وأرقام)'); if (p) act(() => api(`/admin/users/${d.pw}/reset-password`, 'POST', { password: p }), 'تم التغيير'); }
       };
       view().onchange = (e) => { if (e.target.dataset.zone) act(() => api(`/admin/users/${e.target.dataset.zone}`, 'PATCH', { zone_id: Number(e.target.value) }), 'تم نقل المنطقة'); };
     },

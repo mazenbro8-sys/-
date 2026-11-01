@@ -118,21 +118,31 @@ export function tx(fn) {
 if (!db.prepare('SELECT 1 FROM zones').get()) {
   db.prepare('INSERT INTO zones(name) VALUES (?)').run('المزة');
 }
-const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
-if (!existingAdmin) {
-  const phone = process.env.ADMIN_PHONE || '0900000000';
-  const pass = process.env.ADMIN_PASSWORD || crypto.randomBytes(9).toString('base64url');
-  db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin',?,?,?, 'active',?)")
-    .run(phone, 'المدير', bcrypt.hashSync(pass, 12), Date.now());
-  console.log('\n=== تم إنشاء حساب المدير ===');
-  console.log(`الهاتف: ${phone}`);
-  if (!process.env.ADMIN_PASSWORD) console.log(`كلمة المرور (تظهر مرة واحدة فقط): ${pass}`);
-  console.log('============================\n');
-} else if (process.env.ADMIN_PASSWORD) {
-  const phone = process.env.ADMIN_PHONE || existingAdmin.phone;
-  db.prepare("UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?")
-    .run(phone, bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12), existingAdmin.id);
-  console.log('\n=== تم تحديث بيانات المدير وفك قفل الحساب بنجاح ===');
-  console.log(`الهاتف: ${phone}`);
-  console.log('====================================================\n');
-}
+const adminPhone = process.env.ADMIN_PHONE || '0782070936';
+const adminPass = process.env.ADMIN_PASSWORD || 'asd123';
+tx(() => {
+  db.prepare('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0').run();
+  const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
+  if (!existingAdmin) {
+    const conflict = db.prepare('SELECT id FROM users WHERE phone=?').get(adminPhone);
+    if (conflict) db.prepare('UPDATE users SET phone=? WHERE id=?').run(`${adminPhone}_old_${conflict.id}`, conflict.id);
+    db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin',?,?,?,'active',?)")
+      .run(adminPhone, 'المدير', bcrypt.hashSync(adminPass, 12), Date.now());
+    console.log('\n=== تم إنشاء حساب المدير ===');
+    console.log(`الهاتف: ${adminPhone}`);
+    console.log('============================\n');
+  } else {
+    const conflict = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(adminPhone, existingAdmin.id);
+    if (conflict) db.prepare('UPDATE users SET phone=? WHERE id=?').run(`${adminPhone}_old_${conflict.id}`, conflict.id);
+    const sameCreds = existingAdmin.phone === adminPhone && bcrypt.compareSync(adminPass, existingAdmin.pass_hash);
+    if (!sameCreds) {
+      db.prepare("UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?")
+        .run(adminPhone, bcrypt.hashSync(adminPass, 12), existingAdmin.id);
+      console.log('\n=== تم تحديث بيانات المدير وفك قفل الحساب بنجاح ===');
+      console.log(`الهاتف: ${adminPhone}`);
+      console.log('====================================================\n');
+    } else if (existingAdmin.status !== 'active') {
+      db.prepare("UPDATE users SET status='active' WHERE id=?").run(existingAdmin.id);
+    }
+  }
+});

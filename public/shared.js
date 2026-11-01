@@ -1,4 +1,4 @@
-﻿// Shared client helpers (no inline scripts: CSP-safe)
+// Shared client helpers (no inline scripts: CSP-safe)
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -95,7 +95,14 @@ export async function authScreen(role, onReady) {
     const f = Object.fromEntries(new FormData(e.target));
     try {
       const r = await api('/auth/login', 'POST', f);
-      if (r.user.role !== role) return toast('هذا الحساب ليس من هذه الواجهة');
+      if (r.user.role !== role) {
+        if (['admin', 'merchant', 'captain'].includes(r.user.role)) {
+          setToken(r.token);
+          location.href = '/' + r.user.role;
+          return;
+        }
+        return toast('هذا الحساب ليس من هذه الواجهة');
+      }
       setToken(r.token); root.classList.add('hide'); onReady(r.user);
     } catch (er) { toast(er.message); }
   };

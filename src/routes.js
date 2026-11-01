@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { db, tx, addEvent, audit, commission, setSetting } from './db.js';
@@ -55,7 +55,7 @@ const createAccount = wrap((req, res) => {
   if (!['merchant', 'captain'].includes(role)) throw bad('نوع الحساب غير صالح');
   const p = phone(b.phone);
   const name = str(b.name, 'الاسم', 2, 60);
-  const pass = str(b.password, 'كلمة المرور', 8, 72);
+  const pass = str(b.password, 'كلمة المرور', 6, 72);
   if (!/[A-Za-z\u0600-\u06FF]/.test(pass) || !/\d/.test(pass)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
   const zone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
   if (!db.prepare('SELECT 1 FROM zones WHERE id=? AND active=1').get(zone)) throw bad('المنطقة غير موجودة');
@@ -78,12 +78,15 @@ api.post('/auth/login', loginLimiter, wrap((req, res) => {
   const pass = str(req.body?.password, 'كلمة المرور', 1, 72);
   const u = db.prepare('SELECT * FROM users WHERE phone=?').get(p);
   const now = Date.now();
-  if (u && u.locked_until > now) throw new HttpError(429, 'الحساب مقفل مؤقتاً بسبب محاولات فاشلة');
+  if (u && u.locked_until > now) {
+    const mins = Math.max(1, Math.ceil((u.locked_until - now) / 60_000));
+    throw new HttpError(429, `الحساب مقفل مؤقتاً بسبب محاولات فاشلة، حاول بعد ${mins} دقيقة`);
+  }
   const ok = bcrypt.compareSync(pass, u ? u.pass_hash : DUMMY_HASH);
   if (!u || !ok) {
     if (u) {
       const f = u.failed_logins + 1;
-      db.prepare('UPDATE users SET failed_logins=?, locked_until=? WHERE id=?').run(f >= 5 ? 0 : f, f >= 5 ? now + 15 * 60_000 : 0, u.id);
+      db.prepare('UPDATE users SET failed_logins=?, locked_until=? WHERE id=?').run(f >= 5 ? 0 : f, f >= 5 ? now + 5 * 60_000 : 0, u.id);
     }
     throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
   }
@@ -102,7 +105,7 @@ api.post('/auth/logout-all', auth(), wrap((req, res) => {
 
 api.post('/auth/password', auth(), wrap((req, res) => {
   const old = str(req.body?.old_password, 'كلمة المرور الحالية', 1, 72);
-  const nw = str(req.body?.new_password, 'كلمة المرور الجديدة', 8, 72);
+  const nw = str(req.body?.new_password, 'كلمة المرور الجديدة', 6, 72);
   if (!/\d/.test(nw) || !/[A-Za-z\u0600-\u06FF]/.test(nw)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
   if (!bcrypt.compareSync(old, req.user.pass_hash)) throw new HttpError(403, 'كلمة المرور الحالية خاطئة');
   db.prepare('UPDATE users SET pass_hash=?, token_version=token_version+1 WHERE id=?').run(bcrypt.hashSync(nw, 12), req.user.id);
@@ -330,7 +333,7 @@ A.patch('/users/:id', wrap((req, res) => {
   const b = req.body ?? {};
   if (b.status != null) {
     if (!['active', 'suspended', 'pending'].includes(b.status)) throw bad('حالة غير صالحة');
-    db.prepare('UPDATE users SET status=?, token_version=token_version+1, online=CASE WHEN ?=\'active\' THEN online ELSE 0 END WHERE id=?').run(b.status, b.status, id);
+    db.prepare('UPDATE users SET status=?, token_version=token_version+1, failed_logins=0, locked_until=0, online=CASE WHEN ?=\'active\' THEN online ELSE 0 END WHERE id=?').run(b.status, b.status, id);
     if (b.status === 'suspended' && u.role === 'captain') {
       const off = pendingOffer(id); if (off) releaseOffer(off.id, 'cancelled');
     }
@@ -346,7 +349,7 @@ A.patch('/users/:id', wrap((req, res) => {
 }));
 A.post('/users/:id/reset-password', wrap((req, res) => {
   const id = oid(req);
-  const pw = str(req.body?.password, 'كلمة المرور', 8, 72);
+  const pw = str(req.body?.password, 'كلمة المرور', 6, 72);
   db.prepare("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain')").run(bcrypt.hashSync(pw, 12), id);
   audit(req.user.id, 'reset_password', { id });
   res.json({ ok: true });
