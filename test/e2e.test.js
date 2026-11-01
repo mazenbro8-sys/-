@@ -1,0 +1,81 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const PORT = 3991, BASE = `http://localhost:${PORT}/api`;
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mashwar-'));
+let proc;
+const call = async (p, method = 'GET', body, token) => {
+  const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  return { status: r.status, data: r.status === 204 ? null : await r.json() };
+};
+
+before(async () => {
+  proc = spawn(process.execPath, ['src/server.js'], { env: { ...process.env, PORT, DATA_DIR: dir, DB_FILE: path.join(dir, 't.db'), ADMIN_PHONE: '0911111111', ADMIN_PASSWORD: 'Admin12345', OFFER_TIMEOUT_MS: '1500' }, stdio: 'pipe' });
+  for (let i = 0; i < 50; i++) { try { await fetch(BASE + '/zones'); return; } catch { await new Promise((r) => setTimeout(r, 200)); } }
+  throw new Error('server did not start');
+});
+after(() => { proc.kill(); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}; });
+
+test('full delivery cycle with round-robin, privacy, settlement', async () => {
+  const admin = (await call('/auth/login', 'POST', { phone: '0911111111', password: 'Admin12345' })).data.token;
+  const reg = async (role, phone, extra = {}) => {
+    const r = await call('/admin/users', 'POST', { role, phone, name: 'اسم ' + phone, password: 'Passw0rdX', zone_id: 1, ...extra }, admin);
+    assert.equal(r.status, 201);
+    return r;
+  };
+  await reg('merchant', '0922222222', { business_name: 'مطعم أبو أحمد', address: 'المزة', lat: 33.5, lng: 36.25 });
+  await reg('captain', '0933333331'); await reg('captain', '0933333332');
+  // public self-registration is closed; only admin can create accounts
+  assert.equal((await call('/auth/register', 'POST', { role: 'captain', phone: '0955555555', name: 'x', password: 'Passw0rdX', zone_id: 1 })).status, 403);
+  assert.equal((await call('/admin/users', 'POST', { role: 'captain', phone: '0955555555', name: 'x', password: 'Passw0rdX', zone_id: 1 }, null)).status, 401);
+  const login = async (p) => (await call('/auth/login', 'POST', { phone: p, password: 'Passw0rdX' })).data.token;
+  const [m, c1, c2] = [await login('0922222222'), await login('0933333331'), await login('0933333332')];
+
+  // role isolation
+  assert.equal((await call('/admin/stats', 'GET', null, m)).status, 403);
+  assert.equal((await call('/merchant/orders', 'GET', null, c1)).status, 403);
+  assert.equal((await call('/merchant/orders')).status, 401);
+
+  for (const c of [c1, c2]) await call('/captain/online', 'POST', { online: true }, c);
+  const ord = { customer_name: 'زبون', customer_phone: '0944444444', customer_address: 'شارع 1', product_amount: 50000, delivery_fee: 5000, customer_lat: 33.51, customer_lng: 36.26 };
+  assert.equal((await call('/merchant/orders', 'POST', { ...ord, product_amount: -5 }, m)).status, 400);
+  const o1 = (await call('/merchant/orders', 'POST', ord, m)).data;
+  assert.equal(o1.status, 'offered');
+
+  const s1 = (await call('/captain/state', 'GET', null, c1)).data, s2 = (await call('/captain/state', 'GET', null, c2)).data;
+  const [first, other] = s1.offer ? [c1, c2] : [c2, c1];
+  assert.ok(s1.offer || s2.offer);
+  // customer details hidden from captain before accepting
+  const offer = (s1.offer || s2.offer);
+  assert.equal(offer.customer_phone, undefined);
+  // other captain cannot accept it
+  assert.equal((await call(`/captain/offers/${o1.id}/accept`, 'POST', null, other)).status, 409);
+  // timeout → passes to the other captain (round-robin)
+  let st;
+  for (let i = 0; i < 100 && !(st = (await call('/captain/state', 'GET', null, other)).data).offer; i++) await new Promise((r) => setTimeout(r, 200));
+  assert.equal(st.offer?.id, o1.id);
+  const acc = await call(`/captain/offers/${o1.id}/accept`, 'POST', null, other);
+  assert.equal(acc.status, 200);
+  assert.equal(acc.data.customer_phone, '0944444444');
+  // invalid transition
+  assert.equal((await call(`/captain/orders/${o1.id}/status`, 'POST', { status: 'delivered' }, other)).status, 400);
+  await call('/captain/location', 'POST', { lat: 33.505, lng: 36.255 }, other);
+  const trk = (await call(`/merchant/orders/${o1.id}`, 'GET', null, m)).data;
+  assert.ok(trk.eta_minutes >= 1);
+  for (const s of ['picked_up', 'arrived', 'delivered']) assert.equal((await call(`/captain/orders/${o1.id}/status`, 'POST', { status: s }, other)).status, 200);
+  const day = (await call('/admin/settlements', 'GET', null, admin)).data;
+  assert.equal(day.rows[0].commission_total, 2000);
+  assert.equal((await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: day.rows[0].captain_id }, admin)).status, 200);
+});
+
+test('login rate / lockout and bad input', async () => {
+  for (let i = 0; i < 5; i++) await call('/auth/login', 'POST', { phone: '0911111111', password: 'wrong-pass' });
+  assert.equal((await call('/auth/login', 'POST', { phone: '0911111111', password: 'Admin12345' })).status, 429);
+  assert.equal((await call('/auth/login', 'POST', { phone: "' OR 1=1 --", password: 'x' })).status, 400);
+});
+
+
