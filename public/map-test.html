@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>مشوار — فحص الخريطة</title>
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/app.css?v=2">
+<script src="/vendor/leaflet/leaflet.js"></script>
+<script type="module" src="/map-test-script.js?v=2"></script>
+</head>
+<body style="padding:20px;max-width:960px;margin:0 auto">
+<div class="card">
+  <div class="row-head">
+    <h2>🗺️ فحص الخريطة الواقعية والتوصيلات</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn-nav" href="/admin">📊 واجهة الإدارة</a>
+      <a class="btn-nav sec" href="/merchant">🏪 واجهة المنشأة</a>
+      <a class="btn-nav sec" href="/captain">🛵 واجهة الكابتن</a>
+    </div>
+  </div>
+  <div id="map" class="map" style="height:420px"></div>
+</div>
+<div class="card">
+  <h3>نتائج الفحص التلقائي:</h3>
+  <div id="log" style="background:rgba(0,0,0,.5);padding:12px;border-radius:12px;font-family:monospace;font-size:13px;max-height:240px;overflow-y:auto;direction:ltr;text-align:left"></div>
+</div>
+</body></html>

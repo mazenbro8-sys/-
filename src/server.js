@@ -16,12 +16,30 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"], // Leaflet sets inline styles on markers
-      imgSrc: ["'self'", 'data:', 'https://*.tile.openstreetmap.org', 'https://*.basemaps.cartocdn.com'],
-      connectSrc: ["'self'", 'ws:', 'wss:', 'https://router.project-osrm.org'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+      imgSrc: [
+        "'self'",
+        'data:',
+        'blob:',
+        'https://tile.openstreetmap.org',
+        'https://*.tile.openstreetmap.org',
+        'https://*.basemaps.cartocdn.com',
+        'https://*.google.com',
+        'https://*.googleapis.com',
+        'https://*.gstatic.com',
+      ],
+      connectSrc: [
+        "'self'",
+        'ws:',
+        'wss:',
+        'https://router.project-osrm.org',
+        'https://nominatim.openstreetmap.org',
+      ],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
       baseUri: ["'self'"],
+      upgradeInsecureRequests: config.prod ? [] : null,
     },
   },
 }));
@@ -31,7 +49,7 @@ app.use('/api', express.json({ limit: '16kb' }), (req, res, next) => {
 }, api);
 
 app.use('/vendor/leaflet', express.static(path.join(ROOT, 'node_modules/leaflet/dist')));
-app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: config.prod ? '1h' : 0 }));
+app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: 0 }));
 
 const server = http.createServer(app);
 attachWs(server);

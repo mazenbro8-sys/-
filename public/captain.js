@@ -1,4 +1,4 @@
-import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js';
+import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS } from './shared.js';
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -7,15 +7,23 @@ authScreen('captain', (user) => {
   const app = $('#app'); app.classList.remove('hide');
   app.innerHTML = `
   <div class="card"><div class="row"><div><b id="onl">أوفلاين</b><div class="mut" id="gps"></div><label style="display:flex;gap:6px;align-items:center;margin:6px 0 0"><input type="checkbox" id="simc" style="width:auto"> وضع المحاكاة (موقع وهمي للتجربة)</label></div>
-    <button id="tog" class="ok">ابدأ العمل</button></div>
-    <div class="mut" id="sum"></div></div>
+    <button type="button" id="tog" class="ok">ابدأ العمل</button></div>
+    <div class="mut" id="sum" style="margin-top:8px"></div></div>
   <div class="card" id="sndbox"><button type="button" id="snd" class="bad" style="width:100%">🔇 اضغط هنا لتفعيل صوت التنبيه (مطلوب مرة واحدة بعد كل تحديث للصفحة)</button></div>
-  <div id="offer"></div><div id="active"></div>
+  <div id="offer"></div>
+  <div id="active"></div>
+  <div class="card" id="idleMapCard">
+    <h3>🗺️ الخريطة الحية — موقعك</h3>
+    <div id="imap" class="map" style="height:300px"></div>
+  </div>
   <div class="card"><h3>آخر الطلبات</h3><div class="tablewrap"><table><tbody id="hist"></tbody></table></div></div>`;
 
   let st = { online: false, active: null, offer: null, intervals: { active: 10000, idle: 60000 } };
-  let sim = false, simTimer = null, pos = null, watchId = null, lastSent = 0, map, mk = [], me, wake, cd;
+  let sim = false, simTimer = null, pos = null, watchId = null, lastSent = 0, map = null, mk = [], me = null, idleMe = null, wake, cd;
   let routeLayer = null, lastRouteTime = 0;
+
+  const initCenter = user.lat != null && user.lng != null ? [user.lat, user.lng] : DAMASCUS;
+  const idleMap = makeMap('imap', initCenter, 13);
 
   // Loud two-tone siren that repeats until the offer is answered, rejected or expires.
   let actx = null, alarmTimer = null, alarmGain = null, alarmOsc = null;
@@ -63,7 +71,8 @@ authScreen('captain', (user) => {
     renderAll();
     const s = await api('/captain/summary');
     $('#sum').textContent = `اليوم: ${s.delivered} طلب مسلّم — المستحق للمنصة: ${money(s.due)} (عمولة ${money(s.commission)}${s.liability ? ` + تعويضات ${money(s.liability)}` : ''})`;
-    $('#hist').innerHTML = (await api('/captain/history')).slice(0, 15).map((o) => `<tr><td>#${o.id}</td><td>${esc(o.merchant.name)}</td><td>${badge(o.status)}</td><td>${time(o.closed_at)}</td></tr>`).join('');
+    const hist = await api('/captain/history');
+    $('#hist').innerHTML = hist.slice(0, 15).map((o) => `<tr><td><b>#${o.id}</b></td><td>${esc(o.merchant.name)}</td><td>${badge(o.status)}</td><td>${time(o.closed_at)}</td></tr>`).join('') || '<tr><td class="mut">لا توجد طلبات مسلّمة بعد</td></tr>';
   }
 
   function renderAll() {
@@ -83,61 +92,72 @@ authScreen('captain', (user) => {
       <p><b>من:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
       <p><b>أجرة التوصيل:</b> ${money(o.delivery_fee)} &nbsp; <b>عمولة المنصة:</b> ${money(st.commission)}</p>
       <p>الوقت المتبقي: <b id="cd"></b> ث</p>
-      <div class="row"><button class="ok" id="acc">قبول</button><button class="bad" id="rej">رفض</button></div></div>`;
+      <div class="row"><button type="button" class="ok" id="acc">قبول</button><button type="button" class="bad" id="rej">رفض</button></div></div>`;
     const tick = () => { const s = Math.max(0, Math.round((o.offer_expires_at - Date.now()) / 1000)); const e = $('#cd'); if (e) e.textContent = s; if (!s) { clearInterval(cd); setTimeout(refresh, 1500); } };
     tick(); cd = setInterval(tick, 1000);
-    $('#acc').onclick = async () => { const r = await act(() => api(`/captain/offers/${o.id}/accept`, 'POST'), 'تم قبول الطلب'); await refresh(); };
+    $('#acc').onclick = async () => { await act(() => api(`/captain/offers/${o.id}/accept`, 'POST'), 'تم قبول الطلب'); await refresh(); };
     $('#rej').onclick = async () => { await act(() => api(`/captain/offers/${o.id}/reject`, 'POST')); await refresh(); };
   }
 
   const NEXT = { accepted: ['picked_up', 'استلمت الطلب من المنشأة'], picked_up: ['arrived', 'وصلت عند الزبون'], arrived: ['delivered', 'تم التسليم'] };
   function renderActive() {
-    const o = st.active, box = $('#active');
-    if (!o) { box.innerHTML = ''; map = null; return; }
+    const o = st.active, box = $('#active'), idleCard = $('#idleMapCard');
+    if (!o) {
+      box.innerHTML = ''; map = null;
+      idleCard.classList.remove('hide');
+      setTimeout(() => idleMap.invalidateSize(), 60);
+      return;
+    }
+    idleCard.classList.add('hide');
     const toMerchant = o.status === 'accepted';
     const dest = toMerchant ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
     const n = NEXT[o.status];
     box.innerHTML = `<div class="card"><h3>طلب نشط #${o.id} ${badge(o.status)}</h3>
-      <p><b>المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">اتصال</a>` : ''}</p>
-      <p><b>الزبون:</b> ${esc(o.customer_name)} — <a href="tel:${esc(o.customer_phone)}">${esc(o.customer_phone)}</a><br>${esc(o.customer_address)}</p>
+      <p><b>المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">📞 اتصال</a>` : ''}</p>
+      <p><b>الزبون:</b> ${esc(o.customer_name)} — <a href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a><br>${esc(o.customer_address)}</p>
       <p>💵 ادفع للمنشأة ثمن المنتج: <b>${money(o.product_amount)}</b><br>💵 استلم من الزبون: <b>${money(o.product_amount + o.delivery_fee)}</b> (منتج + توصيل ${money(o.delivery_fee)})</p>
       ${o.notes ? `<p class="mut">ملاحظات: ${esc(o.notes)}</p>` : ''}
-      ${dest.lat != null ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}" target="_blank" rel="noopener noreferrer"><button class="sec" style="width:100%">🧭 افتح الملاحة</button></a>` : ''}
-      <div id="amap" class="map" style="height:300px"></div>
-      <button class="big ok" id="nx">${n[1]}</button>
-      ${o.status !== 'accepted' ? '<button class="big bad" id="fl">الزبون لا يرد / العنوان خطأ</button>' : ''}</div>`;
+      ${dest.lat != null ? `<a class="btn-nav sec" style="width:100%;margin-bottom:8px" href="https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}" target="_blank" rel="noopener noreferrer">🧭 افتح الملاحة في خرائط قوقل</a>` : ''}
+      <div id="amap" class="map" style="height:320px"></div>
+      <button type="button" class="big ok" id="nx">${n[1]}</button>
+      ${o.status !== 'accepted' ? '<button type="button" class="big bad" id="fl">الزبون لا يرد / العنوان خطأ</button>' : ''}</div>`;
     map = makeMap('amap', dest.lat != null ? [dest.lat, dest.lng] : undefined, 14);
     mk.forEach((m) => m.remove()); mk = [];
     if (routeLayer) { routeLayer.remove(); routeLayer = null; }
-    if (o.merchant.lat != null) mk.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(map));
-    if (o.customer_lat != null) mk.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(map));
+    if (o.merchant.lat != null) mk.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(map).bindTooltip(`🏪 ${o.merchant.name}`));
+    if (o.customer_lat != null) mk.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(map).bindTooltip(`📍 الزبون: ${o.customer_name}`));
     me = null; if (pos) showMe();
-    // Draw route and fit bounds
     const pts = [];
     if (o.merchant.lat != null) pts.push([o.merchant.lat, o.merchant.lng]);
     if (o.customer_lat != null) pts.push([o.customer_lat, o.customer_lng]);
     if (pos) pts.push([pos.lat, pos.lng]);
-    if (pts.length >= 2) fitMapToPoints(map, pts);
-    // Draw route from captain to destination
+    if (pts.length) fitMapToPoints(map, pts);
     if (pos && dest.lat != null) {
       lastRouteTime = Date.now();
-      makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+      makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
     }
     $('#nx').onclick = async () => { if (n[0] === 'delivered' && !confirm('تأكيد التسليم واستلام المبلغ؟')) return; await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: n[0] })); await refresh(); };
     $('#fl')?.addEventListener('click', async () => { if (!confirm('الإبلاغ عن فشل التسليم؟ ستخسر أجرة التوصيل.')) return; await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: 'failed_customer' })); await refresh(); });
   }
+
   function showMe() {
+    if (!pos) return;
+    if (!idleMe) {
+      idleMe = L.marker([pos.lat, pos.lng], { icon: emoji('🛵') }).addTo(idleMap).bindTooltip('🛵 موقعي الحالي');
+      idleMap.setView([pos.lat, pos.lng], 15);
+    } else {
+      animateMarker(idleMe, [pos.lat, pos.lng]);
+    }
     if (!map) return;
-    if (!me) me = L.marker([pos.lat, pos.lng], { icon: emoji('🛵') }).addTo(map);
+    if (!me) me = L.marker([pos.lat, pos.lng], { icon: emoji('🛵') }).addTo(map).bindTooltip('🛵 موقعي');
     else animateMarker(me, [pos.lat, pos.lng]);
-    // Update route every 30 seconds
     if (st.active && Date.now() - lastRouteTime > 30000) {
       const o = st.active;
       const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
       if (dest.lat != null) {
         lastRouteTime = Date.now();
         if (routeLayer) { routeLayer.remove(); routeLayer = null; }
-        makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+        makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
       }
     }
   }
@@ -149,20 +169,27 @@ authScreen('captain', (user) => {
     if (!navigator.geolocation) { $('#gps').textContent = 'المتصفح لا يدعم GPS'; return; }
     watchId = navigator.geolocation.watchPosition(
       (p) => { pos = { lat: p.coords.latitude, lng: p.coords.longitude }; $('#gps').textContent = 'GPS يعمل ✓'; showMe(); maybeSend(); },
-      (e) => { $('#gps').textContent = 'فعّل صلاحية الموقع (GPS)'; }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+      () => { $('#gps').textContent = 'فعّل صلاحية الموقع (GPS) أو جرّب وضع المحاكاة'; },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+    );
     navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {});
   }
   function startSim() {
     if (simTimer) return;
-    pos ??= { lat: 33.5138 + (Math.random() - 0.5) * 0.01, lng: 36.2765 + (Math.random() - 0.5) * 0.01 };
+    const baseLat = st.active?.merchant?.lat ?? user.lat ?? DAMASCUS[0];
+    const baseLng = st.active?.merchant?.lng ?? user.lng ?? DAMASCUS[1];
+    pos ??= { lat: baseLat + (Math.random() - 0.5) * 0.008, lng: baseLng + (Math.random() - 0.5) * 0.008 };
     $('#gps').textContent = 'محاكاة GPS تعمل 🧪';
+    showMe(); maybeSend();
     simTimer = setInterval(() => {
       const o = st.active;
       const d = o && (o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng });
       if (d && d.lat != null) {
         const dx = d.lat - pos.lat, dy = d.lng - pos.lng, n = Math.hypot(dx, dy), step = 0.0004;
         pos = n < step ? { lat: d.lat, lng: d.lng } : { lat: pos.lat + (dx / n) * step, lng: pos.lng + (dy / n) * step };
-      } else pos = { lat: pos.lat + (Math.random() - 0.5) * 0.0004, lng: pos.lng + (Math.random() - 0.5) * 0.0004 };
+      } else {
+        pos = { lat: pos.lat + (Math.random() - 0.5) * 0.0004, lng: pos.lng + (Math.random() - 0.5) * 0.0004 };
+      }
       showMe(); maybeSend();
     }, 2000);
   }
@@ -187,10 +214,13 @@ authScreen('captain', (user) => {
   };
 
   connectWs((m) => {
-    if (m.type === 'offer') { refresh(); }
-    else if (m.type === 'offer_end' || m.type === 'order') refresh();
+    if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') refresh();
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); if (st.online && watchId != null) navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {}); } });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      refresh();
+      if (st.online && watchId != null) navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {});
+    }
+  });
   refresh();
 });
-

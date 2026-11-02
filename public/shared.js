@@ -52,72 +52,170 @@ export function connectWs(onMsg) {
   return () => { stop = true; ws?.close(); };
 }
 
-// ---------- maps ----------
+// ---------- maps (Google Maps Streets/Hybrid + Dark + OSM, zero API key, auto proxy fallback) ----------
 export const DAMASCUS = [33.5138, 36.2765];
 
-const TILES_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-const TILES_OSM  = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const MAP_STYLES = {
+  google: {
+    label: '🗺️ قوقل',
+    direct: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=ar',
+    proxy: '/api/tile/gm/{z}/{x}/{y}',
+    opts: { subdomains: ['0', '1', '2', '3'], maxZoom: 20, attribution: '© Google Maps' },
+  },
+  hybrid: {
+    label: '🛰️ واقعي',
+    direct: 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=ar',
+    proxy: '/api/tile/gh/{z}/{x}/{y}',
+    opts: { subdomains: ['0', '1', '2', '3'], maxZoom: 20, attribution: '© Google Satellite' },
+  },
+  dark: {
+    label: '🌙 ليلي',
+    direct: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    proxy: '/api/tile/dark/{z}/{x}/{y}',
+    opts: { subdomains: 'abcd', maxZoom: 20, attribution: '© OpenStreetMap © CARTO' },
+  },
+  osm: {
+    label: '🌍 خريطة',
+    direct: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    proxy: '/api/tile/osm/{z}/{x}/{y}',
+    opts: { subdomains: 'abc', maxZoom: 19, attribution: '© OpenStreetMap' },
+  },
+};
 
-/* --- pulsing dot CSS (injected once) --- */
-if (!document.getElementById('_pulsingDotCSS')) {
+/* --- map CSS (injected once) --- */
+if (!document.getElementById('_mapCSS')) {
   const style = document.createElement('style');
-  style.id = '_pulsingDotCSS';
+  style.id = '_mapCSS';
   style.textContent = `
     @keyframes _pulse {
-      0%   { transform: scale(1);   opacity: 1; }
-      70%  { transform: scale(2.5); opacity: 0; }
-      100% { transform: scale(2.5); opacity: 0; }
+      0%   { transform: scale(1);   opacity: .95; }
+      70%  { transform: scale(2.6); opacity: 0; }
+      100% { transform: scale(2.6); opacity: 0; }
     }
     .pulsing-dot {
-      width: 12px; height: 12px; border-radius: 50%;
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.5);
       position: relative;
     }
     .pulsing-dot::after {
-      content: ''; position: absolute; inset: 0;
+      content: ''; position: absolute; inset: -2px;
       border-radius: 50%; background: inherit;
-      animation: _pulse 1.4s ease-out infinite;
+      animation: _pulse 1.5s ease-out infinite;
     }
   `;
   document.head.appendChild(style);
+}
+
+function buildTileLayer(key) {
+  const cfg = MAP_STYLES[key] || MAP_STYLES.google;
+  const forceProxy = sessionStorage.getItem('mashwar_tile_proxy') === '1';
+  const layer = L.tileLayer(forceProxy ? cfg.proxy : cfg.direct, cfg.opts);
+  let errs = 0, proxied = forceProxy;
+  layer.on('tileerror', () => {
+    if (!proxied && ++errs >= 2) {
+      proxied = true;
+      sessionStorage.setItem('mashwar_tile_proxy', '1');
+      layer.setUrl(cfg.proxy);
+    }
+  });
+  return layer;
 }
 
 export function makeMap(el, center = DAMASCUS, zoom = 13) {
   const m = L.map(el, { zoomControl: false }).setView(center, zoom);
   L.control.zoom({ position: 'topright' }).addTo(m);
 
-  const darkTile = L.tileLayer(TILES_DARK, { maxZoom: 19, attribution: '© CartoDB © OpenStreetMap' });
-  const osmTile  = L.tileLayer(TILES_OSM,  { maxZoom: 19, attribution: '© OpenStreetMap' });
-  darkTile.addTo(m);
-
-  m._tileLayers = { dark: darkTile, osm: osmTile };
-  m.toggleTiles = () => {
-    if (m.hasLayer(darkTile)) { m.removeLayer(darkTile); osmTile.addTo(m); }
-    else { m.removeLayer(osmTile); darkTile.addTo(m); }
+  const layers = {
+    google: buildTileLayer('google'),
+    hybrid: buildTileLayer('hybrid'),
+    dark: buildTileLayer('dark'),
+    osm: buildTileLayer('osm'),
   };
+
+  let saved = localStorage.getItem('mashwar_map_style') || 'google';
+  if (!layers[saved]) saved = 'google';
+  let currentKey = saved;
+  layers[currentKey].addTo(m);
+
+  m._tileLayers = layers;
+  m.setMapStyle = (key) => {
+    if (!layers[key] || key === currentKey) return;
+    m.removeLayer(layers[currentKey]);
+    currentKey = key;
+    layers[currentKey].addTo(m);
+    localStorage.setItem('mashwar_map_style', key);
+    if (m._styleBtns) {
+      Object.entries(m._styleBtns).forEach(([k, b]) => b.classList.toggle('on', k === key));
+    }
+  };
+  m.toggleTiles = () => m.setMapStyle(currentKey === 'google' ? 'hybrid' : currentKey === 'hybrid' ? 'dark' : 'google');
+
+  // Layer switcher + "My Location" control
+  const Ctrl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd() {
+      const box = L.DomUtil.create('div', 'map-ctrl');
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.disableScrollPropagation(box);
+      m._styleBtns = {};
+      for (const k of ['google', 'hybrid', 'dark']) {
+        const b = L.DomUtil.create('button', 'ghost tab map-btn' + (k === currentKey ? ' on' : ''), box);
+        b.type = 'button';
+        b.textContent = MAP_STYLES[k].label;
+        b.onclick = (ev) => { ev.preventDefault(); m.setMapStyle(k); };
+        m._styleBtns[k] = b;
+      }
+      const locBtn = L.DomUtil.create('button', 'ghost tab map-btn', box);
+      locBtn.type = 'button';
+      locBtn.textContent = '📍 موقعي';
+      locBtn.title = 'الانتقال إلى موقعي الحالي';
+      locBtn.onclick = (ev) => {
+        ev.preventDefault();
+        if (!navigator.geolocation) return toast('المتصفح لا يدعم تحديد الموقع');
+        navigator.geolocation.getCurrentPosition(
+          (p) => m.setView([p.coords.latitude, p.coords.longitude], 15),
+          () => toast('يرجى السماح بصلاحية الموقع (GPS) في المتصفح'),
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      };
+      return box;
+    },
+  });
+  new Ctrl().addTo(m);
+
+  setTimeout(() => m.invalidateSize(), 80);
   return m;
 }
 
 export const emoji = (e) => L.divIcon({
-  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))">${e}</div>`,
-  className: '', iconSize: [26, 26], iconAnchor: [13, 13]
+  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))">${e}</div>`,
+  className: '', iconSize: [28, 28], iconAnchor: [14, 14],
 });
 
 export function pickLocation(map, onPick) {
   let mk;
-  map.on('click', (e) => { if (mk) mk.setLatLng(e.latlng); else mk = L.marker(e.latlng).addTo(map); onPick(e.latlng.lat, e.latlng.lng); });
+  map.on('click', (e) => {
+    if (mk) mk.setLatLng(e.latlng);
+    else mk = L.marker(e.latlng, { icon: emoji('📍') }).addTo(map);
+    onPick(e.latlng.lat, e.latlng.lng);
+  });
 }
 
 export async function makeRoute(map, from, to) {
-  const url = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.code !== 'Ok' || !data.routes?.length) throw new Error('no route');
-    const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-    return L.polyline(coords, { color: '#0984e3', weight: 5, opacity: .8 }).addTo(map);
-  } catch {
-    return L.polyline([from, to], { color: '#0984e3', weight: 4, opacity: .6, dashArray: '10 8' }).addTo(map);
+  const directUrl = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
+  const proxyUrl = `/api/route?from=${encodeURIComponent(from[0] + ',' + from[1])}&to=${encodeURIComponent(to[0] + ',' + to[1])}`;
+  for (const url of [directUrl, proxyUrl]) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.code === 'Ok' && data.routes?.length) {
+        const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
+        return L.polyline(coords, { color: '#2563eb', weight: 5, opacity: 0.88 }).addTo(map);
+      }
+    } catch {}
   }
+  return L.polyline([from, to], { color: '#2563eb', weight: 4, opacity: 0.75, dashArray: '10 8' }).addTo(map);
 }
 
 export function animateMarker(marker, newLatLng, duration = 1000) {
@@ -129,7 +227,7 @@ export function animateMarker(marker, newLatLng, duration = 1000) {
 
   function step(now) {
     const t = Math.min((now - start) / duration, 1);
-    const ease = t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t;      // ease-in-out
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
     marker.setLatLng([from.lat + dLat * ease, from.lng + dLng * ease]);
     if (t < 1) requestAnimationFrame(step);
   }
@@ -137,15 +235,19 @@ export function animateMarker(marker, newLatLng, duration = 1000) {
 }
 
 export function fitMapToPoints(map, points) {
-  if (!points?.length) return;
-  const bounds = L.latLngBounds(points.map(p => L.latLng(p[0], p[1])));
-  map.fitBounds(bounds, { padding: [40, 40] });
+  const pts = (points || [])
+    .filter((p) => Array.isArray(p) && p[0] != null && p[1] != null && Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1])))
+    .map((p) => [Number(p[0]), Number(p[1])]);
+  if (!pts.length) return;
+  if (pts.length === 1) { map.setView(pts[0], 15); return; }
+  const bounds = L.latLngBounds(pts.map((p) => L.latLng(p[0], p[1])));
+  map.fitBounds(bounds, { padding: [45, 45], maxZoom: 16 });
 }
 
-export function createPulsingDot(color = '#6c5ce7') {
+export function createPulsingDot(color = '#22c55e') {
   return L.divIcon({
     html: `<div class="pulsing-dot" style="background:${color}"></div>`,
-    className: '', iconSize: [12, 12], iconAnchor: [6, 6]
+    className: '', iconSize: [14, 14], iconAnchor: [7, 7],
   });
 }
 
@@ -213,7 +315,6 @@ export function header(title, user, onLogout) {
   $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
 }
 
-
 /** Captain details modal: name, phone, live location on a map, and a direct call button. */
 export function captainModal(cap) {
   if (!cap) return;
@@ -225,7 +326,7 @@ export function captainModal(cap) {
   el.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:18px;background:#18181b;color:#fff">
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🛵 ${esc(cap.name)}</h3><button type="button" class="ghost" id="capx">✕</button></div>
     <p style="margin:10px 0">📞 <b dir="ltr">${esc(cap.phone || '—')}</b></p>
-    ${hasLoc ? '<div id="capmap" class="map" style="height:220px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}
+    ${hasLoc ? '<div id="capmap" class="map" style="height:240px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}
     ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:block;text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:#22c55e;color:#fff;font-weight:700;text-decoration:none">📞 اتصال مباشر</a>` : ''}
   </div>`;
   document.body.appendChild(el);
@@ -234,7 +335,7 @@ export function captainModal(cap) {
   el.querySelector('#capx').onclick = close;
   if (hasLoc) {
     const m = makeMap('capmap', [cap.lat, cap.lng], 15);
-    L.marker([cap.lat, cap.lng], { icon: emoji('🛵') }).addTo(m);
-    setTimeout(() => m.invalidateSize(), 50);
+    L.marker([cap.lat, cap.lng], { icon: emoji('🛵') }).addTo(m).bindTooltip(cap.name);
+    setTimeout(() => m.invalidateSize(), 60);
   }
 }

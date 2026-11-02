@@ -47,6 +47,64 @@ const orderLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: t
 // ---------- public / auth ----------
 api.get('/zones', (_req, res) => res.json(db.prepare('SELECT id,name FROM zones WHERE active=1 ORDER BY name').all()));
 
+// Map tile & OSRM route proxy fallback (zero API key, immune to adblockers / Brave Shields / ISP blocks)
+const tileCache = new Map();
+const TILE_URLS = {
+  gm: (z, x, y) => `https://mt${(x + y) & 3}.google.com/vt/lyrs=m&x=${x}&y=${y}&z=${z}&hl=ar`,
+  gh: (z, x, y) => `https://mt${(x + y) & 3}.google.com/vt/lyrs=y&x=${x}&y=${y}&z=${z}&hl=ar`,
+  dark: (z, x, y) => `https://${'abcd'[(x + y) & 3]}.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`,
+  osm: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+};
+api.get('/tile/:style/:z/:x/:y', async (req, res) => {
+  try {
+    const style = req.params.style;
+    const buildUrl = TILE_URLS[style];
+    if (!buildUrl) return res.status(400).json({ error: 'نمط خريطة غير صالح' });
+    const z = int(req.params.z, 'z', 0, 21);
+    const maxIdx = (2 ** z) - 1;
+    const x = int(req.params.x, 'x', 0, maxIdx);
+    const y = int(String(req.params.y).replace(/\.(png|jpg|jpeg)$/i, ''), 'y', 0, maxIdx);
+    const key = `${style}:${z}:${x}:${y}`;
+    let hit = tileCache.get(key);
+    if (!hit) {
+      const upstream = await fetch(buildUrl(z, x, y), {
+        headers: { 'User-Agent': 'MashwarDelivery/1.0 (+https://localhost)', 'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!upstream.ok) return res.status(502).end();
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const ct = upstream.headers.get('content-type') || 'image/png';
+      hit = { buf, ct };
+      if (tileCache.size >= 400) tileCache.delete(tileCache.keys().next().value);
+      tileCache.set(key, hit);
+    }
+    res.set('Content-Type', hit.ct);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(hit.buf);
+  } catch (e) {
+    if (e instanceof HttpError) return res.status(e.status).json({ error: e.message });
+    res.status(502).end();
+  }
+});
+
+api.get('/route', async (req, res) => {
+  try {
+    const [fLat, fLng] = String(req.query.from ?? '').split(',');
+    const [tLat, tLng] = String(req.query.to ?? '').split(',');
+    const [lat1, lng1] = coord(fLat, fLng, true);
+    const [lat2, lng2] = coord(tLat, tLng, true);
+    const url = `https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=full&geometries=geojson`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'MashwarDelivery/1.0' }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return res.status(502).json({ code: 'UpstreamError' });
+    const data = await r.json();
+    res.set('Cache-Control', 'public, max-age=30');
+    res.json(data);
+  } catch (e) {
+    if (e instanceof HttpError) return res.status(e.status).json({ error: e.message });
+    res.status(502).json({ code: 'RouteUnavailable' });
+  }
+});
+
 // Accounts are created by the admin only (no public self-registration)
 api.post('/auth/register', (_req, res) => res.status(403).json({ error: 'التسجيل عن طريق الإدارة فقط' }));
 const createAccount = wrap((req, res) => {
@@ -315,15 +373,20 @@ A.get('/stats', wrap((_req, res) => {
 
 A.get('/live', wrap((_req, res) => {
   const orders = db.prepare("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC").all().map((o) => viewOrder(o, 'admin'));
-  const captains = db.prepare("SELECT id,name,phone,zone_id,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' AND status='active' AND online=1").all()
-    .map((c) => ({ ...c, busy: !!activeOrder(c.id) }));
-  res.json({ orders, captains });
+  const recentOrders = db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 15').all().map((o) => viewOrder(o, 'admin'));
+  const captains = db.prepare("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' ORDER BY online DESC, (status='active') DESC, id DESC").all()
+    .map((c) => {
+      const act = activeOrder(c.id);
+      return { ...c, online: !!c.online, busy: !!act, active_order_id: act?.id ?? null };
+    });
+  const merchants = db.prepare("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id DESC").all();
+  res.json({ orders, recentOrders, captains, merchants });
 }));
 
 A.post('/users', createAccount);
 A.get('/users', wrap((req, res) => {
   const role = ['merchant', 'captain'].includes(req.query.role) ? req.query.role : null;
-  const rows = db.prepare(`SELECT id,role,phone,name,business_name,address,zone_id,status,online,created_at FROM users WHERE role IN ('merchant','captain') ${role ? 'AND role=?' : ''} ORDER BY (status='pending') DESC, id DESC LIMIT 500`).all(...(role ? [role] : []));
+  const rows = db.prepare(`SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,created_at FROM users WHERE role IN ('merchant','captain') ${role ? 'AND role=?' : ''} ORDER BY (status='pending') DESC, id DESC LIMIT 500`).all(...(role ? [role] : []));
   res.json(rows);
 }));
 A.patch('/users/:id', wrap((req, res) => {
