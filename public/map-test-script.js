@@ -1,4 +1,4 @@
-import { makeMap, emoji, makeRoute, fitMapToPoints } from './shared.js';
+import { makeMap, emoji, makeRoute, fitMapToPoints } from './shared.js?v=3';
 
 const log = document.getElementById('log');
 const COLORS = { ok: '#22c55e', err: '#ef4444', warn: '#f59e0b' };

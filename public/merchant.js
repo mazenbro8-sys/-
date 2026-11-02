@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints } from './shared.js';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints } from './shared.js?v=3';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);

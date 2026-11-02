@@ -1,4 +1,4 @@
-import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS } from './shared.js';
+import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS } from './shared.js?v=3';
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 

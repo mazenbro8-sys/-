@@ -75,7 +75,7 @@ h2, h3 { margin: 0 0 10px; font-weight: 700; }
   background: var(--glass); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--bd); border-radius: 20px; padding: 16px; margin-bottom: 14px;
   box-shadow: 0 4px 30px rgba(0, 0, 0, .45);
-  position: relative; overflow: hidden;
+  position: relative; overflow: hidden; min-width: 0;
   animation: rise .45s var(--ease) both;
   transition: background .25s, border-color .25s;
 }
@@ -84,10 +84,10 @@ h2, h3 { margin: 0 0 10px; font-weight: 700; }
   background: linear-gradient(135deg, rgba(255, 255, 255, .08), transparent 38%);
 }
 
-.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
-.grid > .card { margin: 0; }
-.split2 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); margin-bottom: 14px; }
-.split2 > .card { margin: 0; }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.grid > .card { margin: 0; min-width: 0; }
+.split2 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-bottom: 14px; }
+.split2 > .card, .dgrid > .card { margin: 0; min-width: 0; }
 
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .row > * { flex: 1; min-width: 120px; }
