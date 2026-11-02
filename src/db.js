@@ -118,8 +118,8 @@ export function tx(fn) {
 if (!db.prepare('SELECT 1 FROM zones').get()) {
   db.prepare('INSERT INTO zones(name) VALUES (?)').run('المزة');
 }
-const adminPhone = process.env.ADMIN_PHONE || '0782070936';
-const adminPass = process.env.ADMIN_PASSWORD || 'asd123';
+const adminPhone = (process.env.DB_FILE && process.env.ADMIN_PHONE) || '0782070936';
+const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || 'asd123';
 tx(() => {
   db.prepare('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0').run();
   const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
