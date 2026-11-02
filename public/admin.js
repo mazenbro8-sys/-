@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal } from './shared.js';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js';
 
 authScreen('admin', (user) => {
   header('الإدارة', user);
@@ -12,12 +12,12 @@ authScreen('admin', (user) => {
   const tick = () => { const d = new Date(); $('#clk').textContent = d.toLocaleTimeString('en-GB'); $('#dt').textContent = d.toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }); };
   tick(); setInterval(tick, 1000);
   const feed = [];
-  let tab = 'dash', zones = [], liveMap, capMarkers = new Map(), refreshTimer;
+  let tab = 'dash', zones = [], liveMap, capMarkers = new Map(), orderMarkers = new Map(), refreshTimer;
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
 
   $('.tabs').onclick = (e) => { if (e.target.dataset.t) go(e.target.dataset.t); };
   async function go(t) {
-    tab = t; clearTimeout(refreshTimer); liveMap = null; capMarkers.clear();
+    tab = t; clearTimeout(refreshTimer); liveMap = null; capMarkers.clear(); orderMarkers.clear();
     $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
     $('#ptitle').textContent = TABS[t].replace(/^\S+\s/, '');
     zones = await api('/admin/zones');
@@ -28,17 +28,33 @@ authScreen('admin', (user) => {
   const views = {
     async dash() {
       const s = await api('/admin/stats');
+      const d = await api('/admin/live');
       const cards = [['🗺️', zones.length, 'المناطق'], ['🏪', s.merchants, 'المنشآت'], ['🛵', `${s.online}/${s.captains}`, 'الكباتن أونلاين'], ['📦', s.deliveredToday, 'طلبات اليوم المسلّمة']];
       view().innerHTML = `<div class="stats4">${cards.map(([i, n, l]) => `<div class="card sc"><div class="ic">${i}</div><div><div class="n">${n}</div><div class="mut">${l}</div></div></div>`).join('')}</div>
-        <div class="dgrid"><div class="card radar"><span>الخريطة الحية للكباتن قريباً<br><small>تابعها الآن من «غرفة العمليات»</small></span></div>
-        <div class="card" style="padding:16px"><h3 style="margin-top:0">آخر النشاطات</h3><ul class="feed">${feed.slice(0, 5).map((f) => `<li>${esc(f.t)}<small>${f.at}</small></li>`).join('') || '<li class="mut">لا نشاط بعد</li>'}</ul></div></div>`;
+        <div class="dgrid"><div class="card"><h3>🗺️ الخريطة الحية</h3><div id="dashmap" class="map" style="height:320px"></div></div>
+        <div class="card" style="padding:16px"><h3 style="margin-top:0">آخر النشاطات</h3><ul class="feed">${feed.slice(0, 8).map((f) => `<li>${esc(f.t)}<small>${f.at}</small></li>`).join('') || '<li class="mut">لا نشاط بعد</li>'}</ul></div></div>`;
+      // Dashboard mini-map
+      const dashMap = makeMap('dashmap', DAMASCUS, 12);
+      d.captains.forEach((c) => {
+        if (c.lat != null) {
+          const icon = c.busy ? emoji('🛵') : createPulsingDot('#22c55e');
+          L.marker([c.lat, c.lng], { icon }).addTo(dashMap).bindTooltip(`${c.name}${c.busy ? ' (مشغول)' : ' (متاح)'}`);
+        }
+      });
+      // Show order destinations
+      d.orders.forEach((o) => {
+        if (o.customer_lat != null) L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(dashMap).bindTooltip(`طلب #${o.id}`);
+      });
+      // Fit to all points
+      const pts = d.captains.filter(c => c.lat != null).map(c => [c.lat, c.lng]);
+      if (pts.length) fitMapToPoints(dashMap, pts);
     },
     async live() {
       const s = await api('/admin/stats');
       view().innerHTML = `<div class="stats">
         ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]].map(([k, v]) => `<div class="card"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
         </div>
-        <div class="card"><h3>الخريطة الحية</h3><div id="lmap" class="map" style="height:380px"></div></div>
+        <div class="card"><h3>🗺️ الخريطة الحية</h3><div id="lmap" class="map" style="height:500px"></div></div>
         <div class="card"><h3>الطلبات الحية</h3><div class="tablewrap"><table><thead><tr><th>#</th><th>المنشأة</th><th>الزبون</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="lrows"></tbody></table></div></div>`;
       liveMap = makeMap('lmap', DAMASCUS, 12);
       await loadLive();
@@ -113,12 +129,40 @@ authScreen('admin', (user) => {
 
   async function detail(id) {
     const o = await api(`/admin/orders/${id}`);
+    const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
     $('#detail').innerHTML = `<div class="card"><h3>طلب #${o.id} ${badge(o.status)}</h3>
         <p>المنشأة: ${esc(o.merchant.name)} — الزبون: ${esc(o.customer_name)} (${esc(o.customer_phone)})<br>${esc(o.customer_address)}</p>
         <p>ثمن المنتج: ${money(o.product_amount)} — التوصيل: ${money(o.delivery_fee)} — العمولة: ${money(o.commission)} — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}</p>
+        ${hasMap ? '<div id="dmap" class="map" style="height:280px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
         <div class="row">${o.captain_id !== undefined && o.captain ? `<button class="bad" id="lb">تحميل الكابتن ثمن المنتج (تلف/تأخير)</button>` : ''}
         ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button class="sec" id="ca">إلغاء الطلب</button>' : ''}</div></div>`;
+    // Draw order detail map
+    if (hasMap) {
+      const dmap = makeMap('dmap', DAMASCUS, 13);
+      const pts = [];
+      if (o.merchant?.lat != null) {
+        L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(dmap).bindTooltip('المنشأة');
+        pts.push([o.merchant.lat, o.merchant.lng]);
+      }
+      if (o.customer_lat != null) {
+        L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(dmap).bindTooltip('الزبون');
+        pts.push([o.customer_lat, o.customer_lng]);
+      }
+      if (o.captain?.lat != null) {
+        L.marker([o.captain.lat, o.captain.lng], { icon: emoji('🛵') }).addTo(dmap).bindTooltip(o.captain.name);
+        pts.push([o.captain.lat, o.captain.lng]);
+      }
+      if (pts.length >= 2) {
+        fitMapToPoints(dmap, pts);
+        // Draw route from captain to destination if active
+        if (o.captain?.lat != null && ['accepted', 'picked_up', 'arrived'].includes(o.status)) {
+          const dest = o.status === 'accepted' ? [o.merchant.lat, o.merchant.lng] : [o.customer_lat, o.customer_lng];
+          if (dest[0] != null) makeRoute(dmap, [o.captain.lat, o.captain.lng], dest);
+        }
+      } else if (pts.length === 1) dmap.setView(pts[0], 15);
+      setTimeout(() => dmap.invalidateSize(), 50);
+    }
     $('#lb')?.addEventListener('click', async () => { const reason = prompt('سبب التحميل (تلف / تأخير)'); if (reason) { await act(() => api(`/admin/orders/${id}/liability`, 'POST', { reason }), 'تم'); detail(id); } });
     $('#ca')?.addEventListener('click', async () => { if (confirm('إلغاء؟')) { await act(() => api(`/admin/orders/${id}/cancel`, 'POST'), 'تم'); detail(id); } });
     $('#detail').scrollIntoView();
@@ -129,25 +173,57 @@ authScreen('admin', (user) => {
     const d = await api('/admin/live');
     $('#lrows').innerHTML = d.orders.map((o) => `<tr><td>${o.id}</td><td>${esc(o.merchant.name)}</td><td>${esc(o.customer_name || '—')}</td><td>${badge(o.status)}${o.eta_minutes ? ` ~${o.eta_minutes}د` : ''}</td><td>${esc(o.captain_name || '—')}</td><td><button class="sec" data-x="${o.id}">إلغاء</button> <button class="ok" data-d="${o.id}">تفاصيل</button></td></tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات حية</td></tr>';
     $('#lrows').onclick = async (e) => { if (e.target.dataset.x && confirm('إلغاء الطلب؟')) { await act(() => api(`/admin/orders/${e.target.dataset.x}/cancel`, 'POST')); loadLive(); } else if (e.target.dataset.d) { detail(e.target.dataset.d); } };
+
+    // Update captain markers with smooth animation
     const seen = new Set();
-    d.captains.forEach((c) => { seen.add(c.id); if (c.lat != null) setCap(c.id, c.lat, c.lng, `${c.name}${c.busy ? ' (مشغول)' : ' (متاح)'}`, c.busy); });
+    d.captains.forEach((c) => {
+      seen.add(c.id);
+      if (c.lat != null) setCap(c.id, c.lat, c.lng, `${c.name}${c.busy ? ' (مشغول)' : ' (متاح)'}`, c.busy);
+    });
     [...capMarkers.keys()].filter((k) => !seen.has(k)).forEach((k) => { capMarkers.get(k).remove(); capMarkers.delete(k); });
-    refreshTimer = setTimeout(loadLive, 20000);
+
+    // Show order markers (merchant + customer)
+    orderMarkers.forEach(m => m.remove());
+    orderMarkers.clear();
+    d.orders.forEach((o) => {
+      if (o.merchant?.lat != null) {
+        const mk = L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(liveMap).bindTooltip(`${o.merchant.name} — طلب #${o.id}`);
+        orderMarkers.set('m' + o.id, mk);
+      }
+      if (o.customer_lat != null) {
+        const mk = L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(liveMap).bindTooltip(`زبون طلب #${o.id}`);
+        orderMarkers.set('c' + o.id, mk);
+      }
+    });
+
+    refreshTimer = setTimeout(loadLive, 15000);
   }
+
   function setCap(id, lat, lng, label, busy) {
     let m = capMarkers.get(id);
-    if (!m) { m = L.marker([lat, lng], { icon: emoji(busy ? '🛵' : '🟢') }).addTo(liveMap); capMarkers.set(id, m); } else m.setLatLng([lat, lng]);
+    if (!m) {
+      const icon = busy ? emoji('🛵') : createPulsingDot('#22c55e');
+      m = L.marker([lat, lng], { icon }).addTo(liveMap);
+      capMarkers.set(id, m);
+    } else {
+      animateMarker(m, [lat, lng]);
+      // Update icon if busy status changed
+      m.setIcon(busy ? emoji('🛵') : createPulsingDot('#22c55e'));
+    }
     if (label) m.bindTooltip(label);
   }
 
   connectWs((m) => {
     const lbl = { order: 'تحديث على طلب' + (m.order ? ` #${m.order.id}` : ''), pending_user: 'طلب تسجيل جديد', flag: 'تنبيه أمني جديد', captain: 'تحديث على كابتن' }[m.type];
     if (lbl) { feed.unshift({ t: lbl, at: new Date().toLocaleTimeString('en-GB') }); feed.length = Math.min(feed.length, 20); if (tab === 'dash') views.dash(); }
-    if (m.type === 'loc' && tab === 'live' && liveMap && capMarkers.has(m.captain_id)) setCap(m.captain_id, m.lat, m.lng);
-    else if (['order', 'pending_user', 'flag', 'captain'].includes(m.type)) {
+    if (m.type === 'loc' && tab === 'live' && liveMap) {
+      const existing = capMarkers.get(m.captain_id);
+      if (existing) animateMarker(existing, [m.lat, m.lng]);
+      else setCap(m.captain_id, m.lat, m.lng, null, m.busy);
+    } else if (['order', 'pending_user', 'flag', 'captain'].includes(m.type)) {
       if (m.type === 'pending_user') toast('طلب تسجيل جديد بانتظار الموافقة');
       if (m.type === 'flag') toast('⚠️ تنبيه أمني جديد');
-      if (tab === 'live') { clearTimeout(refreshTimer); views.live(); }
+      if (tab === 'live') { clearTimeout(refreshTimer); loadLive(); }
     }
   });
   go('dash');

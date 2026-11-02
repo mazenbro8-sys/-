@@ -54,15 +54,99 @@ export function connectWs(onMsg) {
 
 // ---------- maps ----------
 export const DAMASCUS = [33.5138, 36.2765];
+
+const TILES_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const TILES_OSM  = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+/* --- pulsing dot CSS (injected once) --- */
+if (!document.getElementById('_pulsingDotCSS')) {
+  const style = document.createElement('style');
+  style.id = '_pulsingDotCSS';
+  style.textContent = `
+    @keyframes _pulse {
+      0%   { transform: scale(1);   opacity: 1; }
+      70%  { transform: scale(2.5); opacity: 0; }
+      100% { transform: scale(2.5); opacity: 0; }
+    }
+    .pulsing-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      position: relative;
+    }
+    .pulsing-dot::after {
+      content: ''; position: absolute; inset: 0;
+      border-radius: 50%; background: inherit;
+      animation: _pulse 1.4s ease-out infinite;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export function makeMap(el, center = DAMASCUS, zoom = 13) {
-  const m = L.map(el).setView(center, zoom);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(m);
+  const m = L.map(el, { zoomControl: false }).setView(center, zoom);
+  L.control.zoom({ position: 'topright' }).addTo(m);
+
+  const darkTile = L.tileLayer(TILES_DARK, { maxZoom: 19, attribution: '© CartoDB © OpenStreetMap' });
+  const osmTile  = L.tileLayer(TILES_OSM,  { maxZoom: 19, attribution: '© OpenStreetMap' });
+  darkTile.addTo(m);
+
+  m._tileLayers = { dark: darkTile, osm: osmTile };
+  m.toggleTiles = () => {
+    if (m.hasLayer(darkTile)) { m.removeLayer(darkTile); osmTile.addTo(m); }
+    else { m.removeLayer(osmTile); darkTile.addTo(m); }
+  };
   return m;
 }
-export const emoji = (e) => L.divIcon({ html: `<div style="font-size:26px;line-height:26px">${e}</div>`, className: '', iconSize: [26, 26], iconAnchor: [13, 13] });
+
+export const emoji = (e) => L.divIcon({
+  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))">${e}</div>`,
+  className: '', iconSize: [26, 26], iconAnchor: [13, 13]
+});
+
 export function pickLocation(map, onPick) {
   let mk;
   map.on('click', (e) => { if (mk) mk.setLatLng(e.latlng); else mk = L.marker(e.latlng).addTo(map); onPick(e.latlng.lat, e.latlng.lng); });
+}
+
+export async function makeRoute(map, from, to) {
+  const url = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.code !== 'Ok' || !data.routes?.length) throw new Error('no route');
+    const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+    return L.polyline(coords, { color: '#0984e3', weight: 5, opacity: .8 }).addTo(map);
+  } catch {
+    return L.polyline([from, to], { color: '#0984e3', weight: 4, opacity: .6, dashArray: '10 8' }).addTo(map);
+  }
+}
+
+export function animateMarker(marker, newLatLng, duration = 1000) {
+  const start = performance.now();
+  const from = marker.getLatLng();
+  const to = L.latLng(newLatLng);
+  const dLat = to.lat - from.lat;
+  const dLng = to.lng - from.lng;
+
+  function step(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const ease = t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t;      // ease-in-out
+    marker.setLatLng([from.lat + dLat * ease, from.lng + dLng * ease]);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+export function fitMapToPoints(map, points) {
+  if (!points?.length) return;
+  const bounds = L.latLngBounds(points.map(p => L.latLng(p[0], p[1])));
+  map.fitBounds(bounds, { padding: [40, 40] });
+}
+
+export function createPulsingDot(color = '#6c5ce7') {
+  return L.divIcon({
+    html: `<div class="pulsing-dot" style="background:${color}"></div>`,
+    className: '', iconSize: [12, 12], iconAnchor: [6, 6]
+  });
 }
 
 // ---------- login / register ----------

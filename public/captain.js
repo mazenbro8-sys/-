@@ -1,4 +1,4 @@
-import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji } from './shared.js';
+import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js';
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -15,6 +15,7 @@ authScreen('captain', (user) => {
 
   let st = { online: false, active: null, offer: null, intervals: { active: 10000, idle: 60000 } };
   let sim = false, simTimer = null, pos = null, watchId = null, lastSent = 0, map, mk = [], me, wake, cd;
+  let routeLayer = null, lastRouteTime = 0;
 
   // Loud two-tone siren that repeats until the offer is answered, rejected or expires.
   let actx = null, alarmTimer = null, alarmGain = null, alarmOsc = null;
@@ -102,18 +103,44 @@ authScreen('captain', (user) => {
       <p>💵 ادفع للمنشأة ثمن المنتج: <b>${money(o.product_amount)}</b><br>💵 استلم من الزبون: <b>${money(o.product_amount + o.delivery_fee)}</b> (منتج + توصيل ${money(o.delivery_fee)})</p>
       ${o.notes ? `<p class="mut">ملاحظات: ${esc(o.notes)}</p>` : ''}
       ${dest.lat != null ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}" target="_blank" rel="noopener noreferrer"><button class="sec" style="width:100%">🧭 افتح الملاحة</button></a>` : ''}
-      <div id="amap" class="map"></div>
+      <div id="amap" class="map" style="height:300px"></div>
       <button class="big ok" id="nx">${n[1]}</button>
       ${o.status !== 'accepted' ? '<button class="big bad" id="fl">الزبون لا يرد / العنوان خطأ</button>' : ''}</div>`;
     map = makeMap('amap', dest.lat != null ? [dest.lat, dest.lng] : undefined, 14);
     mk.forEach((m) => m.remove()); mk = [];
+    if (routeLayer) { routeLayer.remove(); routeLayer = null; }
     if (o.merchant.lat != null) mk.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(map));
     if (o.customer_lat != null) mk.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(map));
     me = null; if (pos) showMe();
+    // Draw route and fit bounds
+    const pts = [];
+    if (o.merchant.lat != null) pts.push([o.merchant.lat, o.merchant.lng]);
+    if (o.customer_lat != null) pts.push([o.customer_lat, o.customer_lng]);
+    if (pos) pts.push([pos.lat, pos.lng]);
+    if (pts.length >= 2) fitMapToPoints(map, pts);
+    // Draw route from captain to destination
+    if (pos && dest.lat != null) {
+      lastRouteTime = Date.now();
+      makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+    }
     $('#nx').onclick = async () => { if (n[0] === 'delivered' && !confirm('تأكيد التسليم واستلام المبلغ؟')) return; await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: n[0] })); await refresh(); };
     $('#fl')?.addEventListener('click', async () => { if (!confirm('الإبلاغ عن فشل التسليم؟ ستخسر أجرة التوصيل.')) return; await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: 'failed_customer' })); await refresh(); });
   }
-  function showMe() { if (!map) return; if (!me) me = L.marker([pos.lat, pos.lng], { icon: emoji('🛵') }).addTo(map); else me.setLatLng([pos.lat, pos.lng]); }
+  function showMe() {
+    if (!map) return;
+    if (!me) me = L.marker([pos.lat, pos.lng], { icon: emoji('🛵') }).addTo(map);
+    else animateMarker(me, [pos.lat, pos.lng]);
+    // Update route every 30 seconds
+    if (st.active && Date.now() - lastRouteTime > 30000) {
+      const o = st.active;
+      const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
+      if (dest.lat != null) {
+        lastRouteTime = Date.now();
+        if (routeLayer) { routeLayer.remove(); routeLayer = null; }
+        makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+      }
+    }
+  }
 
   // ----- GPS: 10-15s with active order, 60s idle, nothing when offline -----
   function startGps() {

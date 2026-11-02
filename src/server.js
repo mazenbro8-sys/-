@@ -17,8 +17,8 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"], // Leaflet sets inline styles on markers
-      imgSrc: ["'self'", 'data:', 'https://*.tile.openstreetmap.org'],
-      connectSrc: ["'self'", 'ws:', 'wss:'],
+      imgSrc: ["'self'", 'data:', 'https://*.tile.openstreetmap.org', 'https://*.basemaps.cartocdn.com'],
+      connectSrc: ["'self'", 'ws:', 'wss:', 'https://router.project-osrm.org'],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
       baseUri: ["'self'"],

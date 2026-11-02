@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, captainModal } from './shared.js';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
@@ -35,9 +35,9 @@ authScreen('merchant', (user) => {
       <div class="tablewrap"><table><thead><tr><th>#</th><th>الزبون</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
     </div>
     <div class="card">
-      <h3>التتبع المباشر</h3>
+      <h3>🗺️ التتبع المباشر</h3>
       <div id="trkinfo" class="mut">اختر طلباً نشطاً لتتبعه</div>
-      <div id="tmap" class="map"></div>
+      <div id="tmap" class="map" style="height:380px"></div>
     </div>
   </section>
   <section id="mySection" class="tab-section hide">
@@ -59,9 +59,7 @@ authScreen('merchant', (user) => {
   $('.tabs').onclick = (e) => {
     const tab = e.target.dataset.tab;
     if (!tab) return;
-    // activate button
     $$('.tabs button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
-    // show/hide sections
     $('#orderSection').classList.toggle('hide', tab !== 'order');
     $('#liveSection').classList.toggle('hide', tab !== 'live');
     $('#mySection').classList.toggle('hide', tab !== 'my');
@@ -71,6 +69,7 @@ authScreen('merchant', (user) => {
 
   const orders = new Map();
   let cpos = [null, null], cm, selected = null, capMarker, destMarkers = [];
+  let routeLayer = null, lastRouteTime = 0;
   cm = makeMap('cmap', user.lat ? [user.lat, user.lng] : undefined, 13);
   let cMk; pickLocation(cm, (a, b) => { cpos = [a, b]; });
   const tm = makeMap('tmap', user.lat ? [user.lat, user.lng] : undefined, 14);
@@ -125,17 +124,36 @@ authScreen('merchant', (user) => {
   $('#rows').onclick = onTbl;
   $('#liveRows').onclick = onTbl;
   function select(id) { selected = id; track(orders.get(id)); }
+
   function track(o) {
     if (!o) return;
     destMarkers.forEach(m => m.remove()); destMarkers = [];
+    if (routeLayer) { routeLayer.remove(); routeLayer = null; }
+    // Add merchant marker
+    if (o.merchant?.lat != null) destMarkers.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(tm));
+    // Add customer marker
     if (o.customer_lat != null) destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm));
     $('#trkinfo').innerHTML = `طلب #${o.id}: ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
-    if (o.captain?.lat != null) moveCaptain(o.captain.lat, o.captain.lng);
-    else if (capMarker) { capMarker.remove(); capMarker = null; }
+    if (o.captain?.lat != null) {
+      moveCaptain(o.captain.lat, o.captain.lng);
+      // Draw route from captain to destination
+      const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
+      if (dest?.lat != null) {
+        lastRouteTime = Date.now();
+        makeRoute(tm, [o.captain.lat, o.captain.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+      }
+      // Fit map to show all points
+      const pts = [];
+      if (o.merchant?.lat != null) pts.push([o.merchant.lat, o.merchant.lng]);
+      if (o.customer_lat != null) pts.push([o.customer_lat, o.customer_lng]);
+      pts.push([o.captain.lat, o.captain.lng]);
+      if (pts.length >= 2) fitMapToPoints(tm, pts);
+    } else if (capMarker) { capMarker.remove(); capMarker = null; }
   }
+
   function moveCaptain(lat, lng) {
     if (!capMarker) capMarker = L.marker([lat, lng], { icon: emoji('🛵') }).addTo(tm);
-    else capMarker.setLatLng([lat, lng]);
+    else animateMarker(capMarker, [lat, lng]);
     tm.panTo([lat, lng]);
   }
 
@@ -150,7 +168,18 @@ authScreen('merchant', (user) => {
     } else if (m.type === 'loc') {
       const o = orders.get(m.order_id);
       if (o) { o.captain = { ...o.captain, lat: m.lat, lng: m.lng }; o.eta_minutes = m.eta_minutes; render(); }
-      if (selected === m.order_id) { moveCaptain(m.lat, m.lng); if (o) track(o); }
+      if (selected === m.order_id) {
+        moveCaptain(m.lat, m.lng);
+        // Update route every 30 seconds
+        if (o && Date.now() - lastRouteTime > 30000) {
+          if (routeLayer) { routeLayer.remove(); routeLayer = null; }
+          const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
+          if (dest?.lat != null) {
+            lastRouteTime = Date.now();
+            makeRoute(tm, [m.lat, m.lng], [dest.lat, dest.lng]).then(layer => { routeLayer = layer; });
+          }
+        }
+      }
     }
   });
   setInterval(load, 60_000);
