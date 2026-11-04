@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo } from './shared.js?v=8';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=9';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -39,11 +39,13 @@ authScreen('admin', (user) => {
       <div class="topbar2" style="flex-wrap:wrap;gap:10px">
         <h2 id="ptitle"></h2>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          ${!isStandalone() ? '<button type="button" class="ok sm" data-install-app="admin">📲 تثبيت تطبيق الإدارة</button>' : ''}
           <button type="button" id="adminAddOrderTop" class="ok sm">➕ إضافة طلب لكابتن</button>
           <button type="button" id="adminSndBtn" class="bad sm">🔇 تفعيل صوت إنذار الطلبات</button>
           <div class="clock"><b id="clk"></b><span id="dt"></span></div>
         </div>
       </div>
+      <div style="padding:12px 18px 0">${renderInstallBanner('admin')}</div>
       <div id="shortageBox" style="padding:0 18px"></div>
       <div id="view" class="view"></div>
     </section>`;

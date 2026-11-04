@@ -1,4 +1,4 @@
-import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS, serialNo } from './shared.js?v=8';
+import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS, serialNo, renderInstallBanner } from './shared.js?v=9';
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -6,6 +6,7 @@ authScreen('captain', (user) => {
   header('الكابتن', user);
   const app = $('#app'); app.classList.remove('hide');
   app.innerHTML = `
+  ${renderInstallBanner('captain')}
   <div class="card"><div class="row"><div><b id="onl">أوفلاين</b><div class="mut" id="gps"></div><label style="display:flex;gap:6px;align-items:center;margin:6px 0 0"><input type="checkbox" id="simc" style="width:auto"> وضع المحاكاة (موقع وهمي للتجربة)</label></div>
     <button type="button" id="tog" class="ok">ابدأ العمل</button></div>
     <div class="mut" id="sum" style="margin-top:8px"></div></div>

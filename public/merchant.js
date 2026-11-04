@@ -1,9 +1,10 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo } from './shared.js?v=8';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=9';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
   const app = $('#app'); app.classList.remove('hide');
   app.innerHTML = `
+  ${renderInstallBanner('merchant')}
   <div class="tabs">
     <button type="button" data-tab="order" class="active">🛵 طلب كابتن</button>
     <button type="button" data-tab="live" id="liveTabBtn">📡 الطلبات الحية</button>

@@ -37,9 +37,161 @@ export function toast(msg, ms = 3500) {
   clearTimeout(t._t); t._t = setTimeout(() => (t.style.display = 'none'), ms);
 }
 
-let token = sessionStorage.getItem('token');
+const ROLE_KEY = location.pathname.includes('admin') ? 'admin' : location.pathname.includes('merchant') ? 'merchant' : location.pathname.includes('captain') ? 'captain' : 'app';
+let token = sessionStorage.getItem('token') || localStorage.getItem('panther_token_' + ROLE_KEY);
 export const getToken = () => token;
-export function setToken(t) { token = t; t ? sessionStorage.setItem('token', t) : sessionStorage.removeItem('token'); }
+export function setToken(t) {
+  token = t;
+  if (t) {
+    sessionStorage.setItem('token', t);
+    localStorage.setItem('panther_token_' + ROLE_KEY, t);
+  } else {
+    sessionStorage.removeItem('token');
+    localStorage.removeItem('panther_token_' + ROLE_KEY);
+  }
+}
+
+// ---------- PWA Service Worker & App Installation ----------
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+let deferredPrompt = null;
+export const isStandalone = () =>
+  window.matchMedia?.('(display-mode: standalone)').matches ||
+  window.navigator.standalone === true;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  $$('[data-install-app]').forEach((b) => b.classList.remove('hide'));
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredPrompt = null;
+  toast('✅ تم تثبيت تطبيق PANTHER على هاتفك بنجاح!');
+  $('#appInstallCard')?.classList.add('hide');
+});
+
+export const APP_META = {
+  merchant: {
+    name: 'PANTHER — تطبيق المنشأة',
+    short: 'تطبيق المنشأة',
+    icon: '🏪',
+    desc: 'اطلب كابتن توصيل بضغطة زر وتابع الكابتن مباشرة على الخريطة',
+    url: '/merchant?install=1',
+  },
+  captain: {
+    name: 'PANTHER — تطبيق الكابتن',
+    short: 'تطبيق الكابتن',
+    icon: '🛵',
+    desc: 'استقبل طلبات التوصيل بصوت التنبيه الفوري والملاحة الحية',
+    url: '/captain?install=1',
+  },
+  admin: {
+    name: 'PANTHER — تطبيق الإدارة',
+    short: 'تطبيق الإدارة',
+    icon: '⚙️',
+    desc: 'لوحة التحكم وغرفة العمليات وتوجيه الكباتن والتنبيهات المباشرة',
+    url: '/admin?install=1',
+  },
+};
+
+export async function promptInstallApp(role = ROLE_KEY) {
+  const meta = APP_META[role] || APP_META.merchant;
+  if (deferredPrompt) {
+    try {
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice?.outcome === 'accepted') {
+        deferredPrompt = null;
+        return;
+      }
+    } catch {}
+  }
+  document.getElementById('pwaInstallModal')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'pwaInstallModal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
+  modal.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:20px;border:1.5px solid rgba(251,191,36,.45);text-align:right">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <img src="/icon-192.png" alt="PANTHER" style="width:48px;height:48px;border-radius:12px;border:1px solid rgba(251,191,36,.4)">
+        <div>
+          <h3 style="margin:0;color:var(--gold)">📲 تثبيت ${esc(meta.short)}</h3>
+          <div class="mut" style="font-size:12px">يعمل كتطبيق هاتف مستقل بشاشة كاملة</div>
+        </div>
+      </div>
+      <button type="button" class="ghost sm" id="pwaClose">✕</button>
+    </div>
+    <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:12px;margin-bottom:10px">
+      <b style="color:#fbbf24;display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:#e4e4e7">
+        <li>اضغط على زر القائمة <b>(⋮)</b> في أعلى المتصفح.</li>
+        <li>اختر <b>«تثبيت التطبيق» (Install App)</b> أو <b>«الإضافة إلى الشاشة الرئيسية»</b>.</li>
+        <li>اضغط <b>تثبيت</b> ليظهر التطبيق بأيقونة <b>PANTHER</b> على هاتفك.</li>
+      </ol>
+    </div>
+    <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;margin-bottom:14px">
+      <b style="color:#f4f4f5;display:block;margin-bottom:6px">🍎 على هواتف آيفون (Safari):</b>
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:#e4e4e7">
+        <li>اضغط على زر المشاركة <b>(⬆️ Share)</b> في أسفل المتصفح.</li>
+        <li>اختر <b>«إضافة إلى الصفحة الرئيسية» (Add to Home Screen)</b>.</li>
+        <li>اضغط <b>إضافة (Add)</b> في أعلى الشاشة.</li>
+      </ol>
+    </div>
+    <div class="row">
+      <button type="button" class="sec" id="pwaCopyLink">🔗 نسخ رابط التحميل</button>
+      <button type="button" class="ok" id="pwaDone">تم، فهمت</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  $('#pwaClose', modal).onclick = close;
+  $('#pwaDone', modal).onclick = close;
+  $('#pwaCopyLink', modal).onclick = async () => {
+    const url = location.origin + meta.url;
+    try { await navigator.clipboard.writeText(url); toast('✅ تم نسخ رابط تحميل التطبيق'); } catch { prompt('انسخ الرابط:', url); }
+  };
+}
+
+export function renderInstallBanner(role = ROLE_KEY) {
+  const meta = APP_META[role] || APP_META.merchant;
+  const wantInstall = new URLSearchParams(location.search).get('install') === '1';
+  if (isStandalone() && !wantInstall) return '';
+  return `<div class="card" id="appInstallCard" style="border:1.5px solid rgba(251,191,36,.45);background:linear-gradient(145deg,rgba(24,20,17,.96),rgba(234,88,12,.14));margin-bottom:14px;text-align:right">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:12px">
+        <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid rgba(251,191,36,.5);box-shadow:0 6px 18px rgba(234,88,12,.3)">
+        <div>
+          <div style="font-weight:900;font-size:15.5px;color:#fff">${meta.icon} ${esc(meta.name)}</div>
+          <div class="mut" style="font-size:12.5px">${esc(meta.desc)}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:6px">
+        <button type="button" class="ok" data-install-app="${esc(role)}" style="flex:2;min-width:180px">📲 تحميل وتثبيت التطبيق على الهاتف</button>
+        <button type="button" class="sec sm" data-copy-app="${esc(meta.url)}" style="flex:1;min-width:110px">🔗 نسخ رابط التطبيق</button>
+        <a href="/" style="text-decoration:none"><button type="button" class="ghost sm">📦 كل التطبيقات</button></a>
+      </div>
+    </div>
+  </div>`;
+}
+
+document.addEventListener('click', async (e) => {
+  const instBtn = e.target.closest('[data-install-app]');
+  if (instBtn) {
+    e.preventDefault();
+    promptInstallApp(instBtn.dataset.installApp || ROLE_KEY);
+    return;
+  }
+  const copyBtn = e.target.closest('[data-copy-app]');
+  if (copyBtn) {
+    e.preventDefault();
+    const url = location.origin + copyBtn.dataset.copyApp;
+    try { await navigator.clipboard.writeText(url); toast('✅ تم نسخ رابط تحميل التطبيق'); } catch { prompt('انسخ رابط التطبيق:', url); }
+  }
+});
 
 export async function api(path, method = 'GET', body) {
   const r = await fetch('/api' + path, {
@@ -271,15 +423,24 @@ export function createPulsingDot(color = '#22c55e') {
 // ---------- login / register ----------
 export async function authScreen(role, onReady) {
   const root = $('#auth');
+  const wantInstall = new URLSearchParams(location.search).get('install') === '1';
   if (token) {
-    try { const me = await api('/me'); if (me.role === role) return onReady(me); } catch {}
+    try {
+      const me = await api('/me');
+      if (me.role === role) {
+        onReady(me);
+        if (wantInstall) setTimeout(() => promptInstallApp(role), 350);
+        return;
+      }
+    } catch {}
     setToken(null);
   }
   const zones = [];
   root.classList.remove('hide');
   const canReg = false; // الحسابات تُنشأ من الإدارة فقط
-  const roleLabel = { admin: 'لوحة الإدارة', merchant: 'بوابة المنشأة', captain: 'تطبيق الكابتن' }[role] || '';
-  root.innerHTML = `<div class="card hero">
+  const roleLabel = { admin: 'تطبيق الإدارة', merchant: 'تطبيق المنشأة', captain: 'تطبيق الكابتن' }[role] || '';
+  root.innerHTML = `${renderInstallBanner(role)}
+    <div class="card hero">
     <img src="/logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
     <div class="brand-title"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div>
     <div class="brand-sub">DELIVERY • توصيل${roleLabel ? ` — ${roleLabel}` : ''}</div>
@@ -298,6 +459,7 @@ export async function authScreen(role, onReady) {
     <label>حدّد موقع المنشأة على الخريطة (اضغط)</label><div id="regmap" class="map"></div>` : ''}
     <button class="big">إرسال الطلب</button></form>
     <p class="mut">سيتم تفعيل حسابك بعد موافقة الإدارة.</p></div>` : ''}`;
+  if (wantInstall) setTimeout(() => promptInstallApp(role), 350);
   $('#lf').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -306,6 +468,7 @@ export async function authScreen(role, onReady) {
       if (r.user.role !== role) {
         if (['admin', 'merchant', 'captain'].includes(r.user.role)) {
           setToken(r.token);
+          localStorage.setItem('panther_token_' + r.user.role, r.token);
           location.href = '/' + r.user.role;
           return;
         }
@@ -332,7 +495,10 @@ export async function authScreen(role, onReady) {
 
 export function header(title, user, onLogout) {
   const h = document.createElement('header');
-  h.innerHTML = `<h1><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><span dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></span> <span style="font-size:14px;color:var(--gold)">— ${esc(title)}</span></h1><span>${esc(user.business_name || user.name)}</span><button class="sec sm" id="lo">خروج</button>`;
+  const installBtn = !isStandalone()
+    ? `<button type="button" class="ok sm" data-install-app="${esc(ROLE_KEY)}">📲 تثبيت التطبيق</button>`
+    : '';
+  h.innerHTML = `<h1><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><span dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></span> <span style="font-size:14px;color:var(--gold)">— ${esc(title)}</span></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span>${esc(user.business_name || user.name)}</span>${installBtn}<button class="sec sm" id="lo">خروج</button></div>`;
   document.body.prepend(h);
   $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
 }

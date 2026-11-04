@@ -1,12 +1,72 @@
 <!doctype html>
-<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PANTHER DELIVERY — توصيل</title><link rel="icon" href="/logo.jpg"><link rel="stylesheet" href="/app.css?v=8"></head>
-<body><main class="auth"><div class="card hero">
-  <img src="/logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
-  <div class="brand-title"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div>
-  <div class="brand-sub">DELIVERY • توصيل</div>
-  <p class="mut">اطلب كابتن توصيل بضغطة زر — تتبع لحظي وسرعة في التوصيل</p>
-  <a href="/merchant"><button class="big">🏪 بوابة المنشأة</button></a>
-  <a href="/captain"><button class="big sec">🛵 تطبيق الكابتن</button></a>
-  <a href="/admin"><button class="big ghost">⚙️ لوحة الإدارة</button></a>
-</div></main></body></html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f59e0b">
+<title>PANTHER DELIVERY — تحميل التطبيقات</title>
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/app.css?v=9">
+<script type="module" src="/download.js?v=9"></script>
+</head>
+<body>
+<main style="max-width:960px;margin:24px auto;padding:0 14px 48px">
+  <div class="card hero" style="padding:28px 18px;margin-bottom:20px">
+    <img src="/logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
+    <div class="brand-title"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div>
+    <div class="brand-sub">DELIVERY • مركز تحميل تطبيقات الهاتف</div>
+    <p class="mut" style="max-width:520px;margin:8px auto 0">
+      حمّل وثبّت تطبيقات <b>PANTHER</b> مباشرة على هاتفك (أندرويد وآيفون) بضغطة زر وبشاشة كاملة وتحديثات لحظية
+    </p>
+  </div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:16px">
+    <div class="card" style="text-align:center;display:flex;flex-direction:column;justify-content:space-between">
+      <div>
+        <img src="/icon-192.png" alt="PANTHER منشأة" style="width:76px;height:76px;border-radius:18px;border:1.5px solid rgba(251,191,36,.45);box-shadow:0 6px 20px rgba(234,88,12,.3)">
+        <h3 style="margin:12px 0 4px">🏪 تطبيق المنشأة</h3>
+        <div class="badge b-searching" style="margin-bottom:8px">PANTHER Merchant</div>
+        <p class="mut">لطلب كابتن توصيل بخانة عنوان واحدة فقط وتتبع الكابتن مباشرة على الخريطة</p>
+      </div>
+      <div>
+        <a href="/merchant?install=1" style="text-decoration:none"><button type="button" class="big">📲 تحميل تطبيق المنشأة للهاتف</button></a>
+        <div class="row" style="margin-top:8px">
+          <a href="/merchant" style="text-decoration:none"><button type="button" class="sec" style="width:100%">🌐 فتح التطبيق</button></a>
+          <button type="button" class="ghost" data-copy="/merchant?install=1">🔗 نسخ الرابط</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="text-align:center;display:flex;flex-direction:column;justify-content:space-between">
+      <div>
+        <img src="/icon-192.png" alt="PANTHER كابتن" style="width:76px;height:76px;border-radius:18px;border:1.5px solid rgba(251,191,36,.45);box-shadow:0 6px 20px rgba(234,88,12,.3)">
+        <h3 style="margin:12px 0 4px">🛵 تطبيق الكابتن</h3>
+        <div class="badge b-accepted" style="margin-bottom:8px">PANTHER Captain</div>
+        <p class="mut">لاستلام طلبات التوصيل بصوت التنبيه والملاحة الحية عبر خرائط قوقل</p>
+      </div>
+      <div>
+        <a href="/captain?install=1" style="text-decoration:none"><button type="button" class="big">📲 تحميل تطبيق الكابتن للهاتف</button></a>
+        <div class="row" style="margin-top:8px">
+          <a href="/captain" style="text-decoration:none"><button type="button" class="sec" style="width:100%">🌐 فتح التطبيق</button></a>
+          <button type="button" class="ghost" data-copy="/captain?install=1">🔗 نسخ الرابط</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="text-align:center;display:flex;flex-direction:column;justify-content:space-between">
+      <div>
+        <img src="/icon-192.png" alt="PANTHER إدارة" style="width:76px;height:76px;border-radius:18px;border:1.5px solid rgba(251,191,36,.45);box-shadow:0 6px 20px rgba(234,88,12,.3)">
+        <h3 style="margin:12px 0 4px">⚙️ تطبيق الإدارة</h3>
+        <div class="badge b-active" style="margin-bottom:8px">PANTHER Admin</div>
+        <p class="mut">لوحة التحكم وغرفة العمليات وتوجيه الكباتن والتنبيهات الصوتية المباشرة</p>
+      </div>
+      <div>
+        <a href="/admin?install=1" style="text-decoration:none"><button type="button" class="big">📲 تحميل تطبيق الإدارة للهاتف</button></a>
+        <div class="row" style="margin-top:8px">
+          <a href="/admin" style="text-decoration:none"><button type="button" class="sec" style="width:100%">🌐 فتح التطبيق</button></a>
+          <button type="button" class="ghost" data-copy="/admin?install=1">🔗 نسخ الرابط</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+</body></html>
