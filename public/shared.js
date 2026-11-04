@@ -228,11 +228,11 @@ export async function makeRoute(map, from, to) {
       const data = await res.json();
       if (data.code === 'Ok' && data.routes?.length) {
         const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
-        return L.polyline(coords, { color: '#2563eb', weight: 5, opacity: 0.88 }).addTo(map);
+        return L.polyline(coords, { color: '#f59e0b', weight: 5, opacity: 0.92 }).addTo(map);
       }
     } catch {}
   }
-  return L.polyline([from, to], { color: '#2563eb', weight: 4, opacity: 0.75, dashArray: '10 8' }).addTo(map);
+  return L.polyline([from, to], { color: '#f59e0b', weight: 4, opacity: 0.8, dashArray: '10 8' }).addTo(map);
 }
 
 export function animateMarker(marker, newLatLng, duration = 1000) {
@@ -278,10 +278,15 @@ export async function authScreen(role, onReady) {
   const zones = [];
   root.classList.remove('hide');
   const canReg = false; // الحسابات تُنشأ من الإدارة فقط
-  root.innerHTML = `<div class="card hero"><div class="logo">🛵</div><h2>مشوار</h2><p class="mut">سجّل الدخول للمتابعة. الحسابات تُنشأ من الإدارة.</p>
-    <form id="lf"><label>رقم الهاتف</label><input name="phone" inputmode="tel" autocomplete="username" required>
+  const roleLabel = { admin: 'لوحة الإدارة', merchant: 'بوابة المنشأة', captain: 'تطبيق الكابتن' }[role] || '';
+  root.innerHTML = `<div class="card hero">
+    <img src="/logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
+    <div class="brand-title"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div>
+    <div class="brand-sub">DELIVERY • توصيل${roleLabel ? ` — ${roleLabel}` : ''}</div>
+    <p class="mut">سجّل الدخول للمتابعة. الحسابات تُنشأ عن طريق الإدارة.</p>
+    <form id="lf" style="text-align:right"><label>رقم الهاتف</label><input name="phone" inputmode="tel" autocomplete="username" required>
     <label>كلمة المرور</label><input name="password" type="password" autocomplete="current-password" required>
-    <button class="big">دخول</button></form>
+    <button class="big">تسجيل الدخول</button></form>
     ${canReg ? '<p class="mut" style="text-align:center"><a href="#" id="toReg">حساب جديد</a></p>' : ''}</div>
     ${canReg ? `<div class="card hide" id="regc"><h2>حساب جديد</h2><form id="rf">
     <label>الاسم</label><input name="name" required minlength="2" maxlength="60">
@@ -327,7 +332,7 @@ export async function authScreen(role, onReady) {
 
 export function header(title, user, onLogout) {
   const h = document.createElement('header');
-  h.innerHTML = `<h1>🛵 مشوار — ${esc(title)}</h1><span>${esc(user.business_name || user.name)}</span><button class="sec" id="lo">خروج</button>`;
+  h.innerHTML = `<h1><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><span dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></span> <span style="font-size:14px;color:var(--gold)">— ${esc(title)}</span></h1><span>${esc(user.business_name || user.name)}</span><button class="sec sm" id="lo">خروج</button>`;
   document.body.prepend(h);
   $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
 }

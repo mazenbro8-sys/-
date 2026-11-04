@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo } from './shared.js?v=6';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo } from './shared.js?v=8';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -32,7 +32,7 @@ authScreen('admin', (user) => {
     flags: '⚠️ التنبيهات الأمنية',
     settings: '⚙️ المناطق والإعدادات',
   };
-  app.innerHTML = `<aside class="sb"><div class="logo"><i>🛵</i>مشوار</div>
+  app.innerHTML = `<aside class="sb"><div class="logo"><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><div style="line-height:1.1"><div dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--gold);letter-spacing:1.2px;display:block;font-weight:700">DELIVERY • توصيل</small></div></div>
     <nav class="nav tabs">${Object.entries(TABS).map(([k, v]) => `<button data-t="${k}">${v}</button>`).join('')}</nav>
     <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button id="lo2">خروج</button></div></aside>
     <section class="main">

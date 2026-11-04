@@ -55,6 +55,6 @@ const server = http.createServer(app);
 attachWs(server);
 startDispatcher();
 server.listen(config.port, () => {
-  console.log(`مشوار يعمل على http://localhost:${config.port}`);
+  console.log(`PANTHER يعمل على http://localhost:${config.port}`);
   console.log('  المنشأة: /merchant   الكابتن: /captain   الإدارة: /admin');
 });
