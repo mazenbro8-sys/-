@@ -101,19 +101,27 @@ authScreen('captain', (user) => {
   }
 
   const NEXT = { accepted: ['picked_up', 'استلمت الطلب من المنشأة'], picked_up: ['arrived', 'وصلت عند الزبون'], arrived: ['delivered', 'تم التسليم'] };
+  let selectedActiveId = null;
   function renderActive() {
-    const o = st.active, box = $('#active'), idleCard = $('#idleMapCard');
-    if (!o) {
-      box.innerHTML = ''; map = null;
+    const allAct = st.activeOrders?.length ? st.activeOrders : (st.active ? [st.active] : []);
+    const box = $('#active'), idleCard = $('#idleMapCard');
+    if (!allAct.length) {
+      box.innerHTML = ''; map = null; selectedActiveId = null;
       idleCard.classList.remove('hide');
       setTimeout(() => idleMap.invalidateSize(), 60);
       return;
     }
+    const o = allAct.find((x) => x.id === selectedActiveId) || allAct[0];
+    selectedActiveId = o.id;
+    st.active = o;
     idleCard.classList.add('hide');
     const toMerchant = o.status === 'accepted';
     const dest = toMerchant ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
     const n = NEXT[o.status];
-    box.innerHTML = `<div class="card"><h3>طلب نشط — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
+    const multiTabs = allAct.length > 1
+      ? `<div style="margin-bottom:10px;padding:8px;background:rgba(255,255,255,.04);border-radius:10px"><div class="mut" style="margin-bottom:6px">📦 الطلبات النشطة المسندة إليك (${allAct.length}):</div><div style="display:flex;gap:6px;flex-wrap:wrap">${allAct.map((x) => `<button type="button" class="${x.id === o.id ? 'ok' : 'sec'} sm" data-act-id="${x.id}"><span dir="ltr">${serialNo(x)}</span> — ${esc((x.customer_address || '').slice(0, 18))}</button>`).join('')}</div></div>`
+      : '';
+    box.innerHTML = `<div class="card">${multiTabs}<h3>طلب نشط — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
       <p><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">📞 اتصال</a>` : ''}</p>
       <p style="font-size:16px;background:rgba(34,197,94,.12);padding:10px 12px;border-radius:10px;border:1px solid rgba(34,197,94,.35)"><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
       ${o.customer_name && o.customer_name !== '—' ? `<p><b>الزبون:</b> ${esc(o.customer_name)}${o.customer_phone ? ` — <a href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a>` : ''}</p>` : ''}
@@ -123,6 +131,9 @@ authScreen('captain', (user) => {
       <div id="amap" class="map" style="height:320px"></div>
       <button type="button" class="big ok" id="nx">${n[1]}</button>
       ${o.status !== 'accepted' ? '<button type="button" class="big bad" id="fl">الزبون لا يرد / العنوان خطأ</button>' : ''}</div>`;
+    box.querySelectorAll('[data-act-id]').forEach((btn) => {
+      btn.onclick = () => { selectedActiveId = Number(btn.dataset.actId); renderActive(); };
+    });
     map = makeMap('amap', dest.lat != null ? [dest.lat, dest.lng] : undefined, 14);
     mk.forEach((m) => m.remove()); mk = [];
     if (routeLayer) { routeLayer.remove(); routeLayer = null; }
@@ -216,7 +227,10 @@ authScreen('captain', (user) => {
   };
 
   connectWs((m) => {
-    if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') refresh();
+    if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {
+      if (m.type === 'order') testSound();
+      refresh();
+    }
   });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {

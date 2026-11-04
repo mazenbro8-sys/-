@@ -39,15 +39,43 @@ export function viewOrder(o, role) {
   } else if (role !== 'captain' && cap) {
     v.captain = { id: cap.id, name: cap.name, phone: cap.phone };
   }
-  if (role === 'admin' && cap) v.captain_name = cap.name;
+  if (role === 'admin') {
+    v.captain_id = o.captain_id;
+    v.offered_captain_id = o.offered_captain_id;
+    if (cap) v.captain_name = cap.name;
+    if (o.offered_captain_id) {
+      const offCap = db.prepare('SELECT id,name,phone FROM users WHERE id=?').get(o.offered_captain_id);
+      if (offCap) v.offered_captain = offCap;
+    }
+  }
   return v;
+}
+
+export function computeShortage() {
+  const unassigned = db.prepare("SELECT * FROM orders WHERE status IN ('searching','offered') ORDER BY id ASC").all().map((o) => viewOrder(o, 'admin'));
+  const searchingCount = unassigned.filter((o) => o.status === 'searching').length;
+  const freeOnlineCaptains = db.prepare(`
+    SELECT COUNT(*) c FROM users u
+    WHERE u.role='captain' AND u.status='active' AND u.online=1
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
+  `).get().c;
+  const onlineCaptains = db.prepare("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1").get().c;
+  const alert = searchingCount > 0 || unassigned.length > freeOnlineCaptains;
+  return {
+    alert,
+    searchingCount,
+    unassignedCount: unassigned.length,
+    freeOnlineCaptains,
+    onlineCaptains,
+    orders: unassigned,
+  };
 }
 
 export function notifyOrder(orderId) {
   const o = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
   if (!o) return;
   sendTo(o.merchant_id, { type: 'order', order: viewOrder(o, 'merchant') });
-  sendToAdmins({ type: 'order', order: viewOrder(o, 'admin') });
+  sendToAdmins({ type: 'order', order: viewOrder(o, 'admin'), shortage: computeShortage() });
   if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: viewOrder(o, 'captain') });
 }
 

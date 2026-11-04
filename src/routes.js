@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { db, tx, addEvent, audit, commission, setSetting } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins } from './realtime.js';
-import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm } from './dispatch.js';
+import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage } from './dispatch.js';
 
 export const api = express.Router();
 
@@ -237,14 +237,16 @@ const C = express.Router();
 api.use('/captain', auth('captain'), C);
 const lastPing = new Map();
 
-const activeOrder = (cid) => db.prepare("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') LIMIT 1").get(cid);
+const activeOrder = (cid) => db.prepare("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id ASC LIMIT 1").get(cid);
+const activeOrders = (cid) => db.prepare("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id ASC").all(cid);
 const pendingOffer = (cid) => db.prepare("SELECT * FROM orders WHERE offered_captain_id=? AND status='offered' LIMIT 1").get(cid);
 
 C.get('/state', wrap((req, res) => {
-  const a = activeOrder(req.user.id), off = pendingOffer(req.user.id);
+  const allAct = activeOrders(req.user.id), a = allAct[0] || null, off = pendingOffer(req.user.id);
   res.json({
     online: !!req.user.online,
     active: a ? viewOrder(a, 'captain') : null,
+    activeOrders: allAct.map((x) => viewOrder(x, 'captain')),
     offer: off ? viewOrder(off, 'captain') : null,
     commission: commission(),
     intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
@@ -259,7 +261,7 @@ C.post('/online', wrap((req, res) => {
     if (off) releaseOffer(off.id, 'rejected');
   }
   db.prepare('UPDATE users SET online=? WHERE id=?').run(on ? 1 : 0, req.user.id);
-  sendToAdmins({ type: 'captain', id: req.user.id, online: on });
+  sendToAdmins({ type: 'captain', id: req.user.id, online: on, shortage: computeShortage() });
   res.json({ online: on });
 }));
 
@@ -373,6 +375,7 @@ A.get('/stats', wrap((_req, res) => {
     deliveredToday: one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
     flags: one('SELECT COUNT(*) n FROM flags WHERE resolved=0'),
     commission: commission(),
+    shortage: computeShortage(),
   });
 }));
 
@@ -381,11 +384,18 @@ A.get('/live', wrap((_req, res) => {
   const recentOrders = db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 100').all().map((o) => viewOrder(o, 'admin'));
   const captains = db.prepare("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' ORDER BY online DESC, (status='active') DESC, id DESC").all()
     .map((c) => {
-      const act = activeOrder(c.id);
-      return { ...c, online: !!c.online, busy: !!act, active_order_id: act?.id ?? null };
+      const acts = activeOrders(c.id);
+      const act = acts[0] || null;
+      return {
+        ...c,
+        online: !!c.online,
+        busy: acts.length > 0,
+        active_order_id: act?.id ?? null,
+        active_orders: acts.map((x) => ({ id: x.id, serial_no: String(x.id).padStart(4, '0'), customer_address: x.customer_address, status: x.status })),
+      };
     });
   const merchants = db.prepare("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id DESC").all();
-  res.json({ orders, recentOrders, captains, merchants });
+  res.json({ orders, recentOrders, captains, merchants, shortage: computeShortage() });
 }));
 
 A.post('/users', createAccount);
@@ -436,6 +446,83 @@ A.get('/orders', wrap((req, res) => {
     ? db.prepare('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 300').all(String(st))
     : db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 300').all();
   res.json(rows.map((o) => viewOrder(o, 'admin')));
+}));
+A.post('/orders', wrap((req, res) => {
+  const b = req.body ?? {};
+  let m = null;
+  if (b.merchant_id != null && b.merchant_id !== '') {
+    m = db.prepare("SELECT * FROM users WHERE id=? AND role='merchant'").get(int(b.merchant_id, 'المنشأة', 1, 2 ** 31));
+  } else {
+    m = db.prepare("SELECT * FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id ASC LIMIT 1").get();
+  }
+  if (!m) throw bad('يرجى إضافة منشأة أولاً');
+  const address = str(b.customer_address, 'عنوان التوصيل', 2, 250);
+  let cap = null;
+  if (b.captain_id != null && b.captain_id !== '') {
+    cap = db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(int(b.captain_id, 'الكابتن', 1, 2 ** 31));
+    if (!cap) throw bad('الكابتن غير موجود');
+  }
+  const now = Date.now();
+  const orderId = tx(() => {
+    const st = cap ? 'accepted' : 'searching';
+    const r = db.prepare('INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,status,captain_id,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?)')
+      .run(m.id, m.zone_id || 1, '—', '', address, st, cap ? cap.id : null, cap ? now : null, now);
+    addEvent(r.lastInsertRowid, 'created', req.user.id);
+    if (cap) {
+      db.prepare("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?").run(now, cap.id);
+      addEvent(r.lastInsertRowid, 'admin_assigned', req.user.id, { captain_id: cap.id });
+    }
+    return Number(r.lastInsertRowid);
+  });
+  audit(req.user.id, 'admin_create_order', { id: orderId, merchant_id: m.id, captain_id: cap?.id ?? null });
+  if (!cap) dispatchOrder(orderId);
+  notifyOrder(orderId);
+  res.status(201).json(viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(orderId), 'admin'));
+}));
+A.post('/orders/:id/assign-captain', wrap((req, res) => {
+  const id = oid(req);
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(id);
+  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  if (['delivered', 'cancelled', 'failed'].includes(o.status)) throw bad('لا يمكن تعيين كابتن لطلب مغلق');
+  const capId = int(req.body?.captain_id, 'الكابتن', 1, 2 ** 31);
+  const cap = db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(capId);
+  if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  const oldCapId = o.captain_id;
+  const oldOfferedId = o.offered_captain_id;
+  const now = Date.now();
+  tx(() => {
+    const newStatus = ['picked_up', 'arrived'].includes(o.status) ? o.status : 'accepted';
+    db.prepare("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'").run(id);
+    db.prepare('UPDATE orders SET status=?, captain_id=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, closed_at=NULL, close_reason=NULL WHERE id=?')
+      .run(newStatus, cap.id, now, id);
+    db.prepare("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?").run(now, cap.id);
+    addEvent(id, 'admin_assigned', req.user.id, { captain_id: cap.id, from_captain: oldCapId });
+  });
+  audit(req.user.id, 'assign_captain', { order_id: id, captain_id: cap.id });
+  if (oldOfferedId && oldOfferedId !== cap.id) sendTo(oldOfferedId, { type: 'offer_end', order_id: id, reason: 'admin_reassigned' });
+  if (oldCapId && oldCapId !== cap.id) sendTo(oldCapId, { type: 'order', order: viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(id), 'captain') });
+  notifyOrder(id);
+  res.json(viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(id), 'admin'));
+}));
+A.post('/orders/:id/unassign-captain', wrap((req, res) => {
+  const id = oid(req);
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(id);
+  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  if (['delivered', 'cancelled', 'failed'].includes(o.status)) throw bad('الطلب مغلق بالفعل');
+  const oldCapId = o.captain_id;
+  const oldOfferedId = o.offered_captain_id;
+  if (!oldCapId && !oldOfferedId) throw bad('الطلب ليس مسنداً لأي كابتن حالياً');
+  tx(() => {
+    db.prepare("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'").run(id);
+    db.prepare("UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?")
+      .run(Date.now(), id);
+    addEvent(id, 'admin_unassigned', req.user.id, { from_captain: oldCapId || oldOfferedId });
+  });
+  audit(req.user.id, 'unassign_captain', { order_id: id, from_captain: oldCapId || oldOfferedId });
+  if (oldOfferedId) sendTo(oldOfferedId, { type: 'offer_end', order_id: id, reason: 'admin_unassigned' });
+  if (oldCapId) sendTo(oldCapId, { type: 'order', order: viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(id), 'captain') });
+  notifyOrder(id);
+  res.json(viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(id), 'admin'));
 }));
 A.get('/orders/:id', wrap((req, res) => {
   const o = db.prepare('SELECT * FROM orders WHERE id=?').get(oid(req));

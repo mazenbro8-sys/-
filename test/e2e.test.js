@@ -77,6 +77,24 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   const day = (await call('/admin/settlements', 'GET', null, admin)).data;
   assert.equal(day.rows[0].commission_total, 2000);
   assert.equal((await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: day.rows[0].captain_id }, admin)).status, 200);
+
+  // Admin: add order for a captain, unassign captain, and reassign captain
+  const liveData = (await call('/admin/live', 'GET', null, admin)).data;
+  const capId = liveData.captains[0].id;
+  const admOrd = await call('/admin/orders', 'POST', { customer_address: 'أبو رمانة - الجاحظ', captain_id: capId }, admin);
+  assert.equal(admOrd.status, 201);
+  assert.equal(admOrd.data.status, 'accepted');
+  assert.equal(admOrd.data.captain_id, capId);
+
+  const unass = await call(`/admin/orders/${admOrd.data.id}/unassign-captain`, 'POST', null, admin);
+  assert.equal(unass.status, 200);
+  assert.equal(unass.data.status, 'searching');
+  assert.equal(unass.data.captain_id, null);
+
+  const reass = await call(`/admin/orders/${admOrd.data.id}/assign-captain`, 'POST', { captain_id: capId }, admin);
+  assert.equal(reass.status, 200);
+  assert.equal(reass.data.status, 'accepted');
+  assert.equal(reass.data.captain_id, capId);
 });
 
 test('login rate / lockout and bad input', async () => {
