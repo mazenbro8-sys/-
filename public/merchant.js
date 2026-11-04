@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints } from './shared.js?v=3';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints } from './shared.js?v=4';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
@@ -12,19 +12,13 @@ authScreen('merchant', (user) => {
   <section id="orderSection" class="tab-section">
     <div class="hero" id="hero">
       <button type="button" class="hero-btn" id="heroBtn">اطلب كابتن الآن</button>
-      <div class="hero-sub">اضغط لطلب كابتن توصيل في منطقتك</div>
+      <div class="hero-sub">اضغط لطلب كابتن توصيل وتحديد عنوان التوصيل</div>
     </div>
     <div class="card hide" id="formCard">
-      <h3>طلب كابتن توصيل</h3>
+      <h3>🛵 طلب كابتن توصيل</h3>
       <form id="of">
-        <label>اسم الزبون</label><input name="customer_name" required maxlength="60">
-        <label>رقم هاتف الزبون</label><input name="customer_phone" inputmode="tel" required>
-        <label>عنوان الزبون</label><input name="customer_address" required maxlength="250">
-        <div class="row"><div><label>ثمن المنتج</label><input name="product_amount" type="number" min="0" value="0"></div>
-        <div><label>أجرة التوصيل</label><input name="delivery_fee" type="number" min="0" value="0"></div></div>
-        <label>ملاحظات (اختياري)</label><input name="notes" maxlength="300">
-        <label>موقع الزبون على الخريطة (اختياري، يفعّل المسار ووقت الوصول المتوقع)</label>
-        <div id="cmap" class="map" style="height:240px"></div>
+        <label>عنوان التوصيل (مكان التوصيل)</label>
+        <input name="customer_address" id="addrInput" placeholder="اكتب عنوان التوصيل هنا..." required minlength="2" maxlength="250" autocomplete="off">
         <button class="big" id="go">🛵 اطلب كابتن</button>
       </form>
     </div>
@@ -32,7 +26,7 @@ authScreen('merchant', (user) => {
   <section id="liveSection" class="tab-section hide">
     <div class="card">
       <h3>الطلبات الحية الجارية</h3>
-      <div class="tablewrap"><table><thead><tr><th>#</th><th>الزبون</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
+      <div class="tablewrap"><table><thead><tr><th>#</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
     </div>
     <div class="card">
       <h3>🗺️ التتبع المباشر على الخريطة</h3>
@@ -46,7 +40,7 @@ authScreen('merchant', (user) => {
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>#</th><th>الزبون</th><th>الحالة</th><th>الكابتن</th><th>وقت الطلب</th><th>وقت الإغلاق</th><th></th></tr>
+            <tr><th>#</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>وقت الطلب</th><th>وقت الإغلاق</th><th></th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -56,14 +50,10 @@ authScreen('merchant', (user) => {
   `;
 
   const orders = new Map();
-  let cpos = [null, null], selected = null, capMarker = null, destMarkers = [];
+  let selected = null, capMarker = null, destMarkers = [];
   let routeLayer = null, lastRouteTime = 0;
 
   const homeCenter = user.lat != null && user.lng != null ? [user.lat, user.lng] : undefined;
-  const cm = makeMap('cmap', homeCenter, 14);
-  if (homeCenter) L.marker(homeCenter, { icon: emoji('🏪') }).addTo(cm).bindTooltip(`🏪 ${user.business_name || user.name}`);
-  pickLocation(cm, (a, b) => { cpos = [a, b]; });
-
   const tm = makeMap('tmap', homeCenter, 14);
   if (homeCenter) L.marker(homeCenter, { icon: emoji('🏪') }).addTo(tm).bindTooltip(`🏪 ${user.business_name || user.name}`);
 
@@ -78,7 +68,6 @@ authScreen('merchant', (user) => {
         if (selected && orders.has(selected)) track(orders.get(selected));
       }, 60);
     }
-    if (tab === 'order') setTimeout(() => cm.invalidateSize(), 60);
   }
 
   $('.tabs').onclick = (e) => {
@@ -87,22 +76,26 @@ authScreen('merchant', (user) => {
   };
 
   $('#heroBtn').onclick = () => {
-    $('#formCard').classList.toggle('hide');
-    setTimeout(() => { cm.invalidateSize(); $('#formCard').scrollIntoView({ behavior: 'smooth' }); }, 60);
+    const fc = $('#formCard');
+    const inp = $('#addrInput');
+    if (!fc.classList.contains('hide') && inp.value.trim().length >= 2) {
+      $('#of').requestSubmit();
+      return;
+    }
+    fc.classList.remove('hide');
+    setTimeout(() => { inp.focus(); fc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
   };
 
   $('#of').onsubmit = async (e) => {
     e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target));
-    f.product_amount = Number(f.product_amount || 0);
-    f.delivery_fee = Number(f.delivery_fee || 0);
-    if (cpos[0] != null) { f.customer_lat = cpos[0]; f.customer_lng = cpos[1]; }
+    const customer_address = $('#addrInput').value.trim();
+    if (!customer_address) return;
     const btn = $('#go'); btn.disabled = true;
-    const o = await act(() => api('/merchant/orders', 'POST', f), 'تم إرسال الطلب، جاري البحث عن كابتن');
+    const o = await act(() => api('/merchant/orders', 'POST', { customer_address }), 'تم إرسال الطلب، جاري البحث عن كابتن');
     btn.disabled = false;
     if (o) {
       e.target.reset();
-      cpos = [null, null];
+      $('#formCard').classList.add('hide');
       upsert(o);
       switchTab('live');
       select(o.id);
@@ -122,7 +115,7 @@ authScreen('merchant', (user) => {
     $('#liveRows').innerHTML = liveList.map((o) => `
       <tr>
         <td><b>#${o.id}</b></td>
-        <td>${esc(o.customer_name)}<div class="mut" dir="ltr">${esc(o.customer_phone || '')}</div></td>
+        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
         <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
         <td>${capLink(o)}</td>
         <td>
@@ -134,7 +127,7 @@ authScreen('merchant', (user) => {
     $('#rows').innerHTML = list.map((o) => `
       <tr>
         <td><b>#${o.id}</b></td>
-        <td>${esc(o.customer_name)}<div class="mut" dir="ltr">${esc(o.customer_phone)}</div></td>
+        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
         <td>${badge(o.status)}</td>
         <td>${capLink(o)}</td>
         <td>${time(o.created_at)}</td>
@@ -169,10 +162,10 @@ authScreen('merchant', (user) => {
       pts.push([o.merchant.lat, o.merchant.lng]);
     }
     if (o.customer_lat != null) {
-      destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm).bindTooltip(`📍 الزبون: ${o.customer_name}`));
+      destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm).bindTooltip(`📍 ${o.customer_address || ''}`));
       pts.push([o.customer_lat, o.customer_lng]);
     }
-    $('#trkinfo').innerHTML = `طلب <b>#${o.id}</b> (${esc(o.customer_name)}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
+    $('#trkinfo').innerHTML = `طلب <b>#${o.id}</b> (📍 ${esc(o.customer_address || '—')}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
     if (o.captain?.lat != null) {
       moveCaptain(o.captain.lat, o.captain.lng, o.captain.name, false);
       pts.push([o.captain.lat, o.captain.lng]);

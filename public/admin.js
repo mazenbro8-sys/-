@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js?v=3';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js?v=4';
 
 authScreen('admin', (user) => {
   header('الإدارة', user);
@@ -113,13 +113,12 @@ authScreen('admin', (user) => {
           </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>#</th><th>المنشأة</th><th>الزبون</th><th>المبلغ</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead>
               <tbody>
                 ${shownOrders.map((o) => `<tr>
                   <td><b>#${o.id}</b></td>
                   <td><b>${esc(o.merchant?.name || '—')}</b></td>
-                  <td>${esc(o.customer_name || '—')}<div class="mut" dir="ltr">${esc(o.customer_phone || '')}</div></td>
-                  <td>${money(o.product_amount)}<div class="mut">توصيل ${money(o.delivery_fee)}</div></td>
+                  <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
                   <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
                   <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : (esc(o.captain_name || '—'))}</td>
                   <td>${time(o.created_at)}</td>
@@ -127,7 +126,7 @@ authScreen('admin', (user) => {
                     <button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button>
                     ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? ` <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button>` : ''}
                   </td>
-                </tr>`).join('') || '<tr><td colspan="8" class="mut">لا توجد طلبات مسجلة بعد</td></tr>'}
+                </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مسجلة بعد</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -262,7 +261,7 @@ authScreen('admin', (user) => {
           <h3>📦 الطلبات الحية الجارية</h3>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>#</th><th>المنشأة</th><th>الزبون</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead>
               <tbody id="lrows"></tbody>
             </table>
           </div>
@@ -388,8 +387,8 @@ authScreen('admin', (user) => {
 
     async orders() {
       const rows = await api('/admin/orders');
-      view().innerHTML = `<div class="card"><div class="tablewrap"><table><thead><tr><th>#</th><th>المنشأة</th><th>الزبون</th><th>المبلغ</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead><tbody>
-      ${rows.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.merchant.name)}</b></td><td>${esc(o.customer_name)}<div class="mut" dir="ltr">${esc(o.customer_phone || '')}</div></td><td>${money(o.product_amount)}<div class="mut">توصيل ${money(o.delivery_fee)}</div></td><td>${badge(o.status)}</td><td>${o.captain ? `<a href="#" data-cap="${o.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : '—'}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button></td></tr>`).join('') || '<tr><td colspan="8" class="mut">لا توجد طلبات</td></tr>'}</tbody></table></div></div><div id="detail"></div>`;
+      view().innerHTML = `<div class="card"><div class="tablewrap"><table><thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead><tbody>
+      ${rows.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${o.captain ? `<a href="#" data-cap="${o.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : '—'}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button></td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات</td></tr>'}</tbody></table></div></div><div id="detail"></div>`;
       view().onclick = (e) => {
         const dEl = e.target.closest('[data-d]');
         if (dEl) detail(dEl.dataset.d);
@@ -444,8 +443,8 @@ authScreen('admin', (user) => {
     const o = await api(`/admin/orders/${id}`);
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
     detBox.innerHTML = `<div class="card"><h3>طلب #${o.id} ${badge(o.status)}</h3>
-        <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>الزبون:</b> ${esc(o.customer_name)} (<span dir="ltr">${esc(o.customer_phone)}</span>)<br>${esc(o.customer_address)}</p>
-        <p>ثمن المنتج: ${money(o.product_amount)} — التوصيل: ${money(o.delivery_fee)} — العمولة: ${money(o.commission)} — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}</p>
+        <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
+        <p>العمولة: ${money(o.commission)}${o.liability ? ` — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}` : ''}</p>
         ${hasMap ? '<div id="dmap" class="map" style="height:300px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
         <div class="row">${o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">تحميل الكابتن ثمن المنتج (تلف/تأخير)</button>` : ''}
@@ -505,7 +504,7 @@ authScreen('admin', (user) => {
     $('#lrows').innerHTML = orders.map((o) => `<tr>
       <td><b>#${o.id}</b></td>
       <td><b>${esc(o.merchant?.name || '—')}</b></td>
-      <td>${esc(o.customer_name || '—')}<div class="mut" dir="ltr">${esc(o.customer_phone || '')}</div></td>
+      <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
       <td>${badge(o.status)}${o.eta_minutes ? ` ~${o.eta_minutes}د` : ''}</td>
       <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : esc(o.captain_name || '—')}</td>
       <td><button type="button" class="ok sm" data-d="${o.id}">تفاصيل</button> <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button></td>

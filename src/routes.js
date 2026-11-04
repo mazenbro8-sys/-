@@ -179,9 +179,9 @@ M.post('/orders', orderLimiter, wrap((req, res) => {
   const m = req.user;
   const [clat, clng] = coord(b.customer_lat, b.customer_lng);
   const o = {
-    name: str(b.customer_name, 'اسم الزبون', 2, 60),
-    phone: phone(b.customer_phone),
-    address: str(b.customer_address, 'عنوان الزبون', 3, 250),
+    name: b.customer_name ? str(b.customer_name, 'اسم الزبون', 1, 60) : '—',
+    phone: b.customer_phone ? phone(b.customer_phone) : '',
+    address: str(b.customer_address, 'عنوان التوصيل', 2, 250),
     amount: int(b.product_amount ?? 0, 'ثمن المنتج', 0, 100_000_000),
     fee: int(b.delivery_fee ?? 0, 'أجرة التوصيل', 0, 10_000_000),
     notes: optStr(b.notes, 'ملاحظات', 300),

@@ -41,6 +41,12 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal((await call('/merchant/orders')).status, 401);
 
   for (const c of [c1, c2]) await call('/captain/online', 'POST', { online: true }, c);
+  // Single-field order creation (only customer_address required)
+  const simpleRes = await call('/merchant/orders', 'POST', { customer_address: 'المزة - شارع الجلاء' }, m);
+  assert.equal(simpleRes.status, 201);
+  assert.equal(simpleRes.data.customer_address, 'المزة - شارع الجلاء');
+  await call(`/merchant/orders/${simpleRes.data.id}/cancel`, 'POST', null, m);
+
   const ord = { customer_name: 'زبون', customer_phone: '0944444444', customer_address: 'شارع 1', product_amount: 50000, delivery_fee: 5000, customer_lat: 33.51, customer_lng: 36.26 };
   assert.equal((await call('/merchant/orders', 'POST', { ...ord, product_amount: -5 }, m)).status, 400);
   const o1 = (await call('/merchant/orders', 'POST', ord, m)).data;

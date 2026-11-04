@@ -1,4 +1,4 @@
-import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS } from './shared.js?v=3';
+import { $, esc, money, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS } from './shared.js?v=4';
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -114,8 +114,9 @@ authScreen('captain', (user) => {
     const n = NEXT[o.status];
     box.innerHTML = `<div class="card"><h3>طلب نشط #${o.id} ${badge(o.status)}</h3>
       <p><b>المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">📞 اتصال</a>` : ''}</p>
-      <p><b>الزبون:</b> ${esc(o.customer_name)} — <a href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a><br>${esc(o.customer_address)}</p>
-      <p>💵 ادفع للمنشأة ثمن المنتج: <b>${money(o.product_amount)}</b><br>💵 استلم من الزبون: <b>${money(o.product_amount + o.delivery_fee)}</b> (منتج + توصيل ${money(o.delivery_fee)})</p>
+      <p><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
+      ${o.customer_name && o.customer_name !== '—' ? `<p><b>الزبون:</b> ${esc(o.customer_name)}${o.customer_phone ? ` — <a href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a>` : ''}</p>` : ''}
+      ${(o.product_amount || o.delivery_fee) ? `<p>💵 ادفع للمنشأة ثمن المنتج: <b>${money(o.product_amount)}</b><br>💵 استلم من الزبون: <b>${money(o.product_amount + o.delivery_fee)}</b> (منتج + توصيل ${money(o.delivery_fee)})</p>` : ''}
       ${o.notes ? `<p class="mut">ملاحظات: ${esc(o.notes)}</p>` : ''}
       ${dest.lat != null ? `<a class="btn-nav sec" style="width:100%;margin-bottom:8px" href="https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}" target="_blank" rel="noopener noreferrer">🧭 افتح الملاحة في خرائط قوقل</a>` : ''}
       <div id="amap" class="map" style="height:320px"></div>
