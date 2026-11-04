@@ -162,9 +162,10 @@ tx(() => {
   if (!process.env.DB_FILE && !db.prepare("SELECT 1 FROM users WHERE role IN ('merchant','captain') LIMIT 1").get()) {
     const z1 = db.prepare('SELECT id FROM zones ORDER BY id LIMIT 1').get()?.id ?? 1;
     const now = Date.now();
+    const defaultHash = bcrypt.hashSync('asd123', 12);
     const ins = db.prepare('INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,last_lat,last_lng,last_loc_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    ins.run('merchant', '0796149466', 'تورينو', '$2a$12$aZZVZLyzXl/0nbUaM0CitumWC1RAQ38JoscbiVf/krPMadTIulN9W', z1, 'active', 'تورينو', 'دمشق', 33.5001785, 36.2913831, null, null, null, now);
-    ins.run('captain', '123123123', 'مازن', '$2a$12$7s5W8iuR77iHlwVn2LkDCe/N8y6.BIsYtR9m.mNVpxAjUx.fj.CS.', z1, 'active', null, null, null, null, 32.0034088, 35.9579298, now, now);
-    ins.run('captain', '0922000001', 'ياسر', '$2a$10$8Clut6iw67MbeozDy7.bauy9hTPiLDrp1A1yAvLgW77FoLLAuMuWC', z1, 'active', null, null, null, null, 32.0030816, 35.9584115, now, now);
+    ins.run('merchant', '0796149466', 'تورينو', defaultHash, z1, 'active', 'تورينو', 'دمشق', 33.5001785, 36.2913831, null, null, null, now);
+    ins.run('captain', '123123123', 'مازن', defaultHash, z1, 'active', null, null, null, null, 32.0034088, 35.9579298, now, now);
+    ins.run('captain', '0922000001', 'ياسر', defaultHash, z1, 'active', null, null, null, null, 32.0030816, 35.9584115, now, now);
   }
 });
