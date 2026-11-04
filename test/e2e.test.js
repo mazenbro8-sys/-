@@ -55,9 +55,10 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   const s1 = (await call('/captain/state', 'GET', null, c1)).data, s2 = (await call('/captain/state', 'GET', null, c2)).data;
   const [first, other] = s1.offer ? [c1, c2] : [c2, c1];
   assert.ok(s1.offer || s2.offer);
-  // customer details hidden from captain before accepting
+  // customer phone hidden from captain before accepting, but delivery address is visible
   const offer = (s1.offer || s2.offer);
   assert.equal(offer.customer_phone, undefined);
+  assert.equal(offer.customer_address, 'شارع 1');
   // other captain cannot accept it
   assert.equal((await call(`/captain/offers/${o1.id}/accept`, 'POST', null, other)).status, 409);
   // timeout → passes to the other captain (round-robin)

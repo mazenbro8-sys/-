@@ -19,6 +19,7 @@ export function viewOrder(o, role) {
   const v = {
     id: o.id, serial_no: String(o.id).padStart(4, '0'),
     status: o.status, zone_id: o.zone_id, created_at: o.created_at,
+    customer_address: o.customer_address, customer_lat: o.customer_lat, customer_lng: o.customer_lng,
     product_amount: o.product_amount, delivery_fee: o.delivery_fee, notes: o.notes,
     merchant: { name: m.business_name || m.name, address: m.address, lat: m.lat, lng: m.lng, phone: role === 'captain' && !o.captain_id ? undefined : m.phone },
     offer_expires_at: o.offer_expires_at, commission: o.commission, liability: o.liability,
@@ -26,7 +27,7 @@ export function viewOrder(o, role) {
   };
   const showCustomer = role !== 'captain' || (o.captain_id && ACTIVE.concat(['delivered', 'failed']).includes(o.status));
   if (showCustomer) {
-    Object.assign(v, { customer_name: o.customer_name, customer_phone: o.customer_phone, customer_address: o.customer_address, customer_lat: o.customer_lat, customer_lng: o.customer_lng });
+    Object.assign(v, { customer_name: o.customer_name, customer_phone: o.customer_phone });
   }
   if (role !== 'captain' && cap && ACTIVE.includes(o.status)) {
     const target = o.status === 'accepted' ? m : { lat: o.customer_lat, lng: o.customer_lng };

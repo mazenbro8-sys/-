@@ -72,7 +72,7 @@ authScreen('captain', (user) => {
     const s = await api('/captain/summary');
     $('#sum').textContent = `اليوم: ${s.delivered} طلب مسلّم — المستحق للمنصة: ${money(s.due)} (عمولة ${money(s.commission)}${s.liability ? ` + تعويضات ${money(s.liability)}` : ''})`;
     const hist = await api('/captain/history');
-    $('#hist').innerHTML = hist.slice(0, 15).map((o) => `<tr><td dir="ltr"><b>${serialNo(o)}</b></td><td>${esc(o.merchant.name)}</td><td>${badge(o.status)}</td><td>${time(o.closed_at)}</td></tr>`).join('') || '<tr><td class="mut">لا توجد طلبات مسلّمة بعد</td></tr>';
+    $('#hist').innerHTML = hist.slice(0, 15).map((o) => `<tr><td dir="ltr"><b>${serialNo(o)}</b></td><td><b>${esc(o.merchant.name)}</b><div class="mut">📍 ${esc(o.customer_address || '—')}</div></td><td>${badge(o.status)}</td><td>${time(o.closed_at)}</td></tr>`).join('') || '<tr><td class="mut">لا توجد طلبات مسلّمة بعد</td></tr>';
   }
 
   function renderAll() {
@@ -89,8 +89,9 @@ authScreen('captain', (user) => {
     if (!o) { box.innerHTML = ''; stopAlarm(); return; }
     startAlarm();
     box.innerHTML = `<div class="card offer"><h3>🔔 طلب جديد — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span></h3>
-      <p><b>من:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
-      <p><b>أجرة التوصيل:</b> ${money(o.delivery_fee)} &nbsp; <b>عمولة المنصة:</b> ${money(st.commission)}</p>
+      <p><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
+      <p style="font-size:16px;background:rgba(249,115,22,.15);padding:10px 12px;border-radius:10px;border:1px solid rgba(249,115,22,.4)"><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
+      <p><b>عمولة المنصة:</b> ${money(st.commission)}</p>
       <p>الوقت المتبقي: <b id="cd"></b> ث</p>
       <div class="row"><button type="button" class="ok" id="acc">قبول</button><button type="button" class="bad" id="rej">رفض</button></div></div>`;
     const tick = () => { const s = Math.max(0, Math.round((o.offer_expires_at - Date.now()) / 1000)); const e = $('#cd'); if (e) e.textContent = s; if (!s) { clearInterval(cd); setTimeout(refresh, 1500); } };
@@ -113,8 +114,8 @@ authScreen('captain', (user) => {
     const dest = toMerchant ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
     const n = NEXT[o.status];
     box.innerHTML = `<div class="card"><h3>طلب نشط — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
-      <p><b>المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">📞 اتصال</a>` : ''}</p>
-      <p><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
+      <p><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)} — ${esc(o.merchant.address)}${o.merchant.phone ? ` — <a href="tel:${esc(o.merchant.phone)}">📞 اتصال</a>` : ''}</p>
+      <p style="font-size:16px;background:rgba(34,197,94,.12);padding:10px 12px;border-radius:10px;border:1px solid rgba(34,197,94,.35)"><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
       ${o.customer_name && o.customer_name !== '—' ? `<p><b>الزبون:</b> ${esc(o.customer_name)}${o.customer_phone ? ` — <a href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a>` : ''}</p>` : ''}
       ${(o.product_amount || o.delivery_fee) ? `<p>💵 ادفع للمنشأة ثمن المنتج: <b>${money(o.product_amount)}</b><br>💵 استلم من الزبون: <b>${money(o.product_amount + o.delivery_fee)}</b> (منتج + توصيل ${money(o.delivery_fee)})</p>` : ''}
       ${o.notes ? `<p class="mut">ملاحظات: ${esc(o.notes)}</p>` : ''}
