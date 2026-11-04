@@ -1,9 +1,26 @@
 // Shared client helpers (no inline scripts: CSP-safe)
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-export const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const money = (n) => new Intl.NumberFormat('ar-SY').format(n || 0) + ' ل.س';
-export const time = (ms) => (ms ? new Date(ms).toLocaleString('ar-SY', { hour12: true }) : '—');
+export const enDigits = (v) => String(v ?? '')
+  .replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x0660)
+  .replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x06f0);
+export const esc = (v) => enDigits(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+export const serialNo = (o) => '#' + String(typeof o === 'object' ? (o?.serial_no || o?.id || 0) : (o || 0)).padStart(4, '0');
+export const money = (n) => enDigits(new Intl.NumberFormat('en-US').format(n || 0)) + ' ل.س';
+export const time = (ms) => (ms ? enDigits(new Date(ms).toLocaleString('ar-SY-u-nu-latn', { hour12: true })) : '—');
+
+// Automatically convert any Arabic/Persian digits typed into inputs/textareas into English digits (0-9)
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && typeof el.value === 'string') {
+    const conv = enDigits(el.value);
+    if (conv !== el.value) {
+      const pos = el.selectionStart;
+      el.value = conv;
+      try { if (pos != null) el.setSelectionRange(pos, pos); } catch {}
+    }
+  }
+}, true);
 
 export const STATUS = {
   searching: 'جاري البحث عن كابتن', offered: 'بانتظار قبول كابتن', accepted: 'الكابتن في الطريق للمنشأة',

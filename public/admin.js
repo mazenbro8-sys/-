@@ -1,4 +1,24 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot } from './shared.js?v=4';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo } from './shared.js?v=5';
+
+function matchOrder(o, rawQ, stFilter = '') {
+  if (stFilter && o.status !== stFilter) return false;
+  const q = enDigits(rawQ || '').trim().toLowerCase();
+  if (!q) return true;
+  const qNum = q.replace(/^#/, '');
+  const idStr = String(o.id);
+  const serStr = String(o.serial_no || o.id).padStart(4, '0');
+  if (qNum && (idStr.includes(qNum) || serStr.includes(qNum) || Number(qNum) === o.id)) return true;
+  const hay = [
+    o.merchant?.name,
+    o.customer_address,
+    o.captain?.name,
+    o.captain_name,
+    o.customer_name,
+    o.customer_phone,
+    STATUS[o.status],
+  ].filter(Boolean).join(' ').toLowerCase();
+  return enDigits(hay).includes(q);
+}
 
 authScreen('admin', (user) => {
   header('الإدارة', user);
@@ -19,8 +39,8 @@ authScreen('admin', (user) => {
   $('#lo2').onclick = () => $('#lo').click();
   const tick = () => {
     const d = new Date();
-    $('#clk').textContent = d.toLocaleTimeString('en-GB');
-    $('#dt').textContent = d.toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    $('#clk').textContent = enDigits(d.toLocaleTimeString('en-GB'));
+    $('#dt').textContent = enDigits(d.toLocaleDateString('ar-SY-u-nu-latn', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
   };
   tick(); setInterval(tick, 1000);
 
@@ -107,27 +127,17 @@ authScreen('admin', (user) => {
         </div>
 
         <div class="card">
-          <div class="row-head">
-            <h3>${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 الطلبات الحية (لا توجد طلبات نشطة حالياً — آخر الطلبات)'}</h3>
-            <button type="button" class="sec sm" data-go="orders">عرض كل الطلبات</button>
+          <div class="row-head" style="flex-wrap:wrap;gap:10px">
+            <h3>${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 الطلبات (ابحث بالرقم التسلسلي أو المنشأة)'}</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end;min-width:240px">
+              <input id="dashOrderSearch" placeholder="🔍 بحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:340px;margin:0">
+              <button type="button" class="sec sm" data-go="orders">كل الطلبات</button>
+            </div>
           </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead>
-              <tbody>
-                ${shownOrders.map((o) => `<tr>
-                  <td><b>#${o.id}</b></td>
-                  <td><b>${esc(o.merchant?.name || '—')}</b></td>
-                  <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-                  <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
-                  <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : (esc(o.captain_name || '—'))}</td>
-                  <td>${time(o.created_at)}</td>
-                  <td>
-                    <button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button>
-                    ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? ` <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button>` : ''}
-                  </td>
-                </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مسجلة بعد</td></tr>'}
-              </tbody>
+              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead>
+              <tbody id="dashOrderRows"></tbody>
             </table>
           </div>
         </div>
@@ -213,6 +223,27 @@ authScreen('admin', (user) => {
       $('#dashFit').onclick = () => { if (pts.length) fitMapToPoints(dashMap, pts); };
       $('#dashRef').onclick = () => views.dash();
 
+      const renderDashOrders = (q = '') => {
+        const pool = q.trim() ? recentOrders : shownOrders;
+        const filtered = pool.filter((o) => matchOrder(o, q));
+        const tbody = $('#dashOrderRows');
+        if (!tbody) return;
+        tbody.innerHTML = filtered.map((o) => `<tr>
+          <td dir="ltr"><b>${serialNo(o)}</b></td>
+          <td><b>${esc(o.merchant?.name || '—')}</b></td>
+          <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
+          <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
+          <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : (esc(o.captain_name || '—'))}</td>
+          <td>${time(o.created_at)}</td>
+          <td>
+            <button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button>
+            ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? ` <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button>` : ''}
+          </td>
+        </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
+      };
+      renderDashOrders();
+      $('#dashOrderSearch').oninput = (e) => renderDashOrders(e.target.value);
+
       view().onclick = async (e) => {
         const goEl = e.target.closest('[data-go]');
         if (goEl) return go(goEl.dataset.go);
@@ -258,10 +289,13 @@ authScreen('admin', (user) => {
           <div id="lmap" class="map" style="height:500px"></div>
         </div>
         <div class="card">
-          <h3>📦 الطلبات الحية الجارية</h3>
+          <div class="row-head" style="flex-wrap:wrap;gap:10px">
+            <h3>📦 الطلبات الحية الجارية</h3>
+            <input id="liveOrderSearch" placeholder="🔍 ابحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:340px;margin:0">
+          </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead>
+              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead>
               <tbody id="lrows"></tbody>
             </table>
           </div>
@@ -387,8 +421,27 @@ authScreen('admin', (user) => {
 
     async orders() {
       const rows = await api('/admin/orders');
-      view().innerHTML = `<div class="card"><div class="tablewrap"><table><thead><tr><th>#</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead><tbody>
-      ${rows.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${o.captain ? `<a href="#" data-cap="${o.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : '—'}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button></td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات</td></tr>'}</tbody></table></div></div><div id="detail"></div>`;
+      const statusOpts = ['searching', 'offered', 'accepted', 'picked_up', 'arrived', 'delivered', 'cancelled', 'failed', 'expired']
+        .map((k) => `<option value="${k}">${esc(STATUS[k] || k)}</option>`).join('');
+      view().innerHTML = `<div class="card">
+        <div class="row-head" style="flex-wrap:wrap;gap:10px;margin-bottom:12px">
+          <h3 style="margin:0">📦 سجل وبحث الطلبات <span id="orderCount" class="mut" style="font-size:13px"></span></h3>
+          <div style="display:flex;gap:8px;flex:1;justify-content:flex-end;flex-wrap:wrap;min-width:260px">
+            <input id="orderSearch" placeholder="🔍 ابحث بالرقم التسلسلي للطلب (مثال: 0001 أو 1) أو المنشأة أو الكابتن أو العنوان..." style="max-width:420px;margin:0">
+            <select id="orderStatusFilter" style="max-width:200px;margin:0"><option value="">كل الحالات (${rows.length})</option>${statusOpts}</select>
+          </div>
+        </div>
+        <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>الوقت</th><th></th></tr></thead><tbody id="orderRows"></tbody></table></div></div><div id="detail"></div>`;
+      const renderOrders = () => {
+        const q = $('#orderSearch')?.value || '';
+        const st = $('#orderStatusFilter')?.value || '';
+        const filtered = rows.filter((o) => matchOrder(o, q, st));
+        $('#orderCount').textContent = `(${filtered.length} من ${rows.length})`;
+        $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b>${serialNo(o)}</b></td><td><b>${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${o.captain ? `<a href="#" data-cap="${o.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : '—'}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button></td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
+      };
+      renderOrders();
+      $('#orderSearch').oninput = renderOrders;
+      $('#orderStatusFilter').onchange = renderOrders;
       view().onclick = (e) => {
         const dEl = e.target.closest('[data-d]');
         if (dEl) detail(dEl.dataset.d);
@@ -442,7 +495,7 @@ authScreen('admin', (user) => {
     if (!detBox) return;
     const o = await api(`/admin/orders/${id}`);
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
-    detBox.innerHTML = `<div class="card"><h3>طلب #${o.id} ${badge(o.status)}</h3>
+    detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
         <p>العمولة: ${money(o.commission)}${o.liability ? ` — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}` : ''}</p>
         ${hasMap ? '<div id="dmap" class="map" style="height:300px"></div>' : ''}
@@ -501,14 +554,24 @@ authScreen('admin', (user) => {
     const captains = d.captains || [];
     const merchants = d.merchants || [];
 
-    $('#lrows').innerHTML = orders.map((o) => `<tr>
-      <td><b>#${o.id}</b></td>
-      <td><b>${esc(o.merchant?.name || '—')}</b></td>
-      <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-      <td>${badge(o.status)}${o.eta_minutes ? ` ~${o.eta_minutes}د` : ''}</td>
-      <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : esc(o.captain_name || '—')}</td>
-      <td><button type="button" class="ok sm" data-d="${o.id}">تفاصيل</button> <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button></td>
-    </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات حية جارية الآن</td></tr>';
+    const renderLiveOrders = () => {
+      const q = $('#liveOrderSearch')?.value || '';
+      const pool = q.trim() ? (d.recentOrders || orders) : orders;
+      const filtered = pool.filter((o) => matchOrder(o, q));
+      const lrows = $('#lrows');
+      if (!lrows) return;
+      lrows.innerHTML = filtered.map((o) => `<tr>
+        <td dir="ltr"><b>${serialNo(o)}</b></td>
+        <td><b>${esc(o.merchant?.name || '—')}</b></td>
+        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
+        <td>${badge(o.status)}${o.eta_minutes ? ` ~${o.eta_minutes}د` : ''}</td>
+        <td>${o.captain ? `<a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : esc(o.captain_name || '—')}</td>
+        <td><button type="button" class="ok sm" data-d="${o.id}">تفاصيل</button> ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? `<button type="button" class="bad sm" data-x="${o.id}">إلغاء</button>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات مطابقة</td></tr>';
+    };
+    renderLiveOrders();
+    const lSearch = $('#liveOrderSearch');
+    if (lSearch) lSearch.oninput = renderLiveOrders;
 
     $('#lcaps').innerHTML = captains.map((c) => `<tr>
       <td><a href="#" data-cap="${c.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(c.name)}</a></td>

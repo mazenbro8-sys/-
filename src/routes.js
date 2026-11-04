@@ -13,26 +13,31 @@ class HttpError extends Error { constructor(status, msg) { super(msg); this.stat
 const bad = (msg) => new HttpError(400, msg);
 const wrap = (fn) => (req, res, next) => { try { fn(req, res, next); } catch (e) { next(e); } };
 
+const toEnDigits = (v) => String(v ?? '')
+  .replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x0660)
+  .replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x06f0);
+
 const str = (v, name, min, max) => {
   if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
-  const s = v.trim();
+  const s = toEnDigits(v).trim();
   if (s.length < min || s.length > max) throw bad(`الحقل غير صالح: ${name}`);
   return s;
 };
 const optStr = (v, name, max) => (v == null || v === '' ? null : str(v, name, 1, max));
 const int = (v, name, min, max) => {
-  const n = Number(v);
+  const n = Number(typeof v === 'string' ? toEnDigits(v) : v);
   if (!Number.isInteger(n) || n < min || n > max) throw bad(`قيمة غير صالحة: ${name}`);
   return n;
 };
 const coord = (lat, lng, required = false) => {
   if (lat == null && lng == null && !required) return [null, null];
-  const a = Number(lat), b = Number(lng);
+  const a = Number(typeof lat === 'string' ? toEnDigits(lat) : lat);
+  const b = Number(typeof lng === 'string' ? toEnDigits(lng) : lng);
   if (!(a >= -90 && a <= 90 && b >= -180 && b <= 180) || lat === '' || lng === '') throw bad('إحداثيات غير صالحة');
   return [a, b];
 };
 const phone = (v) => {
-  const p = String(v ?? '').replace(/[\s\-()]/g, '').replace(/^\+/, '');
+  const p = toEnDigits(v).replace(/[\s\-()]/g, '').replace(/^\+/, '');
   if (!/^\d{9,15}$/.test(p)) throw bad('رقم الهاتف غير صالح');
   return p;
 };
@@ -373,7 +378,7 @@ A.get('/stats', wrap((_req, res) => {
 
 A.get('/live', wrap((_req, res) => {
   const orders = db.prepare("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC").all().map((o) => viewOrder(o, 'admin'));
-  const recentOrders = db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 15').all().map((o) => viewOrder(o, 'admin'));
+  const recentOrders = db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 100').all().map((o) => viewOrder(o, 'admin'));
   const captains = db.prepare("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' ORDER BY online DESC, (status='active') DESC, id DESC").all()
     .map((c) => {
       const act = activeOrder(c.id);

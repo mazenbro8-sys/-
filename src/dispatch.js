@@ -1,4 +1,4 @@
-﻿import { db, tx, addEvent, commission } from './db.js';
+import { db, tx, addEvent, commission } from './db.js';
 import { config, dayOf } from './config.js';
 import { sendTo, sendToAdmins, isConnected } from './realtime.js';
 
@@ -17,7 +17,8 @@ export function viewOrder(o, role) {
   const m = db.prepare('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?').get(o.merchant_id);
   const cap = o.captain_id ? db.prepare('SELECT id,name,phone,last_lat,last_lng,last_loc_at FROM users WHERE id=?').get(o.captain_id) : null;
   const v = {
-    id: o.id, status: o.status, zone_id: o.zone_id, created_at: o.created_at,
+    id: o.id, serial_no: String(o.id).padStart(4, '0'),
+    status: o.status, zone_id: o.zone_id, created_at: o.created_at,
     product_amount: o.product_amount, delivery_fee: o.delivery_fee, notes: o.notes,
     merchant: { name: m.business_name || m.name, address: m.address, lat: m.lat, lng: m.lng, phone: role === 'captain' && !o.captain_id ? undefined : m.phone },
     offer_expires_at: o.offer_expires_at, commission: o.commission, liability: o.liability,

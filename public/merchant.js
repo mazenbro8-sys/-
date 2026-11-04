@@ -1,4 +1,4 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints } from './shared.js?v=4';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo } from './shared.js?v=5';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
@@ -26,7 +26,7 @@ authScreen('merchant', (user) => {
   <section id="liveSection" class="tab-section hide">
     <div class="card">
       <h3>الطلبات الحية الجارية</h3>
-      <div class="tablewrap"><table><thead><tr><th>#</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
+      <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
     </div>
     <div class="card">
       <h3>🗺️ التتبع المباشر على الخريطة</h3>
@@ -40,7 +40,7 @@ authScreen('merchant', (user) => {
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>#</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>وقت الطلب</th><th>وقت الإغلاق</th><th></th></tr>
+            <tr><th>الرقم التسلسلي</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th>وقت الطلب</th><th>وقت الإغلاق</th><th></th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -114,7 +114,7 @@ authScreen('merchant', (user) => {
 
     $('#liveRows').innerHTML = liveList.map((o) => `
       <tr>
-        <td><b>#${o.id}</b></td>
+        <td dir="ltr"><b>${serialNo(o)}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
         <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
         <td>${capLink(o)}</td>
@@ -126,7 +126,7 @@ authScreen('merchant', (user) => {
 
     $('#rows').innerHTML = list.map((o) => `
       <tr>
-        <td><b>#${o.id}</b></td>
+        <td dir="ltr"><b>${serialNo(o)}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
         <td>${badge(o.status)}</td>
         <td>${capLink(o)}</td>
@@ -165,7 +165,7 @@ authScreen('merchant', (user) => {
       destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm).bindTooltip(`📍 ${o.customer_address || ''}`));
       pts.push([o.customer_lat, o.customer_lng]);
     }
-    $('#trkinfo').innerHTML = `طلب <b>#${o.id}</b> (📍 ${esc(o.customer_address || '—')}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
+    $('#trkinfo').innerHTML = `طلب <b dir="ltr">${serialNo(o)}</b> (📍 ${esc(o.customer_address || '—')}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
     if (o.captain?.lat != null) {
       moveCaptain(o.captain.lat, o.captain.lng, o.captain.name, false);
       pts.push([o.captain.lat, o.captain.lng]);
