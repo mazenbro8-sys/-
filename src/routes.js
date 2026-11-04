@@ -530,6 +530,18 @@ A.get('/orders/:id', wrap((req, res) => {
   const events = db.prepare('SELECT e.type,e.at,e.data,u.name actor FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE order_id=? ORDER BY e.id').all(o.id);
   res.json({ ...viewOrder(o, 'admin'), events });
 }));
+A.post('/orders/:id/redispatch', wrap((req, res) => {
+  const id = oid(req);
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(id);
+  if (!o || !['searching', 'expired'].includes(o.status)) throw bad('الطلب ليس في حالة انتظار');
+  tx(() => {
+    db.prepare('DELETE FROM offers WHERE order_id=?').run(id);
+    db.prepare("UPDATE orders SET status='searching', closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?").run(Date.now(), id);
+  });
+  dispatchOrder(id);
+  notifyOrder(id);
+  res.json(viewOrder(db.prepare('SELECT * FROM orders WHERE id=?').get(id), 'admin'));
+}));
 A.post('/orders/:id/cancel', wrap((req, res) => {
   const o = db.prepare('SELECT * FROM orders WHERE id=?').get(oid(req));
   if (!o || ['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب');

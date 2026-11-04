@@ -89,6 +89,7 @@ authScreen('captain', (user) => {
     if (!o) { box.innerHTML = ''; stopAlarm(); return; }
     startAlarm();
     box.innerHTML = `<div class="card offer"><h3>🔔 طلب جديد — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span></h3>
+      ${st.active ? '<div style="margin-bottom:8px;padding:6px 10px;border-radius:8px;background:rgba(234,179,8,.18);color:#fde047;font-size:13px;font-weight:700">⚡ طلب إضافي (لديك طلب نشط حالياً — يمكنك قبول الطلب الإضافي أو رفضه)</div>' : ''}
       <p><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
       <p style="font-size:16px;background:rgba(249,115,22,.15);padding:10px 12px;border-radius:10px;border:1px solid rgba(249,115,22,.4)"><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
       <p><b>عمولة المنصة:</b> ${money(st.commission)}</p>

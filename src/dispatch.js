@@ -52,22 +52,31 @@ export function viewOrder(o, role) {
 }
 
 export function computeShortage() {
-  const unassigned = db.prepare("SELECT * FROM orders WHERE status IN ('searching','offered') ORDER BY id ASC").all().map((o) => viewOrder(o, 'admin'));
-  const searchingCount = unassigned.filter((o) => o.status === 'searching').length;
+  const searchingRows = db.prepare("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC").all();
+  const escalatedOrders = searchingRows.filter((o) => {
+    const untriedCap = db.prepare(`
+      SELECT 1 FROM users u
+      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+        AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
+      LIMIT 1
+    `).get(o.zone_id, o.id);
+    return !untriedCap;
+  }).map((o) => viewOrder(o, 'admin'));
+
   const freeOnlineCaptains = db.prepare(`
     SELECT COUNT(*) c FROM users u
     WHERE u.role='captain' AND u.status='active' AND u.online=1
       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
   `).get().c;
   const onlineCaptains = db.prepare("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1").get().c;
-  const alert = searchingCount > 0 || unassigned.length > freeOnlineCaptains;
+  const alert = escalatedOrders.length > 0;
   return {
     alert,
-    searchingCount,
-    unassignedCount: unassigned.length,
+    searchingCount: escalatedOrders.length,
+    unassignedCount: escalatedOrders.length,
     freeOnlineCaptains,
     onlineCaptains,
-    orders: unassigned,
+    orders: escalatedOrders,
   };
 }
 
@@ -79,25 +88,29 @@ export function notifyOrder(orderId) {
   if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: viewOrder(o, 'captain') });
 }
 
-/** Round-robin: least-recently-assigned eligible captain in the zone who hasn't been offered this order. */
+/**
+ * Round-robin dispatch in 2 passes before escalating to Admin:
+ * Pass 1: Free online captains in the zone who haven't been offered this order.
+ * Pass 2: Busy online captains in the zone (with an active order, but no current pending offer) who haven't been offered this order.
+ * If neither Pass 1 nor Pass 2 finds a captain, returns null → order remains in 'searching' and escalates to Admin.
+ */
 function pickCaptain(order) {
-  const pick = () => {
-    const rows = db.prepare(`
+  const freeRows = db.prepare(`
     SELECT u.id FROM users u
     WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
       AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) OR (o.offered_captain_id=u.id AND o.status='offered'))
       AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
     ORDER BY u.last_assigned_at ASC, u.id ASC`).all(order.zone_id, order.id);
-    // The online flag can be stale (captain closed the app), so prefer captains with a live connection.
-    return rows.find((r) => isConnected(r.id)) ?? rows[0];
-  };
-  let c = pick();
-  if (!c) {
-    // everyone eligible was already tried: start a new round if any eligible captain exists
-    const any = db.prepare(`SELECT 1 FROM offers WHERE order_id=?`).get(order.id);
-    if (any) { db.prepare('DELETE FROM offers WHERE order_id=?').run(order.id); c = pick(); }
-  }
-  return c;
+  const freePick = freeRows.find((r) => isConnected(r.id)) ?? freeRows[0];
+  if (freePick) return freePick;
+
+  const busyRows = db.prepare(`
+    SELECT u.id FROM users u
+    WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.offered_captain_id=u.id AND o.status='offered')
+      AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
+    ORDER BY u.last_assigned_at ASC, u.id ASC`).all(order.zone_id, order.id);
+  return busyRows.find((r) => isConnected(r.id)) ?? busyRows[0] ?? null;
 }
 
 export function dispatchOrder(orderId) {

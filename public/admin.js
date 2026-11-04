@@ -124,9 +124,9 @@ authScreen('admin', (user) => {
       <div class="card offer" style="border:2px solid #ef4444;background:rgba(239,68,68,.16);margin-top:12px;margin-bottom:0">
         <div class="row-head" style="flex-wrap:wrap;gap:10px">
           <div>
-            <h3 style="color:#fca5a5;margin:0">🚨 إنذار عاجل: يوجد طلبات بانتظار كابتن (${shortage.unassignedCount}) ولا يوجد كباتن متاحون كافيون!</h3>
+            <h3 style="color:#fca5a5;margin:0">🚨 إنذار عاجل للإدارة: يوجد (${shortage.unassignedCount}) طلب عُرض على جميع الكباتن (المتاحين والمشغولين) ولم يقبله أحد!</h3>
             <div class="mut" style="color:#fecaca;margin-top:4px">
-              طلبات بدون كابتن: <b>${shortage.searchingCount}</b> — إجمالي الطلبات المنتظرة: <b>${shortage.unassignedCount}</b> — الكباتن المتاحون حالياً: <b>${shortage.freeOnlineCaptains}</b>
+              يرجى تعيين كابتن للطلب مباشرة أو إعادة عرضه على الكباتن — الكباتن الأونلاين حالياً: <b>${shortage.onlineCaptains}</b> (منهم متاحون: <b>${shortage.freeOnlineCaptains}</b>)
             </div>
           </div>
           <div style="display:flex;gap:6px">
@@ -145,6 +145,7 @@ authScreen('admin', (user) => {
                   ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
                 </select>
                 <button type="button" class="ok sm" data-assign-btn="${o.id}">🛵 تعيين للكابتن</button>
+                <button type="button" class="sec sm" data-redispatch="${o.id}">🔄 إعادة عرض على الكباتن</button>
                 <button type="button" class="bad sm" data-x="${o.id}">إلغاء الطلب</button>
               </div>
             </div>
@@ -199,6 +200,13 @@ authScreen('admin', (user) => {
   }
 
   async function handleOrderActionClick(e) {
+    const redispBtn = e.target.closest('[data-redispatch]');
+    if (redispBtn) {
+      const oid = Number(redispBtn.dataset.redispatch);
+      await act(() => api(`/admin/orders/${oid}/redispatch`, 'POST'), 'تمت إعادة عرض الطلب ليلف على الكباتن من جديد');
+      await refreshCurrentTab();
+      return true;
+    }
     const assignBtn = e.target.closest('[data-assign-btn]');
     if (assignBtn) {
       const oid = Number(assignBtn.dataset.assignBtn);

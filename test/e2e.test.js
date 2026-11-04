@@ -95,6 +95,30 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(reass.status, 200);
   assert.equal(reass.data.status, 'accepted');
   assert.equal(reass.data.captain_id, capId);
+
+  // Assign a second order to the other captain so BOTH captains are now busy
+  const capId2 = liveData.captains[1].id;
+  await call('/admin/orders', 'POST', { customer_address: 'المالكي', captain_id: capId2 }, admin);
+
+  // Now create a new merchant order while all captains are busy:
+  // It must cycle through busy captains first before escalating to admin!
+  const oBusy = (await call('/merchant/orders', 'POST', { customer_address: 'كفرسوسة - شام سنتر' }, m)).data;
+  assert.equal(oBusy.status, 'offered');
+  assert.equal((await call('/admin/live', 'GET', null, admin)).data.shortage.alert, false);
+
+  // First busy captain rejects → passes to second busy captain, still NOT escalated to admin
+  const bState1 = (await call('/captain/state', 'GET', null, c1)).data;
+  const [bFirst, bSecond] = bState1.offer?.id === oBusy.id ? [c1, c2] : [c2, c1];
+  await call(`/captain/offers/${oBusy.id}/reject`, 'POST', null, bFirst);
+  const bState2 = (await call('/captain/state', 'GET', null, bSecond)).data;
+  assert.equal(bState2.offer?.id, oBusy.id);
+  assert.equal((await call('/admin/live', 'GET', null, admin)).data.shortage.alert, false);
+
+  // Second busy captain rejects → all captains tried, NOW it escalates to admin (shortage.alert === true)!
+  await call(`/captain/offers/${oBusy.id}/reject`, 'POST', null, bSecond);
+  const afterAllRej = (await call('/admin/live', 'GET', null, admin)).data;
+  assert.equal(afterAllRej.shortage.alert, true);
+  assert.ok(afterAllRej.shortage.orders.some((x) => x.id === oBusy.id));
 });
 
 test('login rate / lockout and bad input', async () => {
