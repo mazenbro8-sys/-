@@ -31,6 +31,8 @@ app.use(helmet({
       ],
       connectSrc: [
         "'self'",
+        'http:',
+        'https:',
         'ws:',
         'wss:',
         'https://router.project-osrm.org',
@@ -43,13 +45,27 @@ app.use(helmet({
     },
   },
 }));
-app.use('/api', express.json({ limit: '16kb' }), (req, res, next) => {
+app.use('/api', (req, res, next) => {
+  res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.set('Cache-Control', 'no-store');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
-}, api);
+}, express.json({ limit: '16kb' }), api);
 
 app.use('/vendor/leaflet', express.static(path.join(ROOT, 'node_modules/leaflet/dist')));
-app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: 0 }));
+app.use(express.static(path.join(ROOT, 'public'), {
+  extensions: ['html'],
+  maxAge: 0,
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  },
+}));
 
 const server = http.createServer(app);
 attachWs(server);

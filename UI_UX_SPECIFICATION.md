@@ -1,0 +1,233 @@
+# الملخص التقني المفصل لهيكل واجهات مشروع PANTHER (UI/UX Technical Specification)
+
+هذا المستند مخصص لمصمم الـ UI/UX أو المطور لتحديث الشكل والألوان والتخطيط (Styling & Layout) بحرية كاملة **دون المساس بالمنطق البرمجي أو كسر الربط مع السيرفر (Backend)**.
+
+---
+
+## 1. إطار العمل ومكتبات التصميم المستخدمة (Tech Stack & Styling)
+
+* **إطار العمل (Frontend Framework):** **Vanilla JavaScript (ES Modules)** مع توليد DOM ديناميكي عبر Template Literals (`innerHTML`) — **لا يوجد** React أو Vue أو Tailwind أو Bootstrap.
+* **نظام التصميم والـ CSS:**
+  * **Pure Custom CSS3** مع متغيرات CSS قياسية (`:root` CSS Variables) وتصميم زجاجي داكن (**Dark Glassmorphism**) واتجاه **RTL** بالكامل (`dir="rtl"`, `lang="ar"`).
+  * **الخط المستخدم:** خط `Cairo` من Google Fonts (`weights: 400, 600, 700, 800, 900`).
+  * **مكتبة الخرائط:** **Leaflet.js v1.9.4** (`/vendor/leaflet/leaflet.js` و `/vendor/leaflet/leaflet.css`).
+* **تطبيق الأندرويد (APK):** غلاف أندرويد أصلي (`WebView` + `Foreground Service` في `android-captain/`) يعرض نفس ملفات الكابتن من المسار `android-captain/app/src/main/assets/public/` ويرتبط مع الجافاسكربت عبر الجسر `window.PantherNative` (وبعد أي تعديل على ملفات `public/` يتم تشغيل `npm run build:apk` لتحديث ملف الـ APK).
+* **قيود الأمان (CSP):** الخادم يطبق سياسة `Content-Security-Policy` تمنع الـ Inline Scripts (`onclick="..."` داخل HTML ممنوع؛ كل الأحداث تُربط برمجياً في ملفات `.js` عبر `id` أو `data-*` attributes).
+
+---
+
+## 2. أسماء ومواقع ملفات الواجهات في المشروع
+
+جميع ملفات الواجهات موجودة داخل المجلد `public/` في جذر المشروع:
+
+### أ. الملفات المشتركة والعامة:
+1. `public/app.css`: ملف الـ CSS الأساسي المشترك بين كل الواجهات (الألوان، البطاقات `.card`، الأزرار `button`, `.ok`, `.bad`, `.sec`, `.ghost`, `.big`, `.sm`، الجداول، الشارات `.badge`، الخرائط `.map`، شريط التنقل السفلي `.bottom-nav`).
+2. `public/shared.js`: الدوال المشتركة (شاشة تسجيل الدخول `authScreen`، الهيدر العلوي `header`، التوست `toast`، نافذة إعدادات السيرفر `openServerConfigModal`، نافذة معلومات الكابتن `captainModal`، ودوال الخرائط `makeMap`).
+3. `public/index.html` + `public/download.js`: صفحة مركز تحميل التطبيقات (`/`).
+
+### ب. ملفات الواجهات الثلاث:
+| الواجهة | ملف الـ HTML | ملف الـ JavaScript (توليد الـ DOM والمنطق) | ملف الـ CSS الخاص |
+| :--- | :--- | :--- | :--- |
+| **1. الإدارة (Admin)** | `public/admin.html` | `public/admin.js` | `public/admin.css` + `public/app.css` |
+| **2. المنشأة (Merchant)** | `public/merchant.html` | `public/merchant.js` | `public/merchant.css` + `public/app.css` |
+| **3. الكابتن (Captain)** | `public/captain.html` | `public/captain.js` | `public/app.css` |
+
+> **ملاحظة مهمة للمصمم:** الكلاس `.hide` (`display: none !important`) يُستخدم في كل ملفات الـ JS لإخفاء/إظهار الأقسام والنوافذ، لذا **يجب الحفاظ عليه دائماً**.
+
+---
+
+## 3. العناصر المشتركة في جميع الواجهات (`public/shared.js`)
+
+قبل الدخول لأي واجهة، تمر الصفحة عبر عناصر مشتركة يجب الحفاظ على معرفاتها:
+1. **الحاويات الأساسية في كل ملف HTML:**
+   * `#auth` (كلاس `.auth.hide`): حاوية شاشة تسجيل الدخول.
+   * `#app` (كلاس `.hide`): الحاوية الرئيسية للواجهة بعد نجاح الدخول.
+   * `#toast`: عنصر منبثق يظهر أسفل الشاشة لعرض رسائل النجاح/الخطأ عبر الدالة `toast(msg)`.
+2. **شاشة تسجيل الدخول (`authScreen(role, onReady)`):**
+   * `#lf`: فورم تسجيل الدخول (`onsubmit` يرسل `POST /api/auth/login`).
+     * `input[name="phone"]`: حقل رقم الهاتف.
+     * `input[name="password"]`: حقل كلمة المرور.
+   * `[data-server-cfg]`: زر فتح نافذة إعدادات رابط السيرفر (`openServerConfigModal()`).
+   * `[data-install-app]` و `[data-copy-app]`: أزرار تثبيت تطبيق الـ PWA ونسخ الرابط في بطاقة `#appInstallCard`.
+3. **الهيدر العلوي المشترك (`header(title, user, onLogout)` — يُستخدم في المنشأة والإدارة):**
+   * `#lo`: زر تسجيل الخروج (`POST /api/auth/logout-all` ثم `setToken(null)`).
+4. **نافذة إعدادات السيرفر (`#srvCfgModal`):**
+   * `#srvUrlInput`: حقل إدخال رابط السيرفر.
+   * `#srvTestMsg`: نص نتيجة فحص الاتصال.
+   * `#srvTestBtn`: زر فحص الاتصال (`GET /api/zones`).
+   * `#srvSaveBtn`: زر حفظ الرابط في `localStorage['panther_server_url']`.
+   * `#srvCfgClose`: زر إغلاق النافذة.
+5. **نافذة تفاصيل الكابتن المنبثقة (`#capmodal` عبر `captainModal(cap)`):**
+   * `#capx`: زر الإغلاق.
+   * `#capmap`: حاوية خريطة موقع الكابتن.
+
+---
+
+## 4. تفصيل العناصر والحقول والدوال في الواجهات الثلاث
+
+---
+
+### أولاً: واجهة الكابتن (`public/captain.html` + `public/captain.js`)
+
+#### 1. الهيدر العلوي وشريط التنقل السفلي الثابت:
+* `#hdrStatusBadge`: شارة في الهيدر العلوي تعرض حالة الكابتن (`🟢 أونلاين` بكلاس `.b-active` أو `⚪ أوفلاين` بكلاس `.b-cancelled`).
+* `#bottomNav` (كلاس `.bottom-nav`): شريط التنقل السفلي ويحتوي 4 أزرار مرتبطة بالدالة `switchTab(tabName)`:
+  * `button[data-tab="home"]`: يفتح قسم الرئيسية `#tab-home`.
+  * `button[data-tab="active"]`: يفتح قسم الطلبات النشطة `#tab-active`، وبداخله شارة العدد `#navActBadge` (كلاس `.nav-badge`).
+  * `button[data-tab="history"]`: يفتح قسم الطلبات المكتملة `#tab-history`.
+  * `button[data-tab="settings"]`: يفتح قسم الإعدادات `#tab-settings`.
+
+#### 2. منطقة عرض الطلب الجديد الوارد (Global Offer Alert):
+* `#offer`: حاوية تظهر أعلى `#app` في جميع التبويبات عند وجود عرض طلب جديد (`st.offer != null`) وتُحدَّث عبر `renderOffer()`:
+  * `#cd`: عداد الثواني التنازلي لانتهاء العرض (`offer.offer_expires_at`).
+  * `#acc`: زر قبول الطلب (`POST /api/captain/offers/:id/accept`) ثم ينقل الكابتن تلقائياً لتبويب `active`.
+  * `#rej`: زر رفض الطلب (`POST /api/captain/offers/:id/reject`).
+
+#### 3. التبويب الأول: الرئيسية (`#tab-home` — كلاس `.cap-tab`):
+* **بطاقة حالة العمل:**
+  * `#onl`: نص حالة الاتصال (`st.online`).
+  * `#gps`: نص حالة الـ GPS (`watchPosition` أو وضع المحاكاة `sim`).
+  * `#tog`: زر تبديل الحالة (`ابدأ العمل` / `إيقاف العمل`) مربوط بـ `POST /api/captain/online`.
+* **شبكة الإحصائيات الرباعية (تُحدَّث من `GET /api/captain/summary`):**
+  * `#stDelivered`: عدد طلبات اليوم المسلّمة (`s.delivered`).
+  * `#stTotalAll`: إجمالي الطلبات الكلي (`s.total_delivered`).
+  * `#stEarnings`: أرباح التوصيل اليوم (`s.earnings_today`).
+  * `#stDue`: مستحقات المنصة اليوم (`s.due`).
+  * `#stDueSub`: تفصيل العمولة والتعويضات أو شارة `تمت التسوية اليوم ✓` (`s.settled`).
+  * `#homeActCard` + `#stActiveCount`: بطاقة عدد الطلبات النشطة حالياً (النقر عليها يستدعي `switchTab('active')`).
+* **بطاقة الخريطة الحية (`#idleMapCard`):**
+  * `#coordTxt`: نص يعرض إحداثيات `pos.lat, pos.lng`.
+  * `#imap`: حاوية خريطة Leaflet (`idleMap`) لعرض موقع الكابتن الحي.
+
+#### 4. التبويب الثاني: الطلبات النشطة (`#tab-active` — كلاس `.cap-tab`):
+* `#active`: الحاوية التي تُرسم عبر `renderActive()` بناءً على المصفوفة `st.activeOrders` و `selectedActiveId`:
+  * **في حال عدم وجود طلبات نشطة:** يظهر زر `#goHomeFromEmpty` للعودة لتبويب `home`.
+  * **في حال وجود أكثر من طلب نشط:** أزرار تبديل `[data-act-id="<id>"]` لاختيار الطلب النشط المعروض.
+  * **شريط المراحل (`.stepper`):** عناصر `.step-item` تأخذ الكلاس `.done` أو `.curr` حسب حالة الطلب (`accepted`, `picked_up`, `arrived`).
+  * `#amap`: حاوية خريطة مسار الطلب النشط (`map`) وترسم مسار OSRM بين الكابتن والمنشأة والزبون.
+  * `#nx`: الزر الرئيسي لتحديث حالة الطلب للمرحلة التالية (`POST /api/captain/orders/:id/status` بالقيمة `picked_up` ثم `arrived` ثم `delivered`).
+  * `#fl`: زر الإبلاغ عن فشل التسليم (`POST /api/captain/orders/:id/status` بالقيمة `failed_customer` — يظهر بعد استلام الطلب).
+
+#### 5. التبويب الثالث: الطلبات المكتملة / السجل (`#tab-history` — كلاس `.cap-tab`):
+* يُدار عبر الدالة `renderHistory()` والمصفوفة `allHistory` (`GET /api/captain/history`):
+  * `#histCountBadge`: شارة تعرض عدد الطلبات المطابقة للفلتر.
+  * `#histFilterTabs`: أزرار فلترة الحالة `button[data-hfilter="all" | "delivered" | "failed"]` تغير المتغير `histFilter`.
+  * `#histSearch`: حقل بحث نصي فوري (`oninput` يغير `histQuery`).
+  * `#histList`: الحاوية التي تُرسم بداخلها بطاقات السجل (`.hist-card`).
+
+#### 6. التبويب الرابع: الإعدادات والحساب (`#tab-settings` — كلاس `.cap-tab`):
+* **إعدادات الصوت والتنبيهات:**
+  * `#sndStatusSub`: نص يوضح حالة تفعيل الصوت والخدمة الخلفية.
+  * `#snd`: زر تجربة صافرة الإنذار (`testSound()` + طلب صلاحية `Notification`).
+  * `#vibToggle` (`checkbox`): تفعيل/إيقاف الاهتزاز (`localStorage['panther_vibrate']`).
+  * `#toneSelect` (`select`): اختيار نغمة الصافرة (`classic`, `rapid`, `high` في `localStorage['panther_tone']`).
+* **إعدادات الخريطة والملاحة والـ GPS:**
+  * `#navAppSelect` (`select`): اختيار تطبيق الملاحة (`google` أو `waze` في `localStorage['panther_nav_app']`).
+  * `#mapStyleSelect` (`select`): اختيار مظهر الخريطة (`google`, `hybrid`, `dark` في `localStorage['mashwar_map_style']`).
+  * `#simc` (`checkbox`): تفعيل/إيقاف محاكاة الـ GPS (`sim`).
+* **إعدادات السيرفر والاتصال:**
+  * `#srvCurrentLbl`: نص يعرض رابط السيرفر الحالي.
+  * `#cfgSrvBtn`: زر فتح نافذة تعديل وفحص رابط السيرفر (`openServerConfigModal()`).
+  * `#manualSyncBtn`: زر تحديث البيانات الفوري (`refresh()`).
+* **الأمان والخروج:**
+  * `#pwForm`: فورم تغيير كلمة المرور (`POST /api/me/password`) ويضم `input[name="old_password"]` و `input[name="new_password"]`.
+  * `#logoutBtn`: زر تسجيل الخروج وإيقاف خدمة الخلفية (`window.PantherNative?.syncState('', '', false)`).
+
+---
+
+### ثانياً: واجهة المنشأة (`public/merchant.html` + `public/merchant.js` + `public/merchant.css`)
+
+تأخذ الصفحة الكلاس `body.mt` وتُدار عبر الحالات (`orders` Map، `selected` order ID، و `switchTab(tab)`):
+
+1. **شريط التبويبات العلوي (`.tabs`):**
+   * `button[data-tab="order"]`: يفتح قسم طلب كابتن `#orderSection`.
+   * `button[data-tab="live"]` (`#liveTabBtn`): يفتح قسم الطلبات الحية `#liveSection` (ويعرض عدد الطلبات الحية بين قوسين).
+   * `button[data-tab="my"]`: يفتح قسم سجل طلباتي `#mySection`.
+2. **القسم الأول: طلب كابتن (`#orderSection` — كلاس `.tab-section`):**
+   * `#hero` + `#heroBtn` (كلاس `.hero-btn`): الزر الدائري/البارز الكبير «اطلب كابتن الآن»؛ عند النقر عليه يظهر `#formCard` أو يرسل الفورم إذا كان العنوان مكتوباً.
+   * `#formCard`: بطاقة نموذج الطلب وتحتوي الفورم `#of` (`POST /api/merchant/orders`):
+     * `#addrInput` (`input[name="customer_address"]`): الحقل الوحيد المطلوب (عنوان التوصيل).
+     * `#go`: زر إرسال الطلب «🛵 اطلب كابتن».
+3. **القسم الثاني: الطلبات الحية والتتبع (`#liveSection` — كلاس `.tab-section`):**
+   * `#liveRows` (`tbody`): جدول الطلبات الجارية حالياً، ويحتوي في كل سطر على:
+     * `[data-cap="<order_id>"]`: رابط اسم الكابتن (يفتح نافذة `captainModal`).
+     * `button[data-sel="<order_id>"]`: زر «🗺️ تتبع» لتحديد الطلب على الخريطة (`select(id)`).
+     * `button[data-cancel="<order_id>"]`: زر «إلغاء» (يظهر فقط في حالتي `searching` و `offered` ويرسل `POST /api/merchant/orders/:id/cancel`).
+   * `#trkinfo`: شريط نصي فوق الخريطة يعرض حالة الطلب المختار والوقت المتوقع للوصول (`eta_minutes`).
+   * `#tmap`: حاوية خريطة Leaflet (`tm`) للتتبع المباشر لحركة الكابتن نحو المنشأة ثم الزبون.
+4. **القسم الثالث: سجل طلباتي (`#mySection` — كلاس `.tab-section`):**
+   * `#rows` (`tbody`): جدول جميع طلبات المنشأة السابقة والحالية مع نفس أزرار `[data-cap]` و `[data-sel]`.
+
+---
+
+### ثالثاً: واجهة الإدارة (`public/admin.html` + `public/admin.js` + `public/admin.css`)
+
+تأخذ الصفحة الكلاس `body.ad` وتتكون من شريط جانبي (`aside.sb`) ومنطقة عمل رئيسية (`section.main`):
+
+#### 1. الهيكل الثابت والشريط العلوي للإدارة:
+* **الشريط الجانبي (`aside.sb`):**
+  * `.nav.tabs`: أزرار التنقل بين الأقسام السبعة `button[data-t="dash" | "live" | "users" | "orders" | "settle" | "flags" | "settings"]` وتستدعي الدالة `go(t)`.
+  * `#lo2`: زر تسجيل الخروج في أسفل الشريط الجانبي (`.sbfoot`).
+* **الشريط العلوي (`.topbar2`):**
+  * `#ptitle`: عنوان القسم المفتوح حالياً.
+  * `#adminAddOrderTop`: زر «➕ إضافة طلب لكابتن» يفتح النافذة المنبثقة `openAddOrderModal()`.
+  * `#adminSndBtn`: زر تفعيل/اختبار صوت إنذار غرفة العمليات (`testAdminSound()`).
+  * `.clock` (`#clk` للوقت و `#dt` للتاريخ).
+* **بانر الإنذار العاجل لنقص الكباتن (`#shortageBox`):**
+  * يظهر تلقائياً عبر `updateShortageBanner(shortage)` عندما يرفض جميع الكباتن طلباً ما، ويشغل صافرة الإنذار `startAdminAlarm()`.
+  * `#muteShortageBtn`: زر كتم صوت الإنذار.
+* **النافذة المنبثقة لإضافة/إسناد طلب (`#addordmodal` عبر `openAddOrderModal`):**
+  * `#aomClose`: زر الإغلاق.
+  * `#aomForm`: فورم إنشاء طلب من الإدارة (`POST /api/admin/orders`) ويضم: `select[name="merchant_id"]`، `input[name="customer_address"]`، و `select[name="captain_id"]` (`#aomCapSel`).
+  * `button[data-quick-assign="<order_id>"]`: أزرار إسناد سريع لطلب موجود مسبقاً.
+
+#### 2. الأزرار التفاعلية المشتركة للتحكم بالطلبات (`handleOrderActionClick` و `renderOrderCaptainCell`):
+تُستخدم داخل جداول الطلبات في (`dash` و `live` و `orders` و `#shortageBox` و `#detail`):
+* `select[data-assign-sel="<order_id>"]` + `button[data-assign-btn="<order_id>"]`: قائمة اختيار كابتن وزر تعيينه للطلب (`POST /api/admin/orders/:id/assign-captain`).
+* `button[data-unassign="<order_id>"]`: زر سحب/إلغاء الطلب عن الكابتن الحالي (`POST /api/admin/orders/:id/unassign-captain`).
+* `button[data-redispatch="<order_id>"]`: زر إعادة عرض الطلب ليلف على الكباتن من جديد (`POST /api/admin/orders/:id/redispatch`).
+* `button[data-x="<order_id>"]`: زر إلغاء الطلب نهائياً (`POST /api/admin/orders/:id/cancel`).
+* `button[data-d="<order_id>"]`: زر فتح بطاقة تفاصيل الطلب (`detail(id)`) داخل الحاوية `#detail`.
+* `button[data-add-order="<captain_id>"]`: زر فتح نافذة إضافة طلب مسند لكابتن محدد.
+* `[data-cap="<captain_id>"]`: فتح نافذة موقع واتصال الكابتن (`captainModal`).
+* `button[data-pan="<lat>,<lng>"]`: تحريك الخريطة والتركيز على موقع المنشأة أو الكابتن.
+
+#### 3. الأقسام السبعة التي تُرسم داخل الحاوية `#view`:
+1. **`views.dash()` (📊 لوحة التحكم):**
+   * `.stats4`: 4 بطاقات إحصائية سريعة قابلة للنقر (`[data-go="live" | "users" | "orders"]`).
+   * `#dashmap`: خريطة نظرة عامة + زر `#dashFit` (إظهار الكل) + زر `#dashRef` (تحديث) + قائمة آخر النشاطات `ul.feed`.
+   * `#dashOrderSearch`: حقل بحث فوري في جدول الطلبات `#dashOrderRows`.
+   * `#detail`: حاوية عرض تفاصيل الطلب المختار.
+2. **`views.live()` (📡 غرفة العمليات):**
+   * `#lstats`: 6 بطاقات إحصائية حية.
+   * `#lmap`: خريطة العمليات المباشرة (`liveMap`) + `#liveFit` + `#liveRef`.
+   * `#liveOrderSearch`: حقل بحث في جدول الطلبات الحية `#lrows`.
+   * `#lcaps`: جدول الكباتن وحالاتهم ومواقعهم.
+   * `#lmerchs`: جدول المنشآت.
+   * `#detail`: حاوية تفاصيل الطلب المختار.
+3. **`views.users()` (🏪 المنشآت والكباتن):**
+   * `#addb`: زر إظهار/إخفاء فورم إضافة حساب جديد `#nu` (`POST /api/admin/users`).
+   * داخل الفورم `#nu`: `#nrole` (`select[name="role"]`)، `select[name="zone_id"]`، `input[name="name"]`، `input[name="phone"]`، `input[name="password"]`، وحاوية حقول المنشأة `#mfields` (`input[name="business_name"]`، `input[name="address"]`، وخريطة تحديد الموقع `#nmap`).
+   * جدول الحسابات: `select[data-zone="<user_id>"]` لنقل المنطقة، `button[data-st="active" | "suspended"][data-id="<user_id>"]` لتفعيل/إيقاف الحساب، و `button[data-pw="<user_id>"]` لتغيير كلمة المرور.
+4. **`views.orders()` (📦 سجل وبحث الطلبات):**
+   * `#orderCount`: عداد النتائج.
+   * `#orderSearch`: حقل البحث النصي، و `#orderStatusFilter`: فلتر الحالة.
+   * `#orderRows`: جدول عرض الطلبات، و `#detail` لتفاصيل الطلب (ويضم خريطة `#dmap`، سجل الأحداث `ol.timeline`، زر تحميل الكابتن تعويض التلف `#lb`، وزر إلغاء الطلب `#ca`).
+5. **`views.settle()` (💰 الخزينة والتسويات اليومية):**
+   * `#sd` (`input[type="date"]`): اختيار تاريخ التسوية.
+   * `button[data-c="<captain_id>"]`: زر تأكيد تحصيل المستحقات نقداً من الكابتن (`POST /api/admin/settlements/collect`).
+6. **`views.flags()` (⚠️ التنبيهات الأمنية واشتباه الالتفاف):**
+   * `button[data-r="<flag_id>"]`: زر «تمت المراجعة» (`POST /api/admin/flags/:id/resolve`).
+   * `button[data-s="<captain_id>"]`: زر «إيقاف الكابتن» (`PATCH /api/admin/users/:id`).
+7. **`views.settings()` (⚙️ المناطق والإعدادات):**
+   * `#cm` (`input[type="number"]`) + `#cs` (`button`): تعديل وحفظ عمولة المنصة لكل طلب (`PUT /api/admin/settings/commission`).
+   * `#zn` (`input`) + `#za` (`button`): إضافة منطقة جغرافية جديدة (`POST /api/admin/zones`).
+
+---
+
+## 5. القواعد الذهبية للمصمم عند تعديل الواجهات (Safe Restyling Checklist)
+
+1. **حرّية كاملة في الـ CSS:** يمكن تعديل الألوان، الخطوط، الظلال، الحواف، التدرجات، والمسافات في `app.css` و `admin.css` و `merchant.css` بحرية تامة.
+2. **الحفاظ على الـ `id` و `data-*` و `name`:** لا تقم بحذف أو تغيير أسماء الـ `id` أو خصائص `data-*` أو `name` الخاصة بحقول الـ `<form>` المذكورة أعلاه لأن الكود البرمجي يربط الأحداث والبيانات بها.
+3. **الحفاظ على كلاس `.hide`:** يجب أن يبقى `.hide { display: none !important; }` لأن منطق التبديل بين التبويبات والنوافذ يعتمد على `classList.add('hide')` و `classList.remove('hide')`.
+4. **حاويات الخرائط (`.map`):** أي عنصر خريطة (`#imap`, `#amap`, `#tmap`, `#dashmap`, `#lmap`, `#nmap`, `#dmap`, `#capmap`) يحتاج دائماً إلى ارتفاع محدد (`height` بالـ `px` أو `vh`) لكي ترسم مكتبة Leaflet الخريطة بداخله بشكل صحيح.

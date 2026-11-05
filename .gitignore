@@ -1,3 +1,7 @@
-﻿node_modules
+node_modules
 data
 .env
+android-captain/build
+android-captain/app/src/main/assets/public
+android-captain/*.jks
+

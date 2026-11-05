@@ -6,17 +6,32 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PANTHER كابتن">
-<link rel="manifest" href="/manifest-captain.json">
-<link rel="icon" href="/icon-192.png">
-<link rel="apple-touch-icon" href="/icon-192.png">
-<title>PANTHER — تطبيق الكابتن</title>
-<link rel="stylesheet" href="/vendor/leaflet/leaflet.css"><link rel="stylesheet" href="/app.css?v=9">
-<script src="/vendor/leaflet/leaflet.js"></script>
-<script type="module" src="/captain.js?v=9"></script></head>
+<link rel="manifest" href="manifest-captain.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>PANTHER: تطبيق الكابتن</title>
+<meta name="description" content="تطبيق PANTHER للكباتن: استلام الطلبات والملاحة وإدارة التوصيلات.">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="app.css?v=panther2026v9">
+<script src="vendor/leaflet/leaflet.js"></script>
+<script type="module" src="captain.js?v=panther2026v9"></script></head>
 <body>
 <div id="bottomNav" class="bottom-nav hide">
-  <button data-tab="home" class="active">🏠<br>الرئيسية</button>
-  <button data-tab="orders">🛵<br>الطلبات</button>
-  <button data-tab="profile">👤<br>الملف</button>
+  <button type="button" data-tab="home" class="active">
+    <span class="nav-ico">🏠</span>
+    <span>الرئيسية</span>
+  </button>
+  <button type="button" data-tab="active">
+    <span class="nav-ico">🛵</span>
+    <span>النشطة</span>
+    <span id="navActBadge" class="nav-badge hide">0</span>
+  </button>
+  <button type="button" data-tab="history">
+    <span class="nav-ico">📋</span>
+    <span>المكتملة</span>
+  </button>
+  <button type="button" data-tab="settings">
+    <span class="nav-ico">⚙️</span>
+    <span>الإعدادات</span>
+  </button>
 </div>
-<div id="auth" class="auth hide"></div><main id="app" class="hide"></main></body></html>
+<div id="auth" class="auth hide"></div><main id="app" class="hide has-bottom-nav"></main></body></html>

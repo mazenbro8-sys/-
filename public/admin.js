@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=9';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v8';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -126,8 +126,8 @@ authScreen('admin', (user) => {
       <div class="card offer" style="border:2px solid #ef4444;background:rgba(239,68,68,.16);margin-top:12px;margin-bottom:0">
         <div class="row-head" style="flex-wrap:wrap;gap:10px">
           <div>
-            <h3 style="color:#fca5a5;margin:0">🚨 إنذار عاجل للإدارة: يوجد (${shortage.unassignedCount}) طلب عُرض على جميع الكباتن (المتاحين والمشغولين) ولم يقبله أحد!</h3>
-            <div class="mut" style="color:#fecaca;margin-top:4px">
+            <h3 class="clr-bad-soft" style="margin:0">🚨 إنذار عاجل للإدارة: يوجد (${shortage.unassignedCount}) طلب عُرض على جميع الكباتن (المتاحين والمشغولين) ولم يقبله أحد!</h3>
+            <div class="mut" class="clr-bad-pale" style="margin-top:4px">
               يرجى تعيين كابتن للطلب مباشرة أو إعادة عرضه على الكباتن — الكباتن الأونلاين حالياً: <b>${shortage.onlineCaptains}</b> (منهم متاحون: <b>${shortage.freeOnlineCaptains}</b>)
             </div>
           </div>
@@ -137,18 +137,20 @@ authScreen('admin', (user) => {
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
           ${shortage.orders.map((o) => `
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 10px;background:rgba(0,0,0,.35);border-radius:10px">
+            <div class="shortage-order-row">
               <div>
-                <b dir="ltr">${serialNo(o)}</b> — <b>🏪 ${esc(o.merchant?.name || '—')}</b> — 📍 <b>${esc(o.customer_address || '—')}</b> ${badge(o.status)}
+                <b dir="ltr" class="serial-pill">${serialNo(o)}</b> — <b>🏪 ${esc(o.merchant?.name || '—')}</b> — 📍 <b>${esc(o.customer_address || '—')}</b> ${badge(o.status)}
               </div>
-              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-                <select data-assign-sel="${o.id}" style="padding:5px 8px;font-size:12px;margin:0;min-width:140px">
-                  <option value="">-- اختر كابتن لتعيينه فوراً --</option>
-                  ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
-                </select>
-                <button type="button" class="ok sm" data-assign-btn="${o.id}">🛵 تعيين للكابتن</button>
-                <button type="button" class="sec sm" data-redispatch="${o.id}">🔄 إعادة عرض على الكباتن</button>
-                <button type="button" class="bad sm" data-x="${o.id}">إلغاء الطلب</button>
+              <div class="order-action-bar">
+                <div class="assign-input-group">
+                  <select data-assign-sel="${o.id}">
+                    <option value="">-- اختر كابتن فوراً --</option>
+                    ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+                  </select>
+                  <button type="button" data-assign-btn="${o.id}">🛵 تعيين</button>
+                </div>
+                <button type="button" class="act-pill act-redispatch" data-redispatch="${o.id}" title="إعادة تدوير الطلب على الكباتن">🔄 تدوير</button>
+                <button type="button" class="act-pill act-cancel" data-x="${o.id}" title="إلغاء الطلب نهائياً">✕ إلغاء</button>
               </div>
             </div>
           `).join('')}
@@ -170,29 +172,41 @@ authScreen('admin', (user) => {
 
   function renderOrderCaptainCell(o, capList = []) {
     const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
-    let currentHtml = '<span class="mut">— بدون كابتن —</span>';
+    let currentHtml = '<span class="cap-none-chip">— غير معيّن —</span>';
     if (o.captain) {
-      currentHtml = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <a href="#" data-cap="${o.captain.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(o.captain.name)}</a>
-        ${!isClosed ? `<button type="button" class="bad sm" data-unassign="${o.id}" title="سحب/إلغاء الطلب عن هذا الكابتن">✕ إلغاء عن الكابتن</button>` : ''}
+      currentHtml = `<div class="cap-assigned-bar">
+        <a href="#" class="cap-chip" data-cap="${o.captain.id}" title="عرض موقع ورقم الكابتن">🛵 ${esc(o.captain.name)}</a>
+        ${!isClosed ? `<button type="button" class="act-pill act-unassign" data-unassign="${o.id}" title="سحب الطلب من هذا الكابتن">✕ سحب</button>` : ''}
       </div>`;
     } else if (o.offered_captain) {
-      currentHtml = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span style="color:#fbbf24">🔔 معروض على ${esc(o.offered_captain.name)}</span>
-        ${!isClosed ? `<button type="button" class="bad sm" data-unassign="${o.id}">✕ سحب العرض</button>` : ''}
+      currentHtml = `<div class="cap-assigned-bar">
+        <span class="cap-offered-chip">🔔 معروض: ${esc(o.offered_captain.name)}</span>
+        ${!isClosed ? `<button type="button" class="act-pill act-unassign" data-unassign="${o.id}" title="سحب العرض الحالي">✕ سحب</button>` : ''}
       </div>`;
     } else if (o.captain_name) {
-      currentHtml = `<span>🛵 ${esc(o.captain_name)}</span>`;
+      currentHtml = `<span class="cap-chip">🛵 ${esc(o.captain_name)}</span>`;
     }
-    if (isClosed || !capList.length) return currentHtml;
-    return `${currentHtml}
-      <div style="display:flex;gap:4px;align-items:center;margin-top:6px;flex-wrap:wrap">
-        <select data-assign-sel="${o.id}" style="padding:4px 8px;font-size:12px;margin:0;min-width:130px;max-width:170px">
-          <option value="">${o.captain ? '🔄 تحويل لكابتن آخر...' : '🛵 تعيين كابتن...'}</option>
+    if (isClosed || !capList.length) return `<div class="cap-cell-wrap">${currentHtml}</div>`;
+    return `<div class="cap-cell-wrap">
+      ${currentHtml}
+      <div class="assign-input-group">
+        <select data-assign-sel="${o.id}">
+          <option value="">${o.captain ? '🔄 تحويل لكابتن...' : '🛵 تعيين كابتن...'}</option>
           ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
         </select>
-        <button type="button" class="ok sm" data-assign-btn="${o.id}">تعيين</button>
-      </div>`;
+        <button type="button" data-assign-btn="${o.id}" title="تثبيت تعيين الكابتن">تعيين ✓</button>
+      </div>
+    </div>`;
+  }
+
+  function renderOrderRowActions(o) {
+    const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
+    const canCancel = !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
+    return `<div class="order-action-bar">
+      <button type="button" class="act-pill act-details" data-d="${o.id}" title="عرض تفاصيل ومسار الطلب">🔍 تفاصيل</button>
+      ${!isClosed ? `<button type="button" class="act-pill act-redispatch" data-redispatch="${o.id}" title="إعادة تدوير وعرض الطلب على الكباتن">🔄 تدوير</button>` : ''}
+      ${canCancel ? `<button type="button" class="act-pill act-cancel" data-x="${o.id}" title="إلغاء الطلب نهائياً">✕ إلغاء</button>` : ''}
+    </div>`;
   }
 
   async function refreshCurrentTab() {
@@ -252,7 +266,7 @@ authScreen('admin', (user) => {
     const el = document.createElement('div');
     el.id = 'addordmodal';
     el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
-    el.innerHTML = `<div class="card" style="width:100%;max-width:480px;padding:18px;background:#18181b;color:#fff;max-height:90vh;overflow-y:auto">
+    el.innerHTML = `<div class="card" style="width:100%;max-width:480px;padding:18px;background:var(--c-ground);color:var(--c-ink);max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h3 style="margin:0">➕ إضافة / تعيين طلب لكابتن</h3>
         <button type="button" class="ghost" id="aomClose">✕</button>
@@ -346,8 +360,8 @@ authScreen('admin', (user) => {
   function capStatusTag(c) {
     if (c.status !== 'active') return badge(c.status);
     if (c.busy) {
-      const ordBadges = (c.active_orders || []).map((ao) => `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(59,130,246,.2);padding:2px 6px;border-radius:6px;margin:2px"><b dir="ltr">#${ao.serial_no}</b> <button type="button" class="bad sm" style="padding:1px 5px;font-size:10px" data-unassign="${ao.id}" title="سحب الطلب من الكابتن">✕</button></span>`).join(' ');
-      return `<span class="badge b-accepted">🛵 مشغول (${(c.active_orders || []).length || 1})</span><div>${ordBadges}</div>`;
+      const ordBadges = (c.active_orders || []).map((ao) => `<span class="active-ord-mini"><b dir="ltr">#${ao.serial_no}</b> <button type="button" class="act-pill act-unassign-mini" data-unassign="${ao.id}" title="سحب الطلب من الكابتن">✕</button></span>`).join(' ');
+      return `<div class="cap-busy-stack"><span class="badge b-accepted">🛵 مشغول (${(c.active_orders || []).length || 1})</span><div class="cap-busy-orders">${ordBadges}</div></div>`;
     }
     if (c.online) return '<span class="badge b-active">🟢 أونلاين متاح</span>';
     return '<span class="badge">⚪ أوفلاين</span>';
@@ -374,86 +388,49 @@ authScreen('admin', (user) => {
       view().innerHTML = `
         <div class="stats4">${cards.map(([i, n, l, to]) => `<div class="card sc" data-go="${to}" style="cursor:pointer"><div class="ic">${i}</div><div><div class="n">${n}</div><div class="mut">${l}</div></div></div>`).join('')}</div>
 
-        <div class="dgrid" style="margin-bottom:16px">
-          <div class="card">
+        <div class="dgrid exec-bento-grid" style="margin-bottom:18px">
+          <div class="card exec-map-card">
             <div class="row-head">
-              <h3>🗺️ الخريطة الحية (المنشآت والكباتن والطلبات)</h3>
-              <div style="display:flex;gap:6px">
-                <button type="button" class="sec sm" id="dashFit">🎯 إظهار الكل</button>
-                <button type="button" class="sec sm" data-go="live">📡 غرفة العمليات</button>
+              <div>
+                <h3 style="margin:0">🗺️ نظرة تنفيذية حية على الأسطول</h3>
+                <div class="mut" style="font-size:12px">توزيع المنشآت والكباتن والطلبات النشطة</div>
+              </div>
+              <div class="order-action-bar">
+                <button type="button" class="act-pill act-details" id="dashFit">🎯 إظهار الكل</button>
+                <button type="button" class="act-pill act-redispatch" data-go="live">📡 فتح غرفة العمليات</button>
               </div>
             </div>
             <div id="dashmap" class="map" style="height:370px"></div>
           </div>
-          <div class="card" style="padding:16px">
+          <div class="card exec-feed-card">
             <div class="row-head">
-              <h3>⚡ آخر النشاطات</h3>
-              <button type="button" class="sec sm" id="dashRef">🔄 تحديث</button>
+              <div>
+                <h3 style="margin:0">⚡ سجل الأحداث الفوري</h3>
+                <div class="mut" style="font-size:12px">آخر التحديثات الميدانية المباشرة</div>
+              </div>
+              <button type="button" class="act-pill act-details" id="dashRef">🔄 تحديث</button>
             </div>
-            <ul class="feed">${feed.slice(0, 8).map((f) => `<li>${esc(f.t)}<small>${f.at}</small></li>`).join('') || '<li class="mut">لا نشاط جديد في هذه الجلسة بعد</li>'}</ul>
+            <ul class="feed">${feed.slice(0, 9).map((f) => `<li><span class="feed-dot"></span><div>${esc(f.t)}<small>${f.at}</small></div></li>`).join('') || '<li class="mut">لا نشاط جديد في هذه الجلسة بعد</li>'}</ul>
           </div>
         </div>
 
         <div class="card">
           <div class="row-head" style="flex-wrap:wrap;gap:10px">
-            <h3>${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 الطلبات (ابحث بالرقم التسلسلي أو عيّن كابتن)'}</h3>
+            <div>
+              <h3 style="margin:0">${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 أحدث الطلبات المسجلة'}</h3>
+              <div class="mut" style="font-size:12px">تحكم سريع بالتعيين أو التدوير أو التفاصيل</div>
+            </div>
             <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end;min-width:240px;flex-wrap:wrap">
               <input id="dashOrderSearch" placeholder="🔍 بحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:320px;margin:0">
               <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
-              <button type="button" class="sec sm" data-go="orders">كل الطلبات</button>
+              <button type="button" class="sec sm" data-go="orders">كل الطلبات ⬅️</button>
             </div>
           </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن (تحديد / إلغاء)</th><th>الوقت</th><th></th></tr></thead>
+              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>الوقت</th><th>إجراءات</th></tr></thead>
               <tbody id="dashOrderRows"></tbody>
             </table>
-          </div>
-        </div>
-
-        <div class="split2">
-          <div class="card">
-            <div class="row-head">
-              <h3>🏪 المنشآت (${merchList.length})</h3>
-              <button type="button" class="sec sm" data-go="users">➕ إدارة المنشآت</button>
-            </div>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>اسم المنشأة</th><th>الهاتف</th><th>المنطقة / العنوان</th><th>الحالة</th><th></th></tr></thead>
-                <tbody>
-                  ${merchList.map((m) => `<tr>
-                    <td><b>🏪 ${esc(m.business_name || m.name)}</b><div class="mut">${esc(m.name)}</div></td>
-                    <td dir="ltr">${esc(m.phone)}</td>
-                    <td>${esc(zname(m.zone_id))}<div class="mut">${esc(m.address || '')}</div></td>
-                    <td>${badge(m.status)}</td>
-                    <td>${m.lat != null ? `<button type="button" class="ghost sm" data-pan="${m.lat},${m.lng}">📍 موقع</button>` : '<span class="mut">بلا موقع</span>'}</td>
-                  </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد منشآت مسجلة</td></tr>'}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="row-head">
-              <h3>🛵 الكباتن (${capList.length})</h3>
-              <button type="button" class="sec sm" data-go="users">➕ إدارة الكباتن</button>
-            </div>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>اسم الكابتن</th><th>الهاتف</th><th>الاتصال والطلبات</th><th>إجراءات</th></tr></thead>
-                <tbody>
-                  ${capList.map((c) => `<tr>
-                    <td><a href="#" data-cap="${c.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(c.name)}</a><div class="mut">${esc(zname(c.zone_id))}</div></td>
-                    <td dir="ltr">${esc(c.phone)}</td>
-                    <td>${capStatusTag(c)}</td>
-                    <td>
-                      <button type="button" class="ok sm" data-add-order="${c.id}">➕ إضافة طلب</button>
-                      ${c.lat != null ? ` <button type="button" class="ghost sm" data-pan="${c.lat},${c.lng}">📍 موقع</button>` : ''}
-                    </td>
-                  </tr>`).join('') || '<tr><td colspan="4" class="mut">لا يوجد كباتن مسجلون</td></tr>'}
-                </tbody>
-              </table>
-            </div>
           </div>
         </div>
 
@@ -500,16 +477,13 @@ authScreen('admin', (user) => {
         const tbody = $('#dashOrderRows');
         if (!tbody) return;
         tbody.innerHTML = filtered.map((o) => `<tr>
-          <td dir="ltr"><b>${serialNo(o)}</b></td>
-          <td><b>${esc(o.merchant?.name || '—')}</b></td>
+          <td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td>
+          <td><b>🏪 ${esc(o.merchant?.name || '—')}</b></td>
           <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
           <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
           <td>${renderOrderCaptainCell(o, capList)}</td>
           <td>${time(o.created_at)}</td>
-          <td>
-            <button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button>
-            ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? ` <button type="button" class="bad sm" data-x="${o.id}">إلغاء الطلب</button>` : ''}
-          </td>
+          <td>${renderOrderRowActions(o)}</td>
         </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
       };
       renderDashOrders();
@@ -543,38 +517,47 @@ authScreen('admin', (user) => {
       const s = await api('/admin/stats');
       updateShortageBanner(s.shortage);
       view().innerHTML = `
-        <div class="stats" id="lstats">
-          ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]].map(([k, v]) => `<div class="card"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
+        <div class="stats telemetry-bar" id="lstats">
+          ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]].map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
         </div>
-        <div class="card">
+        <div class="card tactical-radar-card">
           <div class="row-head">
-            <h3>🗺️ خريطة العمليات المباشرة</h3>
-            <div style="display:flex;gap:6px">
-              <button type="button" class="sec sm" id="liveFit">🎯 إظهار الكل</button>
-              <button type="button" class="sec sm" id="liveRef">🔄 تحديث الآن</button>
+            <div>
+              <h3 style="margin:0">📡 رادار غرفة العمليات والتوجيه التكتيكي</h3>
+              <div class="mut" style="font-size:12px">تتبع حي لحركة الكباتن ومسارات التوصيل النشطة</div>
+            </div>
+            <div class="order-action-bar">
+              <button type="button" class="act-pill act-details" id="liveFit">🎯 تمركز الخريطة</button>
+              <button type="button" class="act-pill act-redispatch" id="liveRef">🔄 تحديث فوري</button>
             </div>
           </div>
-          <div id="lmap" class="map" style="height:500px"></div>
+          <div id="lmap" class="map" style="height:480px"></div>
         </div>
         <div class="card">
           <div class="row-head" style="flex-wrap:wrap;gap:10px">
-            <h3>📦 الطلبات الحية الجارية</h3>
+            <div>
+              <h3 style="margin:0">📦 مركز التحكم بالطلبات الحية الجارية</h3>
+              <div class="mut" style="font-size:12px">توجيه الكباتن، إعادة التدوير، ومتابعة حالة كل طلب لحظة بلحظة</div>
+            </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;justify-content:flex-end">
               <input id="liveOrderSearch" placeholder="🔍 ابحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:340px;margin:0">
-              <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
+              <button type="button" class="ok sm" data-add-order="">➕ إسناد طلب جديد</button>
             </div>
           </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن (تحديد / إلغاء)</th><th></th></tr></thead>
+              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>إجراءات</th></tr></thead>
               <tbody id="lrows"></tbody>
             </table>
           </div>
         </div>
         <div id="detail"></div>
-        <div class="split2">
+        <div class="split2 tactical-split2">
           <div class="card">
-            <h3>🛵 الكباتن ومواقعهم</h3>
+            <div class="row-head">
+              <h3 style="margin:0">🛵 أسطول الكباتن والمواقع الحية</h3>
+              <span class="mut" style="font-size:12px">إسناد مباشر وتحديد على الرادار</span>
+            </div>
             <div class="tablewrap">
               <table>
                 <thead><tr><th>الكابتن</th><th>الهاتف</th><th>الحالة والطلبات</th><th>إجراءات</th></tr></thead>
@@ -583,10 +566,13 @@ authScreen('admin', (user) => {
             </div>
           </div>
           <div class="card">
-            <h3>🏪 المنشآت</h3>
+            <div class="row-head">
+              <h3 style="margin:0">🏪 شبكة المنشآت المعتمدة</h3>
+              <span class="mut" style="font-size:12px">تمركز سريع على الخريطة</span>
+            </div>
             <div class="tablewrap">
               <table>
-                <thead><tr><th>المنشأة</th><th>الهاتف</th><th>العنوان</th><th></th></tr></thead>
+                <thead><tr><th>المنشأة</th><th>الهاتف</th><th>العنوان</th><th>الموقع</th></tr></thead>
                 <tbody id="lmerchs"></tbody>
               </table>
             </div>
@@ -701,13 +687,13 @@ authScreen('admin', (user) => {
             <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
           </div>
         </div>
-        <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن (تحديد / إلغاء)</th><th>الوقت</th><th></th></tr></thead><tbody id="orderRows"></tbody></table></div></div><div id="detail"></div>`;
+        <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>الوقت</th><th>إجراءات</th></tr></thead><tbody id="orderRows"></tbody></table></div></div><div id="detail"></div>`;
       const renderOrders = () => {
         const q = $('#orderSearch')?.value || '';
         const st = $('#orderStatusFilter')?.value || '';
         const filtered = rows.filter((o) => matchOrder(o, q, st));
         $('#orderCount').textContent = `(${filtered.length} من ${rows.length})`;
-        $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b>${serialNo(o)}</b></td><td><b>${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${renderOrderCaptainCell(o, capList)}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button>${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? ` <button type="button" class="bad sm" data-x="${o.id}">إلغاء</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
+        $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td><td><b>🏪 ${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${renderOrderCaptainCell(o, capList)}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td>${renderOrderRowActions(o)}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
       };
       renderOrders();
       $('#orderSearch').oninput = renderOrders;
@@ -759,7 +745,7 @@ authScreen('admin', (user) => {
 
     async settings() {
       const s = await api('/admin/stats');
-      view().innerHTML = `<div class="grid"><div class="card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><div class="row"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs">حفظ</button></div></div>
+      view().innerHTML = `<div class="grid"><div class="card commission-card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><div class="row"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs">حفظ</button></div></div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
       $('#cs').onclick = () => act(() => api('/admin/settings/commission', 'PUT', { value: Number($('#cm').value) }), 'تم الحفظ');
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
@@ -829,7 +815,7 @@ authScreen('admin', (user) => {
     const stEl = $('#lstats');
     if (stEl) {
       stEl.innerHTML = [['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]]
-        .map(([k, v]) => `<div class="card"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('');
+        .map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('');
     }
 
     const orders = d.orders || [];
@@ -843,12 +829,12 @@ authScreen('admin', (user) => {
       const lrows = $('#lrows');
       if (!lrows) return;
       lrows.innerHTML = filtered.map((o) => `<tr>
-        <td dir="ltr"><b>${serialNo(o)}</b></td>
-        <td><b>${esc(o.merchant?.name || '—')}</b></td>
+        <td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td>
+        <td><b>🏪 ${esc(o.merchant?.name || '—')}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${badge(o.status)}${o.eta_minutes ? ` ~${o.eta_minutes}د` : ''}</td>
+        <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
         <td>${renderOrderCaptainCell(o, captains)}</td>
-        <td><button type="button" class="ghost sm" data-d="${o.id}">تفاصيل</button> ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? `<button type="button" class="bad sm" data-x="${o.id}">إلغاء الطلب</button>` : ''}</td>
+        <td>${renderOrderRowActions(o)}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات مطابقة</td></tr>';
     };
     renderLiveOrders();
@@ -856,12 +842,14 @@ authScreen('admin', (user) => {
     if (lSearch) lSearch.oninput = renderLiveOrders;
 
     $('#lcaps').innerHTML = captains.map((c) => `<tr>
-      <td><a href="#" data-cap="${c.id}" style="color:var(--cy);font-weight:700">🛵 ${esc(c.name)}</a></td>
+      <td><a href="#" class="cap-chip" data-cap="${c.id}">🛵 ${esc(c.name)}</a></td>
       <td dir="ltr">${esc(c.phone)}</td>
       <td>${capStatusTag(c)}</td>
       <td>
-        <button type="button" class="ok sm" data-add-order="${c.id}">➕ إضافة طلب</button>
-        ${c.lat != null ? ` <button type="button" class="ghost sm" data-pan="${c.lat},${c.lng}">📍 تحديد</button>` : ''}
+        <div class="order-action-bar">
+          <button type="button" class="act-pill act-assign" data-add-order="${c.id}">➕ إسناد طلب</button>
+          ${c.lat != null ? `<button type="button" class="act-pill act-details" data-pan="${c.lat},${c.lng}">📍 رادار</button>` : ''}
+        </div>
       </td>
     </tr>`).join('') || '<tr><td colspan="4" class="mut">لا يوجد كباتن</td></tr>';
 
@@ -869,7 +857,7 @@ authScreen('admin', (user) => {
       <td><b>🏪 ${esc(m.business_name || m.name)}</b><div class="mut">${esc(m.name)}</div></td>
       <td dir="ltr">${esc(m.phone)}</td>
       <td>${esc(m.address || zname(m.zone_id))}</td>
-      <td>${m.lat != null ? `<button type="button" class="ghost sm" data-pan="${m.lat},${m.lng}">📍 تحديد</button>` : '<span class="mut">بلا موقع</span>'}</td>
+      <td>${m.lat != null ? `<button type="button" class="act-pill act-details" data-pan="${m.lat},${m.lng}">📍 رادار</button>` : '<span class="mut">بلا موقع</span>'}</td>
     </tr>`).join('') || '<tr><td colspan="4" class="mut">لا توجد منشآت</td></tr>';
 
     // Plot all registered merchants

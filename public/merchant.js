@@ -1,4 +1,4 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=9';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=panther2026v8';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
@@ -6,38 +6,62 @@ authScreen('merchant', (user) => {
   app.innerHTML = `
   ${renderInstallBanner('merchant')}
   <div class="tabs">
-    <button type="button" data-tab="order" class="active">🛵 طلب كابتن</button>
+    <button type="button" data-tab="order" class="active">🛵 طلب كابتن فوري</button>
     <button type="button" data-tab="live" id="liveTabBtn">📡 الطلبات الحية</button>
-    <button type="button" data-tab="my">📦 طلباتي</button>
+    <button type="button" data-tab="my">📦 سجل طلباتي</button>
   </div>
   <section id="orderSection" class="tab-section">
-    <div class="hero" id="hero">
-      <button type="button" class="hero-btn" id="heroBtn">اطلب كابتن الآن</button>
-      <div class="hero-sub">اضغط لطلب كابتن توصيل وتحديد عنوان التوصيل</div>
-    </div>
-    <div class="card hide" id="formCard">
-      <h3>🛵 طلب كابتن توصيل</h3>
-      <form id="of">
-        <label>عنوان التوصيل (مكان التوصيل)</label>
-        <input name="customer_address" id="addrInput" placeholder="اكتب عنوان التوصيل هنا..." required minlength="2" maxlength="250" autocomplete="off">
-        <button class="big" id="go">🛵 اطلب كابتن</button>
-      </form>
+    <div class="unified-dispatch-vault">
+      <div class="hero dispatch-command-hero" id="hero">
+        <div class="dispatch-radar-pill"><span class="pulse-dot-inline"></span> شبكة كباتن PANTHER متصلة وجاهزة</div>
+        <div class="dispatch-title">إرسال طلب توصيل فوري بضغطة واحدة</div>
+        <div class="hero-sub">أدخل عنوان الزبون مباشرة في الحقل أدناه واضغط إرسال لتوجيه أقرب كابتن متاح لمنشأتك فوراً</div>
+        <button type="button" class="hero-btn-badge" id="heroBtn">⚡ إرسال فوري لأقرب كابتن</button>
+      </div>
+      <div class="card dispatch-form-card" id="formCard">
+        <div class="dispatch-card-hdr">
+          <span class="dispatch-ico">📍</span>
+          <div>
+            <h3 style="margin:0">تحديد وجهة التوصيل</h3>
+            <div class="mut" style="font-size:12.5px">اكتب الحي أو الشارع أو المعلم القريب للزبون</div>
+          </div>
+        </div>
+        <form id="of">
+          <label>عنوان التوصيل (مكان تسليم الطلب)</label>
+          <input name="customer_address" id="addrInput" placeholder="مثال: المزة - شارع الجلاء - جانب صيدلية..." required minlength="2" maxlength="250" autocomplete="off">
+          <button class="big" id="go">🚀 إرسال الطلب لأقرب كابتن الآن</button>
+        </form>
+      </div>
     </div>
   </section>
   <section id="liveSection" class="tab-section hide">
-    <div class="card">
-      <h3>الطلبات الحية الجارية</h3>
-      <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن</th><th></th></tr></thead><tbody id="liveRows"></tbody></table></div>
-    </div>
-    <div class="card">
-      <h3>🗺️ التتبع المباشر على الخريطة</h3>
-      <div id="trkinfo" class="mut">اختر طلباً نشطاً لتتبعه مباشرة</div>
-      <div id="tmap" class="map" style="height:400px"></div>
+    <div class="live-split-grid">
+      <div class="card live-orders-panel">
+        <div class="row-head">
+          <div>
+            <h3 style="margin:0">📡 الطلبات الحية الجارية</h3>
+            <div class="mut" style="font-size:12px">اضغط «تتبع» لعرض مسار الكابتن أو اسم الكابتن للاتصال المباشر</div>
+          </div>
+        </div>
+        <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>عنوان التوصيل</th><th>الحالة</th><th>الكابتن والاتصال</th><th>إجراءات</th></tr></thead><tbody id="liveRows"></tbody></table></div>
+      </div>
+      <div class="card live-map-panel">
+        <div class="row-head">
+          <h3 style="margin:0">🗺️ رادار التتبع المباشر</h3>
+        </div>
+        <div id="trkinfo" class="mut">اختر طلباً نشطاً لتتبعه مباشرة على الخريطة</div>
+        <div id="tmap" class="map" style="height:410px"></div>
+      </div>
     </div>
   </section>
   <section id="mySection" class="tab-section hide">
     <div class="card">
-      <h3>سجل طلباتي</h3>
+      <div class="row-head">
+        <div>
+          <h3 style="margin:0">📦 سجل طلبات المنشأة</h3>
+          <div class="mut" style="font-size:12px">أرشيف كامل لجميع الطلبات المرسلة وحالات إغلاقها</div>
+        </div>
+      </div>
       <div class="tablewrap">
         <table>
           <thead>
@@ -79,12 +103,12 @@ authScreen('merchant', (user) => {
   $('#heroBtn').onclick = () => {
     const fc = $('#formCard');
     const inp = $('#addrInput');
-    if (!fc.classList.contains('hide') && inp.value.trim().length >= 2) {
+    fc.classList.remove('hide');
+    if (inp.value.trim().length >= 2) {
       $('#of').requestSubmit();
       return;
     }
-    fc.classList.remove('hide');
-    setTimeout(() => { inp.focus(); fc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60);
+    inp.focus();
   };
 
   $('#of').onsubmit = async (e) => {
@@ -96,7 +120,6 @@ authScreen('merchant', (user) => {
     btn.disabled = false;
     if (o) {
       e.target.reset();
-      $('#formCard').classList.add('hide');
       upsert(o);
       switchTab('live');
       select(o.id);
@@ -105,7 +128,7 @@ authScreen('merchant', (user) => {
 
   const LIVE = ['searching', 'offered', 'accepted', 'picked_up', 'arrived'];
   function upsert(o) { orders.set(o.id, o); render(); if (selected === o.id) track(o); }
-  const capLink = (o) => o.captain ? `<a href="#" data-cap="${o.id}" style="color:var(--or);font-weight:700">🛵 ${esc(o.captain.name)}</a>` : '—';
+  const capLink = (o) => o.captain ? `<a href="#" data-cap="${o.id}">🛵 ${esc(o.captain.name)} • 📞</a>` : '<span class="mut">— جاري التعيين —</span>';
 
   function render() {
     const list = [...orders.values()].sort((a, b) => b.id - a.id);
@@ -114,14 +137,16 @@ authScreen('merchant', (user) => {
     if (liveBtn) liveBtn.textContent = liveList.length ? `📡 الطلبات الحية (${liveList.length})` : '📡 الطلبات الحية';
 
     $('#liveRows').innerHTML = liveList.map((o) => `
-      <tr>
+      <tr class="${selected === o.id ? 'is-selected-row' : ''}">
         <td dir="ltr"><b>${serialNo(o)}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
         <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
         <td>${capLink(o)}</td>
         <td>
-          <button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع</button>
-          ${['searching', 'offered'].includes(o.status) ? ` <button type="button" class="bad sm" data-cancel="${o.id}">إلغاء</button>` : ''}
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:nowrap">
+            <button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع حي</button>
+            ${['searching', 'offered'].includes(o.status) ? `<button type="button" class="bad sm" data-cancel="${o.id}">✕ إلغاء</button>` : ''}
+          </div>
         </td>
       </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد طلبات حية حالياً</td></tr>';
 

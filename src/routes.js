@@ -353,7 +353,11 @@ C.get('/summary', wrap((req, res) => {
   const day = dayOf();
   const r = db.prepare("SELECT COUNT(*) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')").get(req.user.id, day);
   const delivered = db.prepare("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='delivered'").get(req.user.id, day).n;
-  res.json({ day, delivered, commission: r.c, liability: r.l, due: r.c + r.l });
+  const failed = db.prepare("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='failed'").get(req.user.id, day).n;
+  const earnings_today = db.prepare("SELECT COALESCE(SUM(delivery_fee),0) s FROM orders WHERE captain_id=? AND day=? AND status='delivered'").get(req.user.id, day).s;
+  const total_delivered = db.prepare("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND status='delivered'").get(req.user.id).n;
+  const settled = !!db.prepare('SELECT 1 FROM settlements WHERE captain_id=? AND day=?').get(req.user.id, day);
+  res.json({ day, delivered, failed, earnings_today, total_delivered, settled, commission: r.c, liability: r.l, due: r.c + r.l });
 }));
 C.get('/history', wrap((req, res) => {
   res.json(db.prepare("SELECT * FROM orders WHERE captain_id=? AND status IN ('delivered','failed') ORDER BY id DESC LIMIT 100").all(req.user.id).map((o) => viewOrder(o, 'captain')));

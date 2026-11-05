@@ -51,13 +51,78 @@ export function setToken(t) {
   }
 }
 
+// ---------- Server URL Config (for Android APK / Capacitor / Remote Server) ----------
+export const isNativeApk = () =>
+  Boolean(window.Capacitor?.isNativePlatform?.() || window.PANTHER_APK || location.protocol === 'file:' || (location.hostname === 'localhost' && !location.port));
+
+export function getServerUrl() {
+  const saved = (localStorage.getItem('panther_server_url') || '').trim().replace(/\/+$/, '');
+  if (saved) return saved;
+  if (window.PANTHER_DEFAULT_SERVER) return String(window.PANTHER_DEFAULT_SERVER).trim().replace(/\/+$/, '');
+  return '';
+}
+
+export function setServerUrl(url) {
+  const clean = String(url || '').trim().replace(/\/+$/, '');
+  if (clean) localStorage.setItem('panther_server_url', clean);
+  else localStorage.removeItem('panther_server_url');
+}
+
+export function openServerConfigModal(onSaved) {
+  document.getElementById('srvCfgModal')?.remove();
+  const current = getServerUrl() || (!isNativeApk() ? location.origin : '');
+  const modal = document.createElement('div');
+  modal.id = 'srvCfgModal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
+  modal.innerHTML = `<div class="card" style="width:100%;max-width:430px;padding:20px;border:1.5px solid rgba(251,191,36,.45);text-align:right">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0;color:var(--gold)">🌐 إعدادات اتصال السيرفر</h3>
+      <button type="button" class="ghost sm" id="srvCfgClose">✕</button>
+    </div>
+    <p class="mut" style="font-size:13px;margin:0 0 12px">أدخل رابط السيرفر (مثل رابط Cloudflare أو الدومين أو IP الشبكة المحلية):</p>
+    <input id="srvUrlInput" dir="ltr" type="url" placeholder="https://example.trycloudflare.com" value="${esc(current)}" style="width:100%;margin-bottom:10px;text-align:left">
+    <div id="srvTestMsg" class="mut" style="font-size:12.5px;margin-bottom:10px;min-height:18px"></div>
+    <div class="row">
+      <button type="button" class="sec" id="srvTestBtn">🔌 فحص الاتصال</button>
+      <button type="button" class="ok" id="srvSaveBtn">💾 حفظ واعتماد</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  $('#srvCfgClose', modal).onclick = close;
+  const inp = $('#srvUrlInput', modal), msg = $('#srvTestMsg', modal);
+  $('#srvTestBtn', modal).onclick = async () => {
+    const val = inp.value.trim().replace(/\/+$/, '');
+    if (!val) { msg.textContent = '⚠️ يرجى إدخال رابط السيرفر أولاً'; msg.style.color = '#fbbf24'; /* warn */ return; }
+    msg.textContent = '⏳ جاري فحص الاتصال بالسيرفر...'; msg.style.color = '#a1a1aa'; /* zinc */
+    try {
+      const r = await fetch(val + '/api/zones');
+      if (r.ok) { msg.textContent = '✅ الاتصال بالسيرفر ناجح ويعمل بشكل ممتاز!'; msg.style.color = '#22c55e'; /* ok */ }
+      else { msg.textContent = `❌ السيرفر استجاب برمز خطأ (${r.status})`; msg.style.color = '#ef4444'; /* bad */ }
+    } catch {
+      msg.textContent = '❌ تعذّر الوصول للسيرفر، تأكد من الرابط أو اتصال الإنترنت'; msg.style.color = '#ef4444'; /* bad */
+    }
+  };
+  $('#srvSaveBtn', modal).onclick = () => {
+    const val = inp.value.trim().replace(/\/+$/, '');
+    if (!isNativeApk() && val === location.origin) setServerUrl('');
+    else setServerUrl(val);
+    toast('✅ تم حفظ رابط السيرفر');
+    close();
+    if (onSaved) onSaved(val);
+    else location.reload();
+  };
+}
+
 // ---------- PWA Service Worker & App Installation ----------
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
 let deferredPrompt = null;
 export const isStandalone = () =>
+  isNativeApk() ||
   window.matchMedia?.('(display-mode: standalone)').matches ||
   window.navigator.standalone === true;
 
@@ -125,16 +190,16 @@ export async function promptInstallApp(role = ROLE_KEY) {
       <button type="button" class="ghost sm" id="pwaClose">✕</button>
     </div>
     <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:12px;margin-bottom:10px">
-      <b style="color:#fbbf24;display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
-      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:#e4e4e7">
+      <b class="clr-warn" style="display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
         <li>اضغط على زر القائمة <b>(⋮)</b> في أعلى المتصفح.</li>
         <li>اختر <b>«تثبيت التطبيق» (Install App)</b> أو <b>«الإضافة إلى الشاشة الرئيسية»</b>.</li>
         <li>اضغط <b>تثبيت</b> ليظهر التطبيق بأيقونة <b>PANTHER</b> على هاتفك.</li>
       </ol>
     </div>
     <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;margin-bottom:14px">
-      <b style="color:#f4f4f5;display:block;margin-bottom:6px">🍎 على هواتف آيفون (Safari):</b>
-      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:#e4e4e7">
+      <b class="clr-near-wht" style="display:block;margin-bottom:6px">🍎 على هواتف آيفون (Safari):</b>
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
         <li>اضغط على زر المشاركة <b>(⬆️ Share)</b> في أسفل المتصفح.</li>
         <li>اختر <b>«إضافة إلى الصفحة الرئيسية» (Add to Home Screen)</b>.</li>
         <li>اضغط <b>إضافة (Add)</b> في أعلى الشاشة.</li>
@@ -165,7 +230,7 @@ export function renderInstallBanner(role = ROLE_KEY) {
       <div style="display:flex;align-items:center;gap:12px">
         <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid rgba(251,191,36,.5);box-shadow:0 6px 18px rgba(234,88,12,.3)">
         <div>
-          <div style="font-weight:900;font-size:15.5px;color:#fff">${meta.icon} ${esc(meta.name)}</div>
+          <div style="font-weight:900;font-size:15.5px;color:var(--c-ink)">${meta.icon} ${esc(meta.name)}</div>
           <div class="mut" style="font-size:12.5px">${esc(meta.desc)}</div>
         </div>
       </div>
@@ -188,13 +253,24 @@ document.addEventListener('click', async (e) => {
   const copyBtn = e.target.closest('[data-copy-app]');
   if (copyBtn) {
     e.preventDefault();
-    const url = location.origin + copyBtn.dataset.copyApp;
+    const url = (getServerUrl() || location.origin) + copyBtn.dataset.copyApp;
     try { await navigator.clipboard.writeText(url); toast('✅ تم نسخ رابط تحميل التطبيق'); } catch { prompt('انسخ رابط التطبيق:', url); }
+    return;
+  }
+  const srvBtn = e.target.closest('[data-server-cfg]');
+  if (srvBtn) {
+    e.preventDefault();
+    openServerConfigModal();
   }
 });
 
 export async function api(path, method = 'GET', body) {
-  const r = await fetch('/api' + path, {
+  const base = getServerUrl();
+  if (isNativeApk() && !base) {
+    openServerConfigModal();
+    throw new Error('يرجى تحديد رابط السيرفر أولاً');
+  }
+  const r = await fetch(base + '/api' + path, {
     method,
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
     body: body ? JSON.stringify(body) : undefined,
@@ -212,7 +288,12 @@ export const act = async (fn, okMsg) => { try { const r = await fn(); if (okMsg)
 export function connectWs(onMsg) {
   let ws, stop = false, delay = 1000;
   const open = () => {
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    const base = getServerUrl();
+    if (isNativeApk() && !base) return;
+    const wsUrl = base
+      ? base.replace(/^http/i, 'ws') + '/ws'
+      : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    ws = new WebSocket(wsUrl);
     ws.onopen = () => { delay = 1000; ws.send(JSON.stringify({ type: 'auth', token })); };
     ws.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch {} };
     ws.onclose = (e) => { if (!stop && e.code !== 4003) setTimeout(open, (delay = Math.min(delay * 2, 15000))); };
@@ -263,7 +344,7 @@ if (!document.getElementById('_mapCSS')) {
     }
     .pulsing-dot {
       width: 14px; height: 14px; border-radius: 50%;
-      border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.5);
+      border: 2px solid var(--c-ink); box-shadow: 0 2px 6px rgba(0,0,0,.5);
       position: relative;
     }
     .pulsing-dot::after {
@@ -277,14 +358,15 @@ if (!document.getElementById('_mapCSS')) {
 
 function buildTileLayer(key) {
   const cfg = MAP_STYLES[key] || MAP_STYLES.google;
+  const proxyUrl = () => (getServerUrl() || '') + cfg.proxy;
   const forceProxy = sessionStorage.getItem('mashwar_tile_proxy') === '1';
-  const layer = L.tileLayer(forceProxy ? cfg.proxy : cfg.direct, cfg.opts);
+  const layer = L.tileLayer(forceProxy ? proxyUrl() : cfg.direct, cfg.opts);
   let errs = 0, proxied = forceProxy;
   layer.on('tileerror', () => {
     if (!proxied && ++errs >= 2) {
       proxied = true;
       sessionStorage.setItem('mashwar_tile_proxy', '1');
-      layer.setUrl(cfg.proxy);
+      layer.setUrl(proxyUrl());
     }
   });
   return layer;
@@ -372,7 +454,7 @@ export function pickLocation(map, onPick) {
 
 export async function makeRoute(map, from, to) {
   const directUrl = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
-  const proxyUrl = `/api/route?from=${encodeURIComponent(from[0] + ',' + from[1])}&to=${encodeURIComponent(to[0] + ',' + to[1])}`;
+  const proxyUrl = `${getServerUrl()}/api/route?from=${encodeURIComponent(from[0] + ',' + from[1])}&to=${encodeURIComponent(to[0] + ',' + to[1])}`;
   for (const url of [directUrl, proxyUrl]) {
     try {
       const res = await fetch(url);
@@ -438,17 +520,35 @@ export async function authScreen(role, onReady) {
   const zones = [];
   root.classList.remove('hide');
   const canReg = false; // الحسابات تُنشأ من الإدارة فقط
-  const roleLabel = { admin: 'تطبيق الإدارة', merchant: 'تطبيق المنشأة', captain: 'تطبيق الكابتن' }[role] || '';
+  const roleLabel = { admin: 'غرفة العمليات والإدارة', merchant: 'بوابة المنشآت الشريكة', captain: 'تطبيق الكابتن الميداني' }[role] || '';
+  const roleIcon = { admin: '⚡', merchant: '🏪', captain: '🛵' }[role] || '🐆';
+  const srvBadge = isNativeApk() || getServerUrl()
+    ? `<div style="margin-top:14px;text-align:center"><button type="button" class="ghost sm" data-server-cfg="1">🌐 إعدادات السيرفر${getServerUrl() ? ` (${esc(getServerUrl())})` : ' (غير محدد)'}</button></div>`
+    : `<div style="margin-top:14px;text-align:center"><button type="button" class="ghost sm" data-server-cfg="1">🌐 تغيير رابط السيرفر</button></div>`;
   root.innerHTML = `${renderInstallBanner(role)}
-    <div class="card hero">
-    <img src="/logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
-    <div class="brand-title"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div>
-    <div class="brand-sub">DELIVERY • توصيل${roleLabel ? ` — ${roleLabel}` : ''}</div>
-    <p class="mut">سجّل الدخول للمتابعة. الحسابات تُنشأ عن طريق الإدارة.</p>
-    <form id="lf" style="text-align:right"><label>رقم الهاتف</label><input name="phone" inputmode="tel" autocomplete="username" required>
-    <label>كلمة المرور</label><input name="password" type="password" autocomplete="current-password" required>
-    <button class="big">تسجيل الدخول</button></form>
-    ${canReg ? '<p class="mut" style="text-align:center"><a href="#" id="toReg">حساب جديد</a></p>' : ''}</div>
+    <div class="card hero vault-card">
+      <div class="vault-glow-orb"></div>
+      <div class="brand-emblem-wrap">
+        <img src="logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
+        <span class="brand-role-pill">${roleIcon} ${esc(roleLabel)}</span>
+      </div>
+      <div class="brand-title-gradient" dir="ltr">PANTHER DELIVERY</div>
+      <div class="brand-sub">B2B SMART DISPATCH • نظام التوصيل الذكي</div>
+      <p class="mut" style="margin:0 auto 18px;max-width:320px;line-height:1.6">سجّل الدخول إلى حسابك المعتمد للمتابعة. تُدار جميع الحسابات مركزياً عبر الإدارة.</p>
+      <form id="lf" class="vault-form" style="text-align:right">
+        <div class="input-group">
+          <label>📱 رقم الهاتف المعتمد</label>
+          <input name="phone" inputmode="tel" placeholder="09xxxxxxxx" autocomplete="username" required>
+        </div>
+        <div class="input-group">
+          <label>🔒 كلمة المرور</label>
+          <input name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+        <button class="big vault-submit">🚀 تسجيل الدخول للنظام</button>
+      </form>
+      ${srvBadge}
+      ${canReg ? '<p class="mut" style="text-align:center"><a href="#" id="toReg">حساب جديد</a></p>' : ''}
+    </div>
     ${canReg ? `<div class="card hide" id="regc"><h2>حساب جديد</h2><form id="rf">
     <label>الاسم</label><input name="name" required minlength="2" maxlength="60">
     <label>رقم الهاتف</label><input name="phone" inputmode="tel" required>
@@ -495,10 +595,26 @@ export async function authScreen(role, onReady) {
 
 export function header(title, user, onLogout) {
   const h = document.createElement('header');
+  h.className = 'panther-header';
   const installBtn = !isStandalone()
-    ? `<button type="button" class="ok sm" data-install-app="${esc(ROLE_KEY)}">📲 تثبيت التطبيق</button>`
+    ? `<button type="button" class="ok sm" data-install-app="${esc(ROLE_KEY)}">📲 تثبيت</button>`
     : '';
-  h.innerHTML = `<h1><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><span dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></span> <span style="font-size:14px;color:var(--gold)">— ${esc(title)}</span></h1><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span>${esc(user.business_name || user.name)}</span>${installBtn}<button class="sec sm" id="lo">خروج</button></div>`;
+  const srvBtn = (isNativeApk() || getServerUrl())
+    ? `<button type="button" class="ghost sm" data-server-cfg="1" title="إعدادات السيرفر">🌐 السيرفر</button>`
+    : '';
+  h.innerHTML = `
+    <h1>
+      <img src="logo.jpg" alt="PANTHER" class="brand-logo-sm">
+      <div class="hdr-brand-stack">
+        <span class="brand-title-sm" dir="ltr">PANTHER</span>
+        <span class="hdr-role-tag">${esc(title)}</span>
+      </div>
+    </h1>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="hdr-user-chip">👤 ${esc(user.business_name || user.name)}</span>
+      ${srvBtn}${installBtn}
+      <button class="sec sm" id="lo">خروج</button>
+    </div>`;
   document.body.prepend(h);
   $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
 }
@@ -511,7 +627,7 @@ export function captainModal(cap) {
   el.id = 'capmodal';
   el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
   const hasLoc = cap.lat != null && cap.lng != null;
-  el.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:18px;background:#18181b;color:#fff">
+  el.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:18px;background:var(--c-ground);color:var(--c-ink)">
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🛵 ${esc(cap.name)}</h3><button type="button" class="ghost" id="capx">✕</button></div>
     <p style="margin:10px 0">📞 <b dir="ltr">${esc(cap.phone || '—')}</b></p>
     ${hasLoc ? '<div id="capmap" class="map" style="height:240px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}

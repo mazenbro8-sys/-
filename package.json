@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
-    "test": "node --test test/e2e.test.js"
+    "test": "node --test test/e2e.test.js",
+    "prepare:apk": "node scripts/prepare-apk.js",
+    "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/compile-apk.ps1"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
