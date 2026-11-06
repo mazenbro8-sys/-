@@ -2,7 +2,7 @@ import {
   $, $$, esc, money, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone
+  setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone, lStore
 } from './shared.js?v=panther2026v13';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
@@ -232,9 +232,9 @@ authScreen('captain', (user) => {
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null;
 
-  let vibEnabled = localStorage.getItem('panther_vibrate') !== '0';
-  let alarmTone = normalizeCaptainTone(localStorage.getItem('panther_tone'));
-  let navApp = localStorage.getItem('panther_nav_app') || 'google';
+  let vibEnabled = lStore.getItem('panther_vibrate') !== '0';
+  let alarmTone = normalizeCaptainTone(lStore.getItem('panther_tone'));
+  let navApp = lStore.getItem('panther_nav_app') || 'google';
 
   $('#vibToggle').checked = vibEnabled;
   $('#toneSelect').value = alarmTone;
@@ -243,23 +243,23 @@ authScreen('captain', (user) => {
     window.PantherNative?.setVibrate?.(vibEnabled);
   } catch {}
   $('#navAppSelect').value = navApp;
-  $('#mapStyleSelect').value = localStorage.getItem('mashwar_map_style') || 'google';
+  $('#mapStyleSelect').value = lStore.getItem('mashwar_map_style') || 'google';
 
   $('#vibToggle').onchange = (e) => {
     vibEnabled = e.target.checked;
-    localStorage.setItem('panther_vibrate', vibEnabled ? '1' : '0');
+    lStore.setItem('panther_vibrate', vibEnabled ? '1' : '0');
     try { window.PantherNative?.setVibrate?.(vibEnabled); } catch {}
     toast(vibEnabled ? '✅ تم تفعيل الاهتزاز' : 'تم إيقاف الاهتزاز');
   };
   $('#toneSelect').onchange = (e) => {
     alarmTone = normalizeCaptainTone(e.target.value);
-    localStorage.setItem('panther_tone', alarmTone);
+    lStore.setItem('panther_tone', alarmTone);
     try { window.PantherNative?.setTone?.(alarmTone); } catch {}
     testSound();
   };
   $('#navAppSelect').onchange = (e) => {
     navApp = e.target.value;
-    localStorage.setItem('panther_nav_app', navApp);
+    lStore.setItem('panther_nav_app', navApp);
     renderActive();
     toast('✅ تم حفظ تطبيق الملاحة المفضل');
   };

@@ -38,19 +38,32 @@ export function toast(msg, ms = 3500) {
 }
 document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
 
+const makeSafeStore = (kind) => {
+  const mem = new Map();
+  const raw = () => { try { return window[kind]; } catch { return null; } };
+  return {
+    getItem(k) { try { const s = raw(); return s ? s.getItem(k) : (mem.get(k) ?? null); } catch { return mem.get(k) ?? null; } },
+    setItem(k, v) { mem.set(k, String(v)); try { raw()?.setItem(k, String(v)); } catch {} },
+    removeItem(k) { mem.delete(k); try { raw()?.removeItem(k); } catch {} },
+    clear() { mem.clear(); try { raw()?.clear(); } catch {} },
+  };
+};
+export const sStore = makeSafeStore('sessionStorage');
+export const lStore = makeSafeStore('localStorage');
+
 const ROLE_KEY = location.pathname.includes('admin') ? 'admin' : location.pathname.includes('merchant') ? 'merchant' : location.pathname.includes('captain') ? 'captain' : 'app';
 // Remove the old unscoped sessionStorage key if it exists
-sessionStorage.removeItem('token');
-let token = sessionStorage.getItem('token_' + ROLE_KEY) || localStorage.getItem('panther_token_' + ROLE_KEY);
+sStore.removeItem('token');
+let token = sStore.getItem('token_' + ROLE_KEY) || lStore.getItem('panther_token_' + ROLE_KEY);
 export const getToken = () => token;
 export function setToken(t) {
   token = t;
   if (t) {
-    sessionStorage.setItem('token_' + ROLE_KEY, t);
-    localStorage.setItem('panther_token_' + ROLE_KEY, t);
+    sStore.setItem('token_' + ROLE_KEY, t);
+    lStore.setItem('panther_token_' + ROLE_KEY, t);
   } else {
-    sessionStorage.removeItem('token_' + ROLE_KEY);
-    localStorage.removeItem('panther_token_' + ROLE_KEY);
+    sStore.removeItem('token_' + ROLE_KEY);
+    lStore.removeItem('panther_token_' + ROLE_KEY);
   }
 }
 
@@ -61,12 +74,12 @@ export const isNativeApk = () =>
 export const DEFAULT_APK_SERVER = 'https://mashwar-app.onrender.com';
 
 // Auto-migrate stale temporary Cloudflare Quick Tunnel URLs on upgraded APK installs
-if ((localStorage.getItem('panther_server_url') || '').includes('.trycloudflare.com')) {
-  localStorage.removeItem('panther_server_url');
+if ((lStore.getItem('panther_server_url') || '').includes('.trycloudflare.com')) {
+  lStore.removeItem('panther_server_url');
 }
 
 export function getServerUrl() {
-  const saved = (localStorage.getItem('panther_server_url') || '').trim().replace(/\/+$/, '');
+  const saved = (lStore.getItem('panther_server_url') || '').trim().replace(/\/+$/, '');
   if (saved) return saved;
   if (window.PANTHER_DEFAULT_SERVER) return String(window.PANTHER_DEFAULT_SERVER).trim().replace(/\/+$/, '');
   if (isNativeApk()) return DEFAULT_APK_SERVER;
@@ -75,8 +88,8 @@ export function getServerUrl() {
 
 export function setServerUrl(url) {
   const clean = String(url || '').trim().replace(/\/+$/, '');
-  if (clean) localStorage.setItem('panther_server_url', clean);
-  else localStorage.removeItem('panther_server_url');
+  if (clean) lStore.setItem('panther_server_url', clean);
+  else lStore.removeItem('panther_server_url');
 }
 
 export function openServerConfigModal(onSaved) {
@@ -372,13 +385,13 @@ if (!document.getElementById('_mapCSS')) {
 function buildTileLayer(key) {
   const cfg = MAP_STYLES[key] || MAP_STYLES.google;
   const proxyUrl = () => (getServerUrl() || '') + cfg.proxy;
-  const forceProxy = sessionStorage.getItem('mashwar_tile_proxy') === '1';
+  const forceProxy = sStore.getItem('mashwar_tile_proxy') === '1';
   const layer = L.tileLayer(forceProxy ? proxyUrl() : cfg.direct, cfg.opts);
   let errs = 0, proxied = forceProxy;
   layer.on('tileerror', () => {
     if (!proxied && ++errs >= 2) {
       proxied = true;
-      sessionStorage.setItem('mashwar_tile_proxy', '1');
+      sStore.setItem('mashwar_tile_proxy', '1');
       layer.setUrl(proxyUrl());
     }
   });
@@ -396,7 +409,7 @@ export function makeMap(el, center = DAMASCUS, zoom = 13) {
     osm: buildTileLayer('osm'),
   };
 
-  let saved = localStorage.getItem('mashwar_map_style') || 'google';
+  let saved = lStore.getItem('mashwar_map_style') || 'google';
   if (!layers[saved]) saved = 'google';
   let currentKey = saved;
   layers[currentKey].addTo(m);
@@ -407,7 +420,7 @@ export function makeMap(el, center = DAMASCUS, zoom = 13) {
     m.removeLayer(layers[currentKey]);
     currentKey = key;
     layers[currentKey].addTo(m);
-    localStorage.setItem('mashwar_map_style', key);
+    lStore.setItem('mashwar_map_style', key);
     if (m._styleBtns) {
       Object.entries(m._styleBtns).forEach(([k, b]) => b.classList.toggle('on', k === key));
     }
@@ -531,11 +544,11 @@ function showAuthRetryBanner(_err, role) {
   `;
   $('#authRetryBtn', el).onclick = () => location.reload();
   $('#authResetBtn', el).onclick = () => {
-    sessionStorage.clear();
-    localStorage.removeItem('panther_token_' + (role || 'app'));
-    localStorage.removeItem('panther_token_admin');
-    localStorage.removeItem('panther_token_merchant');
-    localStorage.removeItem('panther_token_captain');
+    sStore.clear();
+    lStore.removeItem('panther_token_' + (role || 'app'));
+    lStore.removeItem('panther_token_admin');
+    lStore.removeItem('panther_token_merchant');
+    lStore.removeItem('panther_token_captain');
     location.reload();
   };
 }
@@ -615,7 +628,7 @@ export async function authScreen(role, onReady) {
       if (r.user.role !== role) {
         if (['admin', 'merchant', 'captain'].includes(r.user.role)) {
           setToken(r.token);
-          localStorage.setItem('panther_token_' + r.user.role, r.token);
+          lStore.setItem('panther_token_' + r.user.role, r.token);
           location.href = '/' + r.user.role;
           return;
         }
