@@ -4,15 +4,19 @@
   "description": "Mashwar - smart B2B delivery dispatch for Syria",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
+    "migrate:turso": "node scripts/migrate-to-turso.js",
     "test": "node --test test/e2e.test.js",
     "prepare:apk": "node scripts/prepare-apk.js",
     "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/compile-apk.ps1"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.0",

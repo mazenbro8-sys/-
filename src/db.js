@@ -1,13 +1,76 @@
-import { DatabaseSync } from 'node:sqlite';
+import { createClient } from '@libsql/client';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { DATA_DIR, config } from './config.js';
 
-export const db = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, 'mashwar.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+const tursoUrl = !process.env.DB_FILE && process.env.TURSO_DATABASE_URL ? process.env.TURSO_DATABASE_URL.trim() : '';
+const isRemote = Boolean(tursoUrl);
+const localDbPath = process.env.DB_FILE || path.join(DATA_DIR, 'mashwar.db');
 
-db.exec(`
+export const client = isRemote
+  ? createClient({
+      url: tursoUrl,
+      authToken: (process.env.TURSO_AUTH_TOKEN || '').trim() || undefined,
+    })
+  : createClient({
+      url: pathToFileURL(path.resolve(localDbPath)).href,
+    });
+
+const txStore = new AsyncLocalStorage();
+const runner = () => txStore.getStore() || client;
+const normArgs = (args) => args.map((a) => (a === undefined ? null : a));
+
+export const db = {
+  client,
+  isRemote,
+  async get(sql, ...args) {
+    const rs = await runner().execute({ sql, args: normArgs(args) });
+    return rs.rows.length ? { ...rs.rows[0] } : undefined;
+  },
+  async all(sql, ...args) {
+    const rs = await runner().execute({ sql, args: normArgs(args) });
+    return rs.rows.map((r) => ({ ...r }));
+  },
+  async run(sql, ...args) {
+    const rs = await runner().execute({ sql, args: normArgs(args) });
+    return {
+      changes: rs.rowsAffected,
+      lastInsertRowid: rs.lastInsertRowid != null ? Number(rs.lastInsertRowid) : 0,
+    };
+  },
+  prepare(sql) {
+    return {
+      get: (...args) => db.get(sql, ...args),
+      all: (...args) => db.all(sql, ...args),
+      run: (...args) => db.run(sql, ...args),
+    };
+  },
+};
+
+export async function tx(fn) {
+  if (txStore.getStore()) return await fn();
+  const trx = await client.transaction('write');
+  try {
+    const r = await txStore.run(trx, fn);
+    await trx.commit();
+    return r;
+  } catch (e) {
+    try { await trx.rollback(); } catch {}
+    throw e;
+  } finally {
+    try { trx.close(); } catch {}
+  }
+}
+
+if (!isRemote) {
+  await client.executeMultiple('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+} else {
+  try { await client.execute('PRAGMA foreign_keys = ON'); } catch {}
+}
+
+await client.executeMultiple(`
 CREATE TABLE IF NOT EXISTS zones (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -96,66 +159,75 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 `);
 
-export const getSetting = (k, def) =>
-  db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value ?? def;
+export const getSetting = async (k, def) =>
+  (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;
 export const setSetting = (k, v) =>
-  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
-export const commission = () => Number(getSetting('commission', config.defaultCommission));
+  db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
+export const commission = async () => Number(await getSetting('commission', config.defaultCommission));
 
 export const audit = (actor, action, data) =>
-  db.prepare('INSERT INTO audit(actor_id,action,data,at) VALUES(?,?,?,?)').run(actor ?? null, action, data ? JSON.stringify(data) : null, Date.now());
+  db.run('INSERT INTO audit(actor_id,action,data,at) VALUES(?,?,?,?)', actor ?? null, action, data ? JSON.stringify(data) : null, Date.now());
 
 export const addEvent = (orderId, type, actor, data) =>
-  db.prepare('INSERT INTO order_events(order_id,type,actor_id,data,at) VALUES(?,?,?,?,?)').run(orderId, type, actor ?? null, data ? JSON.stringify(data) : null, Date.now());
-
-export function tx(fn) {
-  db.exec('BEGIN IMMEDIATE');
-  try { const r = fn(); db.exec('COMMIT'); return r; }
-  catch (e) { db.exec('ROLLBACK'); throw e; }
-}
+  db.run('INSERT INTO order_events(order_id,type,actor_id,data,at) VALUES(?,?,?,?,?)', orderId, type, actor ?? null, data ? JSON.stringify(data) : null, Date.now());
 
 // --- Seed or Sync: default zone + admin ---
-if (!db.prepare('SELECT 1 FROM zones').get()) {
-  db.prepare('INSERT INTO zones(name) VALUES (?)').run('المزة');
+if (!(await db.get('SELECT 1 FROM zones LIMIT 1'))) {
+  await db.run('INSERT INTO zones(name) VALUES (?)', 'المزة');
 }
 const OWNER_ADMIN_PASS = 'Pan@2026!Admin#9';
 const adminPhone = (process.env.DB_FILE && process.env.ADMIN_PHONE) || '0782070936';
 const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || OWNER_ADMIN_PASS;
-tx(() => {
-  db.prepare('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0').run();
-  const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
+await tx(async () => {
+  await db.run('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0');
+  const existingAdmin = await db.get("SELECT * FROM users WHERE role='admin'");
   if (!existingAdmin) {
-    const conflict = db.prepare('SELECT id FROM users WHERE phone=?').get(adminPhone);
-    if (conflict) db.prepare('UPDATE users SET phone=? WHERE id=?').run(`${adminPhone}_old_${conflict.id}`, conflict.id);
-    db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin',?,?,?,'active',?)")
-      .run(adminPhone, 'المدير', bcrypt.hashSync(adminPass, 12), Date.now());
+    const conflict = await db.get('SELECT id FROM users WHERE phone=?', adminPhone);
+    if (conflict) await db.run('UPDATE users SET phone=? WHERE id=?', `${adminPhone}_old_${conflict.id}`, conflict.id);
+    await db.run(
+      "INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin',?,?,?,'active',?)",
+      adminPhone,
+      'المدير',
+      bcrypt.hashSync(adminPass, 12),
+      Date.now()
+    );
     console.log('\n=== تم إنشاء حساب المدير ===');
     console.log(`الهاتف: ${adminPhone}`);
     console.log('============================\n');
   } else {
-    const conflict = db.prepare('SELECT id FROM users WHERE phone=? AND id<>?').get(adminPhone, existingAdmin.id);
-    if (conflict) db.prepare('UPDATE users SET phone=? WHERE id=?').run(`${adminPhone}_old_${conflict.id}`, conflict.id);
+    const conflict = await db.get('SELECT id FROM users WHERE phone=? AND id<>?', adminPhone, existingAdmin.id);
+    if (conflict) await db.run('UPDATE users SET phone=? WHERE id=?', `${adminPhone}_old_${conflict.id}`, conflict.id);
     const sameCreds = existingAdmin.phone === adminPhone && bcrypt.compareSync(adminPass, existingAdmin.pass_hash);
     if (!sameCreds) {
-      db.prepare("UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?")
-        .run(adminPhone, bcrypt.hashSync(adminPass, 12), existingAdmin.id);
+      await db.run(
+        "UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?",
+        adminPhone,
+        bcrypt.hashSync(adminPass, 12),
+        existingAdmin.id
+      );
       console.log('\n=== تم تحديث بيانات المدير وفك قفل الحساب بنجاح ===');
       console.log(`الهاتف: ${adminPhone}`);
       console.log('====================================================\n');
     } else if (existingAdmin.status !== 'active') {
-      db.prepare("UPDATE users SET status='active' WHERE id=?").run(existingAdmin.id);
+      await db.run("UPDATE users SET status='active' WHERE id=?", existingAdmin.id);
     }
   }
 
   // Ensure owner admin account (0782070936) always works even if cloud env vars differ
   if (!process.env.DB_FILE && adminPhone !== '0782070936') {
-    const owner = db.prepare('SELECT * FROM users WHERE phone=?').get('0782070936');
+    const owner = await db.get('SELECT * FROM users WHERE phone=?', '0782070936');
     if (!owner) {
-      db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin','0782070936','المدير',?,'active',?)")
-        .run(bcrypt.hashSync(OWNER_ADMIN_PASS, 12), Date.now());
+      await db.run(
+        "INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin','0782070936','المدير',?,'active',?)",
+        bcrypt.hashSync(OWNER_ADMIN_PASS, 12),
+        Date.now()
+      );
     } else if (owner.role !== 'admin' || owner.status !== 'active' || !bcrypt.compareSync(OWNER_ADMIN_PASS, owner.pass_hash)) {
-      db.prepare("UPDATE users SET role='admin', status='active', pass_hash=?, failed_logins=0, locked_until=0 WHERE id=?")
-        .run(bcrypt.hashSync(OWNER_ADMIN_PASS, 12), owner.id);
+      await db.run(
+        "UPDATE users SET role='admin', status='active', pass_hash=?, failed_logins=0, locked_until=0 WHERE id=?",
+        bcrypt.hashSync(OWNER_ADMIN_PASS, 12),
+        owner.id
+      );
     }
   }
 });

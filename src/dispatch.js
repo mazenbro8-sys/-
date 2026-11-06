@@ -12,10 +12,12 @@ export function haversineKm(a, b, c, d) {
 }
 
 /** Order as seen by each role. Customer details are hidden from captains until they accept. */
-export function viewOrder(o, role) {
+export async function viewOrder(o, role) {
   if (!o) return null;
-  const m = db.prepare('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?').get(o.merchant_id);
-  const cap = o.captain_id ? db.prepare('SELECT id,name,phone,last_lat,last_lng,last_loc_at FROM users WHERE id=?').get(o.captain_id) : null;
+  const [m, cap] = await Promise.all([
+    db.get('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?', o.merchant_id),
+    o.captain_id ? db.get('SELECT id,name,phone,last_lat,last_lng,last_loc_at FROM users WHERE id=?', o.captain_id) : null,
+  ]);
   const v = {
     id: o.id, serial_no: String(o.id).padStart(4, '0'),
     status: o.status, zone_id: o.zone_id, created_at: o.created_at,
@@ -44,31 +46,40 @@ export function viewOrder(o, role) {
     v.offered_captain_id = o.offered_captain_id;
     if (cap) v.captain_name = cap.name;
     if (o.offered_captain_id) {
-      const offCap = db.prepare('SELECT id,name,phone FROM users WHERE id=?').get(o.offered_captain_id);
+      const offCap = await db.get('SELECT id,name,phone FROM users WHERE id=?', o.offered_captain_id);
       if (offCap) v.offered_captain = offCap;
     }
   }
   return v;
 }
 
-export function computeShortage() {
-  const searchingRows = db.prepare("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC").all();
-  const escalatedOrders = searchingRows.filter((o) => {
-    const untriedCap = db.prepare(`
-      SELECT 1 FROM users u
-      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-        AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
-      LIMIT 1
-    `).get(o.zone_id, o.id);
-    return !untriedCap;
-  }).map((o) => viewOrder(o, 'admin'));
+export async function computeShortage() {
+  const searchingRows = await db.all("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC");
+  const checked = await Promise.all(
+    searchingRows.map(async (o) => {
+      const untriedCap = await db.get(
+        `SELECT 1 FROM users u
+         WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+           AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
+         LIMIT 1`,
+        o.zone_id,
+        o.id
+      );
+      return untriedCap ? null : viewOrder(o, 'admin');
+    })
+  );
+  const escalatedOrders = checked.filter(Boolean);
 
-  const freeOnlineCaptains = db.prepare(`
-    SELECT COUNT(*) c FROM users u
-    WHERE u.role='captain' AND u.status='active' AND u.online=1
-      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
-  `).get().c;
-  const onlineCaptains = db.prepare("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1").get().c;
+  const [freeRow, onlineRow] = await Promise.all([
+    db.get(`
+      SELECT COUNT(*) c FROM users u
+      WHERE u.role='captain' AND u.status='active' AND u.online=1
+        AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
+    `),
+    db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1"),
+  ]);
+  const freeOnlineCaptains = freeRow.c;
+  const onlineCaptains = onlineRow.c;
   const alert = escalatedOrders.length > 0;
   return {
     alert,
@@ -80,12 +91,18 @@ export function computeShortage() {
   };
 }
 
-export function notifyOrder(orderId) {
-  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
+export async function notifyOrder(orderId) {
+  const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
   if (!o) return;
-  sendTo(o.merchant_id, { type: 'order', order: viewOrder(o, 'merchant') });
-  sendToAdmins({ type: 'order', order: viewOrder(o, 'admin'), shortage: computeShortage() });
-  if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: viewOrder(o, 'captain') });
+  const [mOrder, aOrder, shortage, cOrder] = await Promise.all([
+    viewOrder(o, 'merchant'),
+    viewOrder(o, 'admin'),
+    computeShortage(),
+    o.captain_id ? viewOrder(o, 'captain') : null,
+  ]);
+  sendTo(o.merchant_id, { type: 'order', order: mOrder });
+  sendToAdmins({ type: 'order', order: aOrder, shortage });
+  if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: cOrder });
 }
 
 /**
@@ -94,85 +111,111 @@ export function notifyOrder(orderId) {
  * Pass 2: Busy online captains in the zone (with an active order, but no current pending offer) who haven't been offered this order.
  * If neither Pass 1 nor Pass 2 finds a captain, returns null → order remains in 'searching' and escalates to Admin.
  */
-function pickCaptain(order) {
-  const freeRows = db.prepare(`
-    SELECT u.id FROM users u
-    WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-      AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) OR (o.offered_captain_id=u.id AND o.status='offered'))
-      AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
-    ORDER BY u.last_assigned_at ASC, u.id ASC`).all(order.zone_id, order.id);
+async function pickCaptain(order) {
+  const freeRows = await db.all(
+    `SELECT u.id FROM users u
+     WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+       AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) OR (o.offered_captain_id=u.id AND o.status='offered'))
+       AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
+     ORDER BY u.last_assigned_at ASC, u.id ASC`,
+    order.zone_id,
+    order.id
+  );
   const freePick = freeRows.find((r) => isConnected(r.id)) ?? freeRows[0];
   if (freePick) return freePick;
 
-  const busyRows = db.prepare(`
-    SELECT u.id FROM users u
-    WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.offered_captain_id=u.id AND o.status='offered')
-      AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
-    ORDER BY u.last_assigned_at ASC, u.id ASC`).all(order.zone_id, order.id);
+  const busyRows = await db.all(
+    `SELECT u.id FROM users u
+     WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.offered_captain_id=u.id AND o.status='offered')
+       AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
+     ORDER BY u.last_assigned_at ASC, u.id ASC`,
+    order.zone_id,
+    order.id
+  );
   return busyRows.find((r) => isConnected(r.id)) ?? busyRows[0] ?? null;
 }
 
-export function dispatchOrder(orderId) {
+export async function dispatchOrder(orderId) {
   let offered = null;
-  tx(() => {
-    const o = db.prepare("SELECT * FROM orders WHERE id=? AND status='searching'").get(orderId);
+  await tx(async () => {
+    const o = await db.get("SELECT * FROM orders WHERE id=? AND status='searching'", orderId);
     if (!o) return;
-    const c = pickCaptain(o);
+    const c = await pickCaptain(o);
     if (!c) return;
     const exp = Date.now() + config.offerTimeoutMs;
-    db.prepare("UPDATE orders SET status='offered', offered_captain_id=?, offer_expires_at=? WHERE id=?").run(c.id, exp, o.id);
-    db.prepare("INSERT INTO offers(order_id,captain_id,outcome,at) VALUES(?,?, 'pending', ?)").run(o.id, c.id, Date.now());
-    addEvent(o.id, 'offered', c.id, { expires_at: exp });
+    await db.run("UPDATE orders SET status='offered', offered_captain_id=?, offer_expires_at=? WHERE id=?", c.id, exp, o.id);
+    await db.run("INSERT INTO offers(order_id,captain_id,outcome,at) VALUES(?,?, 'pending', ?)", o.id, c.id, Date.now());
+    await addEvent(o.id, 'offered', c.id, { expires_at: exp });
     offered = { captain: c.id };
   });
   if (offered) {
-    const o = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
-    sendTo(offered.captain, { type: 'offer', order: viewOrder(o, 'captain') });
-    notifyOrder(orderId);
+    const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
+    sendTo(offered.captain, { type: 'offer', order: await viewOrder(o, 'captain') });
+    await notifyOrder(orderId);
   }
   return !!offered;
 }
 
 /** Offer → back to the pool (rejected / timed out). */
-export function releaseOffer(orderId, outcome) {
-  tx(() => {
-    const o = db.prepare("SELECT * FROM orders WHERE id=? AND status='offered'").get(orderId);
+export async function releaseOffer(orderId, outcome) {
+  let prevCaptainId = null;
+  await tx(async () => {
+    const o = await db.get("SELECT * FROM orders WHERE id=? AND status='offered'", orderId);
     if (!o) return;
-    db.prepare("UPDATE offers SET outcome=? WHERE order_id=? AND captain_id=? AND outcome='pending'").run(outcome, o.id, o.offered_captain_id);
-    db.prepare("UPDATE orders SET status='searching', offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?").run(o.id);
-    addEvent(o.id, outcome, o.offered_captain_id);
-    sendTo(o.offered_captain_id, { type: 'offer_end', order_id: o.id, reason: outcome });
+    prevCaptainId = o.offered_captain_id;
+    await db.run("UPDATE offers SET outcome=? WHERE order_id=? AND captain_id=? AND outcome='pending'", outcome, o.id, o.offered_captain_id);
+    await db.run("UPDATE orders SET status='searching', offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?", o.id);
+    await addEvent(o.id, outcome, o.offered_captain_id);
   });
-  dispatchOrder(orderId);
-  notifyOrder(orderId);
+  if (prevCaptainId) sendTo(prevCaptainId, { type: 'offer_end', order_id: orderId, reason: outcome });
+  await dispatchOrder(orderId);
+  await notifyOrder(orderId);
 }
 
-export function closeOrder(orderId, status, { actor, reason, withCommission = false, liability = 0, liabilityReason = null } = {}) {
-  tx(() => {
-    const o = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
+export async function closeOrder(orderId, status, { actor, reason, withCommission = false, liability = 0, liabilityReason = null } = {}) {
+  const comm = withCommission ? await commission() : 0;
+  let cancelledOfferedId = null;
+  await tx(async () => {
+    const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
     const now = Date.now();
-    db.prepare(`UPDATE orders SET status=?, closed_at=?, day=?, close_reason=?, commission=?, liability=?, liability_reason=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?`)
-      .run(status, now, dayOf(now), reason ?? null, withCommission ? commission() : 0, liability, liabilityReason, orderId);
+    await db.run(
+      `UPDATE orders SET status=?, closed_at=?, day=?, close_reason=?, commission=?, liability=?, liability_reason=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?`,
+      status,
+      now,
+      dayOf(now),
+      reason ?? null,
+      comm,
+      liability,
+      liabilityReason,
+      orderId
+    );
     if (o.status === 'offered') {
-      db.prepare("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'").run(orderId);
-      sendTo(o.offered_captain_id, { type: 'offer_end', order_id: orderId, reason: 'cancelled' });
+      await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", orderId);
+      cancelledOfferedId = o.offered_captain_id;
     }
-    addEvent(orderId, status, actor, { reason });
+    await addEvent(orderId, status, actor, { reason });
   });
-  notifyOrder(orderId);
+  if (cancelledOfferedId) sendTo(cancelledOfferedId, { type: 'offer_end', order_id: orderId, reason: 'cancelled' });
+  await notifyOrder(orderId);
 }
 
 /** Periodic tick: expire offers, (re)dispatch waiting orders, expire stale searches. */
 export function startDispatcher() {
-  setInterval(() => {
+  let running = false;
+  setInterval(async () => {
+    if (running) return;
+    running = true;
     try {
       const now = Date.now();
-      for (const o of db.prepare("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?").all(now)) releaseOffer(o.id, 'timeout');
-      for (const o of db.prepare("SELECT id, created_at FROM orders WHERE status='searching'").all()) {
-        if (now - o.created_at > config.searchMaxMs) closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
-        else dispatchOrder(o.id);
+      for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
+        await releaseOffer(o.id, 'timeout');
+      }
+      for (const o of await db.all("SELECT id, created_at FROM orders WHERE status='searching'")) {
+        if (now - o.created_at > config.searchMaxMs) await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
+        else await dispatchOrder(o.id);
       }
     } catch (e) { console.error('dispatcher', e); }
+    finally { running = false; }
   }, 5_000);
 }

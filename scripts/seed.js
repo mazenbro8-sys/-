@@ -5,7 +5,7 @@ import { dayOf } from '../src/config.js';
 
 if (process.env.NODE_ENV === 'production') { console.error('ممنوع تشغيل البيانات التجريبية في الإنتاج'); process.exit(1); }
 const PASS = 'Demo12345', hash = bcrypt.hashSync(PASS, 10), now = Date.now();
-const zone = db.prepare('SELECT id FROM zones ORDER BY id LIMIT 1').get().id;
+const zone = (await db.get('SELECT id FROM zones ORDER BY id LIMIT 1')).id;
 
 const merchants = [
   ['0911000001', 'مطعم أبو أحمد', 'المزة - جانب الجسر', 33.5, 36.2527],
@@ -15,23 +15,26 @@ const merchants = [
 ];
 const captains = [['0922000001', 'ياسر'], ['0922000002', 'محمود'], ['0922000003', 'سامر'], ['0922000004', 'خالد']];
 
-const ins = db.prepare("INSERT OR IGNORE INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,created_at) VALUES(?,?,?,?,?,'active',?,?,?,?,?)");
-for (const [p, b, a, lat, lng] of merchants) ins.run('merchant', p, 'صاحب ' + b, hash, zone, b, a, lat, lng, now);
-for (const [p, n] of captains) ins.run('captain', p, n, hash, zone, null, null, null, null, now);
-db.prepare("INSERT OR IGNORE INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,created_at) VALUES('captain','0922000099','كابتن بانتظار الموافقة',?,?,'pending',NULL,NULL,?)").run(hash, zone, now);
+const insSql = "INSERT OR IGNORE INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,created_at) VALUES(?,?,?,?,?,'active',?,?,?,?,?)";
+for (const [p, b, a, lat, lng] of merchants) await db.run(insSql, 'merchant', p, 'صاحب ' + b, hash, zone, b, a, lat, lng, now);
+for (const [p, n] of captains) await db.run(insSql, 'captain', p, n, hash, zone, null, null, null, null, now);
+await db.run("INSERT OR IGNORE INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,created_at) VALUES('captain','0922000099','كابتن بانتظار الموافقة',?,?,'pending',NULL,NULL,?)", hash, zone, now);
 
-const mids = db.prepare("SELECT id FROM users WHERE role='merchant'").all().map((r) => r.id);
-const cids = db.prepare("SELECT id FROM users WHERE role='captain' AND status='active'").all().map((r) => r.id);
+const mids = (await db.all("SELECT id FROM users WHERE role='merchant'")).map((r) => r.id);
+const cids = (await db.all("SELECT id FROM users WHERE role='captain' AND status='active'")).map((r) => r.id);
 const names = ['سارة', 'عمر', 'لينا', 'هادي', 'ريم', 'كريم', 'نور', 'باسل'];
 const day = dayOf();
-if (!db.prepare('SELECT 1 FROM orders').get()) {
+if (!(await db.get('SELECT 1 FROM orders'))) {
   for (let i = 0; i < 14; i++) {
     const m = mids[i % mids.length], c = cids[i % cids.length], t = now - (i + 1) * 25 * 60_000;
     const failed = i % 7 === 6;
-    const r = db.prepare(`INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,customer_lat,customer_lng,product_amount,delivery_fee,status,captain_id,commission,day,created_at,accepted_at,closed_at,close_reason)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(m, zone, names[i % names.length], '09440000' + String(10 + i), 'المزة - شارع ' + (i + 1), 33.5 + (i % 5) * 0.003, 36.25 + (i % 4) * 0.004,
-      (30 + i * 5) * 1000, 5000, failed ? 'failed' : 'delivered', c, failed ? 0 : 2000, day, t, t + 60_000, t + 20 * 60_000, failed ? 'customer_unreachable_or_wrong_address' : null);
-    for (const e of ['created', 'offered', 'accepted', 'picked_up', failed ? 'failed' : 'delivered']) addEvent(r.lastInsertRowid, e, c);
+    const r = await db.run(
+      `INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,customer_lat,customer_lng,product_amount,delivery_fee,status,captain_id,commission,day,created_at,accepted_at,closed_at,close_reason)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      m, zone, names[i % names.length], '09440000' + String(10 + i), 'المزة - شارع ' + (i + 1), 33.5 + (i % 5) * 0.003, 36.25 + (i % 4) * 0.004,
+      (30 + i * 5) * 1000, 5000, failed ? 'failed' : 'delivered', c, failed ? 0 : 2000, day, t, t + 60_000, t + 20 * 60_000, failed ? 'customer_unreachable_or_wrong_address' : null
+    );
+    for (const e of ['created', 'offered', 'accepted', 'picked_up', failed ? 'failed' : 'delivered']) await addEvent(r.lastInsertRowid, e, c);
   }
 }
 console.log(`تم. كلمة مرور كل الحسابات التجريبية: ${PASS}`);
