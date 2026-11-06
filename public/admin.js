@@ -36,19 +36,29 @@ authScreen('admin', (user) => {
     <nav class="nav tabs">${Object.entries(TABS).map(([k, v]) => `<button data-t="${k}">${v}</button>`).join('')}</nav>
     <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button id="lo2">خروج</button></div></aside>
     <section class="main">
-      <div class="topbar2" style="flex-wrap:wrap;gap:10px">
-        <h2 id="ptitle"></h2>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div class="topbar2">
+        <div class="topbar-brand">
+          <img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm topbar-logo" width="34" height="34">
+          <h2 id="ptitle"></h2>
+        </div>
+        <div class="topbar-actions">
           ${!isStandalone() ? '<button type="button" class="ok sm" data-install-app="admin">📲 تثبيت تطبيق الإدارة</button>' : ''}
-          <button type="button" id="adminAddOrderTop" class="ok sm">➕ إضافة طلب لكابتن</button>
-          <button type="button" id="adminSndBtn" class="bad sm">🔇 تفعيل صوت إنذار الطلبات</button>
+          <button type="button" id="adminAddOrderTop" class="ok sm"><span class="lbl-desk">➕ إضافة طلب لكابتن</span><span class="lbl-mob">➕ طلب</span></button>
+          <button type="button" id="adminSndBtn" class="bad sm" aria-label="صوت إنذار الطلبات"><span class="snd-ico">🔇</span><span class="lbl-desk"> تفعيل صوت إنذار الطلبات</span></button>
           <div class="clock"><b id="clk"></b><span id="dt"></span></div>
         </div>
       </div>
-      <div style="padding:12px 18px 0">${renderInstallBanner('admin')}</div>
-      <div id="shortageBox" style="padding:0 18px"></div>
+      <div class="admin-install-slot">${renderInstallBanner('admin')}</div>
+      <div id="shortageBox"></div>
       <div id="view" class="view"></div>
-    </section>`;
+    </section>
+    <nav class="admin-bottom-dock" aria-label="التنقل الرئيسي">
+      <button type="button" data-t="live"><span class="dock-ico">📡</span><span class="dock-lbl">العمليات</span></button>
+      <button type="button" data-t="orders"><span class="dock-ico">📦</span><span class="dock-lbl">الطلبات</span></button>
+      <button type="button" data-t="users"><span class="dock-ico">🏪</span><span class="dock-lbl">الحسابات</span></button>
+      <button type="button" data-t="settle"><span class="dock-ico">💰</span><span class="dock-lbl">الخزينة</span></button>
+      <button type="button" data-t="settings"><span class="dock-ico">⚙️</span><span class="dock-lbl">المزيد</span></button>
+    </nav>`;
   $('#lo2').onclick = () => $('#lo').click();
   const tick = () => {
     const d = new Date();
@@ -74,7 +84,13 @@ authScreen('admin', (user) => {
   const updateAdminSndBtn = () => {
     const ok = actx && actx.state === 'running', b = $('#adminSndBtn');
     if (!b) return;
-    b.textContent = ok ? '🔊 صوت الإنذار مفعّل' : '🔇 اضغط لتفعيل صوت الإنذار';
+    const titleTxt = ok ? 'صوت الإنذار مفعّل' : 'اضغط لتفعيل صوت الإنذار';
+    if (b.dataset.sndOk !== (ok ? '1' : '0')) {
+      b.dataset.sndOk = ok ? '1' : '0';
+      b.innerHTML = `<span class="snd-ico">${ok ? '🔊' : '🔇'}</span><span class="lbl-desk"> ${titleTxt}</span>`;
+      b.title = titleTxt;
+      b.setAttribute('aria-label', titleTxt);
+    }
     b.className = ok ? 'ok sm' : 'bad sm';
   };
   $('#adminSndBtn').onclick = () => { testAdminSound(); setTimeout(updateAdminSndBtn, 250); };
@@ -308,6 +324,29 @@ authScreen('admin', (user) => {
     const btn = e.target.closest('[data-t]');
     if (btn) go(btn.dataset.t);
   };
+  $('.admin-bottom-dock').onclick = (e) => {
+    const btn = e.target.closest('[data-t]');
+    if (btn) go(btn.dataset.t);
+  };
+
+  const syncMobileTableLabels = () => {
+    $$('#view table').forEach((tbl) => {
+      const ths = [...tbl.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+      const fallback = !ths.length ? ['الوقت', 'التنبيه', 'إجراءات'] : [];
+      const labels = ths.length ? ths : fallback;
+      tbl.querySelectorAll('tbody tr').forEach((tr) => {
+        [...tr.children].forEach((td, i) => {
+          if (td.hasAttribute('colspan')) return;
+          const lbl = labels[i] || '';
+          if (lbl && td.dataset.label !== lbl) td.dataset.label = lbl;
+          if (td.querySelector('.cap-cell-wrap, .order-action-bar, button[data-st], button[data-c], button[data-r]')) {
+            td.classList.add('td-actions');
+          }
+        });
+      });
+    });
+  };
+  new MutationObserver(syncMobileTableLabels).observe($('#view'), { childList: true, subtree: true });
 
   async function go(t) {
     tab = t;
@@ -315,9 +354,17 @@ authScreen('admin', (user) => {
     liveMap = null; liveFitted = false;
     capMarkers.clear(); merchMarkers.clear(); orderMarkers.clear(); routeLayers = [];
     $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+    const dockTarget = t === 'dash' ? 'live' : t === 'flags' ? 'settings' : t;
+    $$('.admin-bottom-dock button[data-t]').forEach((b) => {
+      const isAct = b.dataset.t === dockTarget;
+      b.classList.toggle('active', isAct);
+      if (isAct) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
     $('#ptitle').textContent = TABS[t].replace(/^\S+\s/, '');
     zones = await api('/admin/zones');
     await views[t]();
+    syncMobileTableLabels();
   }
   const view = () => $('#view');
 
