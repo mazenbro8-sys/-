@@ -175,7 +175,7 @@ export const addEvent = (orderId, type, actor, data) =>
 if (!(await db.get('SELECT 1 FROM zones LIMIT 1'))) {
   await db.run('INSERT INTO zones(name) VALUES (?)', 'المزة');
 }
-const OWNER_ADMIN_PASS = 'Pan@2026!Admin#9';
+const OWNER_ADMIN_PASS = 'admin1234';
 const adminPhone = (process.env.DB_FILE && process.env.ADMIN_PHONE) || '0782070936';
 const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || OWNER_ADMIN_PASS;
 await tx(async () => {
@@ -195,39 +195,19 @@ await tx(async () => {
     console.log(`الهاتف: ${adminPhone}`);
     console.log('============================\n');
   } else {
-    const conflict = await db.get('SELECT id FROM users WHERE phone=? AND id<>?', adminPhone, existingAdmin.id);
-    if (conflict) await db.run('UPDATE users SET phone=? WHERE id=?', `${adminPhone}_old_${conflict.id}`, conflict.id);
-    const sameCreds = existingAdmin.phone === adminPhone && bcrypt.compareSync(adminPass, existingAdmin.pass_hash);
-    if (!sameCreds) {
-      await db.run(
-        "UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?",
-        adminPhone,
-        bcrypt.hashSync(adminPass, 12),
-        existingAdmin.id
-      );
-      console.log('\n=== تم تحديث بيانات المدير وفك قفل الحساب بنجاح ===');
-      console.log(`الهاتف: ${adminPhone}`);
-      console.log('====================================================\n');
-    } else if (existingAdmin.status !== 'active') {
+    if (existingAdmin.status !== 'active') {
       await db.run("UPDATE users SET status='active' WHERE id=?", existingAdmin.id);
     }
-  }
-
-  // Ensure owner admin account (0782070936) always works even if cloud env vars differ
-  if (!process.env.DB_FILE && adminPhone !== '0782070936') {
-    const owner = await db.get('SELECT * FROM users WHERE phone=?', '0782070936');
-    if (!owner) {
-      await db.run(
-        "INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin','0782070936','المدير',?,'active',?)",
-        bcrypt.hashSync(OWNER_ADMIN_PASS, 12),
-        Date.now()
-      );
-    } else if (owner.role !== 'admin' || owner.status !== 'active' || !bcrypt.compareSync(OWNER_ADMIN_PASS, owner.pass_hash)) {
-      await db.run(
-        "UPDATE users SET role='admin', status='active', pass_hash=?, failed_logins=0, locked_until=0 WHERE id=?",
-        bcrypt.hashSync(OWNER_ADMIN_PASS, 12),
-        owner.id
-      );
+    if (process.env.DB_FILE && process.env.ADMIN_PASSWORD) {
+      const sameCreds = existingAdmin.phone === adminPhone && bcrypt.compareSync(adminPass, existingAdmin.pass_hash);
+      if (!sameCreds) {
+        await db.run(
+          "UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?",
+          adminPhone,
+          bcrypt.hashSync(adminPass, 12),
+          existingAdmin.id
+        );
+      }
     }
   }
 });
