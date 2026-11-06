@@ -559,7 +559,7 @@ export async function authScreen(role, onReady) {
   if (token) {
     try {
       const me = await api('/me');
-      if (me.role === role) {
+      if (me.role === role || (role === 'admin' && me.role === 'zone_admin')) {
         onReady(me);
         if (wantInstall) setTimeout(() => promptInstallApp(role), 350);
         return;
@@ -625,11 +625,13 @@ export async function authScreen(role, onReady) {
     const f = Object.fromEntries(new FormData(e.target));
     try {
       const r = await api('/auth/login', 'POST', f);
-      if (r.user.role !== role) {
-        if (['admin', 'merchant', 'captain'].includes(r.user.role)) {
+      const matchesRole = r.user.role === role || (role === 'admin' && r.user.role === 'zone_admin');
+      if (!matchesRole) {
+        const targetRoute = r.user.role === 'zone_admin' ? 'admin' : r.user.role;
+        if (['admin', 'merchant', 'captain'].includes(targetRoute)) {
           setToken(r.token);
-          lStore.setItem('panther_token_' + r.user.role, r.token);
-          location.href = '/' + r.user.role;
+          lStore.setItem('panther_token_' + targetRoute, r.token);
+          location.href = '/' + targetRoute;
           return;
         }
         return toast('هذا الحساب ليس من هذه الواجهة');

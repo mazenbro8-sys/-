@@ -53,8 +53,11 @@ export async function viewOrder(o, role) {
   return v;
 }
 
-export async function computeShortage() {
-  const searchingRows = await db.all("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC");
+export async function computeShortage(zoneId = null) {
+  const hasZ = zoneId != null;
+  const searchingRows = hasZ
+    ? await db.all("SELECT * FROM orders WHERE status='searching' AND zone_id=? ORDER BY id ASC", zoneId)
+    : await db.all("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC");
   const checked = await Promise.all(
     searchingRows.map(async (o) => {
       const untriedCap = await db.get(
@@ -71,12 +74,20 @@ export async function computeShortage() {
   const escalatedOrders = checked.filter(Boolean);
 
   const [freeRow, onlineRow] = await Promise.all([
-    db.get(`
-      SELECT COUNT(*) c FROM users u
-      WHERE u.role='captain' AND u.status='active' AND u.online=1
-        AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
-    `),
-    db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1"),
+    hasZ
+      ? db.get(`
+          SELECT COUNT(*) c FROM users u
+          WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+            AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
+        `, zoneId)
+      : db.get(`
+          SELECT COUNT(*) c FROM users u
+          WHERE u.role='captain' AND u.status='active' AND u.online=1
+            AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
+        `),
+    hasZ
+      ? db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1 AND zone_id=?", zoneId)
+      : db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1"),
   ]);
   const freeOnlineCaptains = freeRow.c;
   const onlineCaptains = onlineRow.c;
@@ -101,7 +112,7 @@ export async function notifyOrder(orderId) {
     o.captain_id ? viewOrder(o, 'captain') : null,
   ]);
   sendTo(o.merchant_id, { type: 'order', order: mOrder });
-  sendToAdmins({ type: 'order', order: aOrder, shortage });
+  sendToAdmins({ type: 'order', order: aOrder, shortage }, o.zone_id);
   if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: cOrder });
 }
 

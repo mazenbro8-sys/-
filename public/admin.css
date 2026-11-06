@@ -355,6 +355,211 @@ body.ad tbody tr:hover td { background: var(--surface-hover); }
   gap: var(--space-2);
 }
 
+/* Mobile-only primary + more controls hidden on desktop >= 768px */
+.mob-card-actions {
+  display: none;
+}
+
+/* ---------- Mobile Order Action Bottom Sheet (native <dialog>) ---------- */
+dialog.action-sheet {
+  position: fixed;
+  inset: auto var(--space-0) var(--space-0) var(--space-0);
+  width: 100%;
+  max-width: 100%;
+  max-height: 88dvh;
+  margin: var(--space-0);
+  padding: var(--space-2) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
+  border-radius: var(--radius-xl) var(--radius-xl) var(--space-0) var(--space-0);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  border-block-end: none;
+  background: var(--surface-glass-3);
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  overflow-y: auto;
+  opacity: 0;
+  transform: translateY(100%);
+  transition-property: transform, opacity, display, overlay;
+  transition-duration: var(--dur-base);
+  transition-timing-function: var(--ease-standard);
+  transition-behavior: allow-discrete;
+}
+
+dialog.action-sheet:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.action-sheet[open] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+dialog.action-sheet[open]:where(:not([data-closing])) {
+  opacity: 1;
+  transform: translateY(0);
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+}
+
+dialog.action-sheet::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition-property: background-color, backdrop-filter, display, overlay;
+  transition-duration: var(--dur-base);
+  transition-timing-function: var(--ease-standard);
+  transition-behavior: allow-discrete;
+}
+
+dialog.action-sheet[open]:where(:not([data-closing]))::backdrop {
+  background-color: var(--surface-overlay);
+  backdrop-filter: var(--blur-sm);
+  -webkit-backdrop-filter: var(--blur-sm);
+
+  @starting-style {
+    background-color: transparent;
+    backdrop-filter: none;
+  }
+}
+
+.sheet-grab-wrap {
+  display: flex;
+  justify-content: center;
+  padding-block: var(--space-1);
+}
+
+.sheet-grab-handle {
+  width: 44px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--border-neutral-strong);
+}
+
+.sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.sheet-title-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sheet-title-group h3 {
+  margin: var(--space-0);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-black);
+}
+
+.sheet-close-btn {
+  min-height: 40px;
+  width: 40px;
+  padding: var(--space-0);
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+}
+
+.sheet-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: var(--border-w-thin) solid var(--border-neutral);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.sheet-assign-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-glass-2);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+}
+
+.sheet-section-lbl {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-extrabold);
+  color: var(--text-muted);
+}
+
+.sheet-current-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sheet-action-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sheet-action-btn {
+  width: 100%;
+  min-height: var(--touch-comfortable);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  box-shadow: none;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-extrabold);
+  text-align: right;
+}
+
+.sheet-action-btn:hover:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.sheet-action-btn.sheet-warn-btn {
+  background: var(--status-warn-soft);
+  color: var(--status-warn-text);
+  border-color: var(--status-warn-border);
+}
+
+.sheet-action-btn.sheet-cancel-btn {
+  justify-content: center;
+  background: var(--status-bad);
+  color: var(--text-on-bad);
+  border-color: var(--status-bad-border);
+  margin-block-start: var(--space-1);
+}
+
+.sheet-detail-slot:empty {
+  display: none;
+}
+
+.sheet-detail-slot > .card {
+  margin-block-end: var(--space-0);
+  padding: var(--space-4);
+  background: var(--bg-elevated);
+}
+
 .cap-busy-stack {
   display: flex;
   flex-direction: column;
@@ -785,11 +990,74 @@ body.ad select:focus-visible {
     flex: 0 0 auto;
   }
 
-  /* Stack interactive cells (captain selector & action buttons) cleanly across card width */
+  /* Stack interactive cells cleanly across card width */
   body.ad tbody td.td-actions {
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-2);
+  }
+
+  /* Order cards on mobile: hide inline button soup & captain dropdown; show ONLY Primary + More ("⋯") */
+  body.ad tbody td.td-cap-cell .assign-input-group,
+  body.ad tbody td.td-cap-cell .cap-assigned-bar button[data-unassign] {
+    display: none !important;
+  }
+
+  body.ad tbody td.td-order-actions .order-action-bar {
+    display: none !important;
+  }
+
+  body.ad tbody td.td-order-actions::before {
+    display: none;
+  }
+
+  body.ad tbody td.td-order-actions .mob-card-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .mob-primary-btn {
+    flex: 1 1 auto;
+    min-height: var(--touch-min);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--brand-primary) 0%, var(--status-warn) 100%);
+    color: var(--text-on-brand);
+    border: var(--border-w-thin) solid var(--border-brand-soft);
+    box-shadow: var(--shadow-sm);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-black);
+  }
+
+  .mob-primary-btn.is-assigned {
+    background: var(--brand-primary-soft);
+    color: var(--text-primary);
+    border-color: var(--border-brand-soft);
+    box-shadow: none;
+  }
+
+  .mob-primary-btn.is-closed {
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    border-color: var(--border-neutral-strong);
+    box-shadow: none;
+  }
+
+  .mob-more-btn {
+    flex: 0 0 var(--touch-comfortable);
+    width: var(--touch-comfortable);
+    min-height: var(--touch-min);
+    padding: var(--space-0);
+    border-radius: var(--radius-sm);
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+    border: var(--border-w-thin) solid var(--border-neutral-strong);
+    box-shadow: none;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-black);
+    line-height: 1;
   }
 
   body.ad tbody td.td-actions .order-action-bar {
@@ -828,5 +1096,15 @@ body.ad select:focus-visible {
   .sc[data-go]:active,
   .admin-bottom-dock button[data-t].active .dock-ico {
     transform: none;
+  }
+  dialog.action-sheet,
+  dialog.action-sheet::backdrop {
+    transform: none;
+    transition-duration: 0.1s;
+  }
+  @starting-style {
+    dialog.action-sheet[open]:where(:not([data-closing])) {
+      transform: none;
+    }
   }
 }

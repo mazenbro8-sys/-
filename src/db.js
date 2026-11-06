@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS zones (
 );
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  role TEXT NOT NULL CHECK (role IN ('admin','merchant','captain','customer')),
+  role TEXT NOT NULL CHECK (role IN ('admin','zone_admin','merchant','captain','customer')),
   phone TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   pass_hash TEXT NOT NULL,
@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS users (
   token_version INTEGER NOT NULL DEFAULT 0,
   failed_logins INTEGER NOT NULL DEFAULT 0,
   locked_until INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  CHECK (role != 'zone_admin' OR zone_id IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +159,50 @@ CREATE TABLE IF NOT EXISTS audit (
   actor_id INTEGER, action TEXT NOT NULL, data TEXT, at INTEGER NOT NULL
 );
 `);
+
+// Migrate existing databases where `users` was created before `zone_admin` role existed
+const usersMeta = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
+if (usersMeta?.sql && !usersMeta.sql.includes("'zone_admin'")) {
+  await client.executeMultiple(`
+    PRAGMA foreign_keys = OFF;
+    DROP TABLE IF EXISTS users_new;
+    BEGIN TRANSACTION;
+    CREATE TABLE users_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      role TEXT NOT NULL CHECK (role IN ('admin','zone_admin','merchant','captain','customer')),
+      phone TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      pass_hash TEXT NOT NULL,
+      zone_id INTEGER REFERENCES zones(id),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+      business_name TEXT, address TEXT, lat REAL, lng REAL,
+      online INTEGER NOT NULL DEFAULT 0,
+      last_lat REAL, last_lng REAL, last_loc_at INTEGER,
+      last_assigned_at INTEGER NOT NULL DEFAULT 0,
+      token_version INTEGER NOT NULL DEFAULT 0,
+      failed_logins INTEGER NOT NULL DEFAULT 0,
+      locked_until INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      CHECK (role != 'zone_admin' OR zone_id IS NOT NULL)
+    );
+    INSERT INTO users_new (
+      id, role, phone, name, pass_hash, zone_id, status,
+      business_name, address, lat, lng, online,
+      last_lat, last_lng, last_loc_at, last_assigned_at,
+      token_version, failed_logins, locked_until, created_at
+    )
+    SELECT
+      id, role, phone, name, pass_hash, zone_id, status,
+      business_name, address, lat, lng, online,
+      last_lat, last_lng, last_loc_at, last_assigned_at,
+      token_version, failed_logins, locked_until, created_at
+    FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_new RENAME TO users;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
+}
 
 export const getSetting = async (k, def) =>
   (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;

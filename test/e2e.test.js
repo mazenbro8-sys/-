@@ -119,6 +119,25 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   const afterAllRej = (await call('/admin/live', 'GET', null, admin)).data;
   assert.equal(afterAllRej.shortage.alert, true);
   assert.ok(afterAllRej.shortage.orders.some((x) => x.id === oBusy.id));
+
+  // Zone Admin RBAC & multi-tenancy isolation
+  const z2 = await call('/admin/zones', 'POST', { name: 'المالكي' }, admin);
+  assert.equal(z2.status, 201);
+  const z2Id = z2.data.id;
+  assert.equal((await call('/admin/users', 'POST', { role: 'zone_admin', phone: '0966666666', name: 'مدير المالكي', password: 'Passw0rdX', zone_id: z2Id }, admin)).status, 201);
+  const zaToken = await login('0966666666');
+  const zaPayload = JSON.parse(Buffer.from(zaToken.split('.')[1], 'base64url').toString());
+  assert.equal(zaPayload.role, 'zone_admin');
+  assert.equal(zaPayload.zone_id, z2Id);
+  assert.equal((await call('/admin/orders', 'GET', null, zaToken)).data.length, 0);
+  assert.equal((await call(`/admin/orders/${o1.id}`, 'GET', null, zaToken)).status, 404);
+  assert.equal((await call('/admin/zones', 'POST', { name: 'كفرسوسة' }, zaToken)).status, 403);
+  assert.equal((await call('/admin/users', 'POST', { role: 'admin', phone: '0966666667', name: 'x', password: 'Passw0rdX', zone_id: z2Id }, zaToken)).status, 403);
+  assert.equal((await call('/admin/users', 'POST', { role: 'zone_admin', phone: '0966666668', name: 'x', password: 'Passw0rdX', zone_id: z2Id }, zaToken)).status, 403);
+  assert.equal((await call('/admin/users', 'POST', { role: 'captain', phone: '0966666669', name: 'كابتن المالكي', password: 'Passw0rdX', zone_id: 1 }, zaToken)).status, 201);
+  const zaUsers = (await call('/admin/users', 'GET', null, zaToken)).data;
+  assert.equal(zaUsers.length, 1);
+  assert.equal(zaUsers[0].zone_id, z2Id);
 });
 
 test('login rate / lockout and bad input', async () => {

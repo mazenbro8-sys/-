@@ -115,13 +115,25 @@ api.post('/auth/register', registerLimiter, (_req, res) => res.status(403).json(
 const createAccount = wrap(async (req, res) => {
   const b = req.body ?? {};
   const role = b.role;
-  if (!['merchant', 'captain'].includes(role)) throw bad('نوع الحساب غير صالح');
+  const isZoneAdmin = req.user.role === 'zone_admin';
+  if (isZoneAdmin && ['admin', 'zone_admin'].includes(role)) {
+    throw new HttpError(403, 'ليس لديك صلاحية لإنشاء حساب إداري');
+  }
+  const allowedRoles = isZoneAdmin ? ['merchant', 'captain'] : ['merchant', 'captain', 'zone_admin', 'admin'];
+  if (!allowedRoles.includes(role)) throw bad('نوع الحساب غير صالح');
   const p = phone(b.phone);
   const name = str(b.name, 'الاسم', 2, 60);
   const pass = str(b.password, 'كلمة المرور', 6, 72);
   if (!/[A-Za-z\u0600-\u06FF]/.test(pass) || !/\d/.test(pass)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
-  const zone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
-  if (!(await db.get('SELECT 1 FROM zones WHERE id=? AND active=1', zone))) throw bad('المنطقة غير موجودة');
+  let zone = null;
+  if (isZoneAdmin) {
+    zone = req.user.zone_id;
+  } else if (role !== 'admin' || (b.zone_id != null && b.zone_id !== '')) {
+    zone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
+  }
+  if (zone != null && !(await db.get('SELECT 1 FROM zones WHERE id=? AND active=1', zone))) {
+    throw bad('المنطقة غير موجودة');
+  }
   let business = null, address = null, lat = null, lng = null;
   if (role === 'merchant') {
     business = str(b.business_name, 'اسم المنشأة', 2, 80);
@@ -133,7 +145,7 @@ const createAccount = wrap(async (req, res) => {
     'INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
     role, p, name, bcrypt.hashSync(pass, 12), zone, 'active', business, address, lat, lng, Date.now()
   );
-  await audit(req.user.id, 'create_user', { role, phone: p });
+  await audit(req.user.id, 'create_user', { role, phone: p, zone_id: zone });
   res.status(201).json({ ok: true, message: 'تم إنشاء الحساب' });
 });
 
@@ -157,6 +169,7 @@ api.post('/auth/login', loginLimiter, wrap(async (req, res) => {
   }
   if (u.status === 'pending') throw new HttpError(403, 'حسابك بانتظار موافقة الإدارة');
   if (u.status === 'suspended') throw new HttpError(403, 'حسابك موقوف، تواصل مع الإدارة');
+  if (u.role === 'zone_admin' && !u.zone_id) throw new HttpError(403, 'حساب مدير المنطقة غير مرتبط بمنطقة');
   await db.run('UPDATE users SET failed_logins=0, locked_until=0 WHERE id=?', u.id);
   res.json({ token: signToken(u), user: publicUser(u) });
 }));
@@ -277,7 +290,7 @@ C.post('/online', wrap(async (req, res) => {
     if (off) await releaseOffer(off.id, 'rejected');
   }
   await db.run('UPDATE users SET online=? WHERE id=?', on ? 1 : 0, req.user.id);
-  sendToAdmins({ type: 'captain', id: req.user.id, online: on, shortage: await computeShortage() });
+  sendToAdmins({ type: 'captain', id: req.user.id, online: on, shortage: await computeShortage() }, req.user.zone_id);
   res.json({ online: on });
 }));
 
@@ -304,7 +317,7 @@ C.post('/location', wrap(async (req, res) => {
   } else {
     await detectBypass(u, lat, lng, now);
   }
-  sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, busy: !!act });
+  sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, busy: !!act }, u.zone_id);
   res.status(204).end();
 }));
 
@@ -323,7 +336,7 @@ async function detectBypass(u, lat, lng, now) {
         'INSERT INTO flags(captain_id,merchant_id,reason,at) VALUES(?,?,?,?)',
         u.id, m.id, `اشتباه التفاف: الكابتن متواجد قرب «${m.business_name}» بدون طلب عبر التطبيق`, now
       );
-      sendToAdmins({ type: 'flag' });
+      sendToAdmins({ type: 'flag' }, u.zone_id);
     }
   }
 }
@@ -399,35 +412,69 @@ C.get('/history', wrap(async (req, res) => {
   res.json(await Promise.all(rows.map((o) => viewOrder(o, 'captain'))));
 }));
 
-// ---------- admin ----------
-const A = express.Router();
-api.use('/admin', auth('admin'), A);
+// ---------- admin & zone_admin RBAC ----------
+const baseAdminAuth = auth('admin', 'zone_admin');
+export const requireAdmin = (req, res, next) =>
+  baseAdminAuth(req, res, (err) => {
+    if (err) return next(err);
+    if (req.user.role === 'zone_admin' && !req.user.zone_id) {
+      return res.status(403).json({ error: 'حساب مدير المنطقة غير مرتبط بمنطقة' });
+    }
+    next();
+  });
 
-A.get('/stats', wrap(async (_req, res) => {
+const adminZone = (req) => (req.user.role === 'zone_admin' ? req.user.zone_id : null);
+
+const A = express.Router();
+api.use('/admin', requireAdmin, A);
+
+A.get('/stats', wrap(async (req, res) => {
   const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
-  const [merchants, captains, online, pending, live, deliveredToday, flags, comm, shortage] = await Promise.all([
-    one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active'"),
-    one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active'"),
-    one("SELECT COUNT(*) n FROM users WHERE role='captain' AND online=1"),
-    one("SELECT COUNT(*) n FROM users WHERE status='pending'"),
-    one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
-    one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
-    one('SELECT COUNT(*) n FROM flags WHERE resolved=0'),
-    commission(),
-    computeShortage(),
-  ]);
+  const zId = adminZone(req);
+  const [merchants, captains, online, pending, live, deliveredToday, flags, comm, shortage] = zId != null
+    ? await Promise.all([
+        one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
+        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
+        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND online=1 AND zone_id=?", zId),
+        one("SELECT COUNT(*) n FROM users WHERE status='pending' AND zone_id=?", zId),
+        one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=?", zId),
+        one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered' AND zone_id=?", day, zId),
+        one('SELECT COUNT(*) n FROM flags f JOIN users c ON c.id=f.captain_id WHERE f.resolved=0 AND c.zone_id=?', zId),
+        commission(),
+        computeShortage(zId),
+      ])
+    : await Promise.all([
+        one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active'"),
+        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active'"),
+        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND online=1"),
+        one("SELECT COUNT(*) n FROM users WHERE status='pending'"),
+        one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
+        one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
+        one('SELECT COUNT(*) n FROM flags WHERE resolved=0'),
+        commission(),
+        computeShortage(),
+      ]);
   res.json({ merchants, captains, online, pending, live, deliveredToday, flags, commission: comm, shortage });
 }));
 
-A.get('/live', wrap(async (_req, res) => {
-  const [liveRows, recentRows, capRows, merchants, shortage] = await Promise.all([
-    db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
-    db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
-    db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' ORDER BY online DESC, (status='active') DESC, id DESC"),
-    db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id DESC"),
-    computeShortage(),
-  ]);
+A.get('/live', wrap(async (req, res) => {
+  const zId = adminZone(req);
+  const [liveRows, recentRows, capRows, merchants, shortage] = zId != null
+    ? await Promise.all([
+        db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId),
+        db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 100', zId),
+        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
+        db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId),
+        computeShortage(zId),
+      ])
+    : await Promise.all([
+        db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
+        db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
+        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' ORDER BY online DESC, (status='active') DESC, id DESC"),
+        db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id DESC"),
+        computeShortage(),
+      ]);
   const [orders, recentOrders, captains] = await Promise.all([
     Promise.all(liveRows.map((o) => viewOrder(o, 'admin'))),
     Promise.all(recentRows.map((o) => viewOrder(o, 'admin'))),
@@ -448,16 +495,26 @@ A.get('/live', wrap(async (_req, res) => {
 
 A.post('/users', createAccount);
 A.get('/users', wrap(async (req, res) => {
-  const role = ['merchant', 'captain'].includes(req.query.role) ? req.query.role : null;
+  const zId = adminZone(req);
+  const validFilterRoles = zId != null ? ['merchant', 'captain'] : ['merchant', 'captain', 'zone_admin'];
+  const role = validFilterRoles.includes(req.query.role) ? req.query.role : null;
+  const roleClause = zId != null ? "role IN ('merchant','captain')" : "role IN ('merchant','captain','zone_admin')";
+  const args = [];
+  let where = roleClause;
+  if (zId != null) { where += ' AND zone_id=?'; args.push(zId); }
+  if (role) { where += ' AND role=?'; args.push(role); }
   const rows = await db.all(
-    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,created_at FROM users WHERE role IN ('merchant','captain') ${role ? 'AND role=?' : ''} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
-    ...(role ? [role] : [])
+    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,created_at FROM users WHERE ${where} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
+    ...args
   );
   res.json(rows);
 }));
 A.patch('/users/:id', wrap(async (req, res) => {
   const id = oid(req);
-  const u = await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain')", id);
+  const zId = adminZone(req);
+  const u = zId != null
+    ? await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain') AND zone_id=?", id, zId)
+    : await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain','zone_admin')", id);
   if (!u) throw new HttpError(404, 'المستخدم غير موجود');
   const b = req.body ?? {};
   if (b.status != null) {
@@ -469,6 +526,7 @@ A.patch('/users/:id', wrap(async (req, res) => {
   }
   if (b.zone_id != null) {
     const z = int(b.zone_id, 'zone', 1, 2 ** 31);
+    if (zId != null && z !== zId) throw new HttpError(403, 'لا يمكنك نقل المستخدم خارج منطقتك');
     if (!(await db.get('SELECT 1 FROM zones WHERE id=?', z))) throw bad('المنطقة غير موجودة');
     await db.run('UPDATE users SET zone_id=? WHERE id=?', z, id);
   }
@@ -478,14 +536,25 @@ A.patch('/users/:id', wrap(async (req, res) => {
 }));
 A.post('/users/:id/reset-password', wrap(async (req, res) => {
   const id = oid(req);
+  const zId = adminZone(req);
   const pw = str(req.body?.password, 'كلمة المرور', 6, 72);
-  await db.run("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain')", bcrypt.hashSync(pw, 12), id);
+  const r = zId != null
+    ? await db.run("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain') AND zone_id=?", bcrypt.hashSync(pw, 12), id, zId)
+    : await db.run("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain','zone_admin')", bcrypt.hashSync(pw, 12), id);
+  if (!r.changes) throw new HttpError(404, 'المستخدم غير موجود');
   await audit(req.user.id, 'reset_password', { id });
   res.json({ ok: true });
 }));
 
-A.get('/zones', wrap(async (_req, res) => res.json(await db.all('SELECT * FROM zones ORDER BY id'))));
+A.get('/zones', wrap(async (req, res) => {
+  const zId = adminZone(req);
+  const rows = zId != null
+    ? await db.all('SELECT * FROM zones WHERE id=? ORDER BY id', zId)
+    : await db.all('SELECT * FROM zones ORDER BY id');
+  res.json(rows);
+}));
 A.post('/zones', wrap(async (req, res) => {
+  if (req.user.role === 'zone_admin') throw new HttpError(403, 'ليس لديك صلاحية لإضافة مناطق جديدة');
   const name = str(req.body?.name, 'اسم المنطقة', 2, 60);
   try {
     const r = await db.run('INSERT INTO zones(name) VALUES(?)', name);
@@ -497,24 +566,41 @@ A.post('/zones', wrap(async (req, res) => {
 
 A.get('/orders', wrap(async (req, res) => {
   const st = req.query.status;
-  const rows = st
-    ? await db.all('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 300', String(st))
-    : await db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 300');
+  const zId = adminZone(req);
+  let rows;
+  if (zId != null) {
+    rows = st
+      ? await db.all('SELECT * FROM orders WHERE zone_id=? AND status=? ORDER BY id DESC LIMIT 300', zId, String(st))
+      : await db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 300', zId);
+  } else {
+    rows = st
+      ? await db.all('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 300', String(st))
+      : await db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 300');
+  }
   res.json(await Promise.all(rows.map((o) => viewOrder(o, 'admin'))));
 }));
 A.post('/orders', wrap(async (req, res) => {
   const b = req.body ?? {};
+  const zId = adminZone(req);
   let m = null;
   if (b.merchant_id != null && b.merchant_id !== '') {
-    m = await db.get("SELECT * FROM users WHERE id=? AND role='merchant'", int(b.merchant_id, 'المنشأة', 1, 2 ** 31));
+    const mid = int(b.merchant_id, 'المنشأة', 1, 2 ** 31);
+    m = zId != null
+      ? await db.get("SELECT * FROM users WHERE id=? AND role='merchant' AND zone_id=?", mid, zId)
+      : await db.get("SELECT * FROM users WHERE id=? AND role='merchant'", mid);
   } else {
-    m = await db.get("SELECT * FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id ASC LIMIT 1");
+    m = zId != null
+      ? await db.get("SELECT * FROM users WHERE role='merchant' AND zone_id=? ORDER BY (status='active') DESC, id ASC LIMIT 1", zId)
+      : await db.get("SELECT * FROM users WHERE role='merchant' ORDER BY (status='active') DESC, id ASC LIMIT 1");
   }
   if (!m) throw bad('يرجى إضافة منشأة أولاً');
   const address = str(b.customer_address, 'عنوان التوصيل', 2, 250);
   let cap = null;
   if (b.captain_id != null && b.captain_id !== '') {
-    cap = await db.get("SELECT * FROM users WHERE id=? AND role='captain'", int(b.captain_id, 'الكابتن', 1, 2 ** 31));
+    const cid = int(b.captain_id, 'الكابتن', 1, 2 ** 31);
+    cap = zId != null
+      ? await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId)
+      : await db.get("SELECT * FROM users WHERE id=? AND role='captain'", cid);
     if (!cap) throw bad('الكابتن غير موجود');
   }
   const now = Date.now();
@@ -522,7 +608,7 @@ A.post('/orders', wrap(async (req, res) => {
     const st = cap ? 'accepted' : 'searching';
     const r = await db.run(
       'INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,status,captain_id,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?)',
-      m.id, m.zone_id || 1, '—', '', address, st, cap ? cap.id : null, cap ? now : null, now
+      m.id, zId ?? (m.zone_id || 1), '—', '', address, st, cap ? cap.id : null, cap ? now : null, now
     );
     await addEvent(r.lastInsertRowid, 'created', req.user.id);
     if (cap) {
@@ -536,13 +622,26 @@ A.post('/orders', wrap(async (req, res) => {
   await notifyOrder(orderId);
   res.status(201).json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', orderId), 'admin'));
 }));
-A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
+
+const getAdminOrder = async (req) => {
   const id = oid(req);
-  const o = await db.get('SELECT * FROM orders WHERE id=?', id);
+  const zId = adminZone(req);
+  const o = zId != null
+    ? await db.get('SELECT * FROM orders WHERE id=? AND zone_id=?', id, zId)
+    : await db.get('SELECT * FROM orders WHERE id=?', id);
   if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  return o;
+};
+
+A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
+  const o = await getAdminOrder(req);
+  const id = o.id;
+  const zId = adminZone(req);
   if (['delivered', 'cancelled', 'failed'].includes(o.status)) throw bad('لا يمكن تعيين كابتن لطلب مغلق');
   const capId = int(req.body?.captain_id, 'الكابتن', 1, 2 ** 31);
-  const cap = await db.get("SELECT * FROM users WHERE id=? AND role='captain'", capId);
+  const cap = zId != null
+    ? await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND zone_id=?", capId, zId)
+    : await db.get("SELECT * FROM users WHERE id=? AND role='captain'", capId);
   if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
   const oldCapId = o.captain_id;
   const oldOfferedId = o.offered_captain_id;
@@ -565,9 +664,8 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
   res.json(await viewOrder(freshOrder, 'admin'));
 }));
 A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
-  const id = oid(req);
-  const o = await db.get('SELECT * FROM orders WHERE id=?', id);
-  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  const o = await getAdminOrder(req);
+  const id = o.id;
   if (['delivered', 'cancelled', 'failed'].includes(o.status)) throw bad('الطلب مغلق بالفعل');
   const oldCapId = o.captain_id;
   const oldOfferedId = o.offered_captain_id;
@@ -588,8 +686,7 @@ A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
   res.json(await viewOrder(freshOrder, 'admin'));
 }));
 A.get('/orders/:id', wrap(async (req, res) => {
-  const o = await db.get('SELECT * FROM orders WHERE id=?', oid(req));
-  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  const o = await getAdminOrder(req);
   const [view, events] = await Promise.all([
     viewOrder(o, 'admin'),
     db.all('SELECT e.type,e.at,e.data,u.name actor FROM order_events e LEFT JOIN users u ON u.id=e.actor_id WHERE order_id=? ORDER BY e.id', o.id),
@@ -597,9 +694,9 @@ A.get('/orders/:id', wrap(async (req, res) => {
   res.json({ ...view, events });
 }));
 A.post('/orders/:id/redispatch', wrap(async (req, res) => {
-  const id = oid(req);
-  const o = await db.get('SELECT * FROM orders WHERE id=?', id);
-  if (!o || !['searching', 'expired'].includes(o.status)) throw bad('الطلب ليس في حالة انتظار');
+  const o = await getAdminOrder(req);
+  const id = o.id;
+  if (!['searching', 'expired'].includes(o.status)) throw bad('الطلب ليس في حالة انتظار');
   await tx(async () => {
     await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run("UPDATE orders SET status='searching', closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?", Date.now(), id);
@@ -609,16 +706,16 @@ A.post('/orders/:id/redispatch', wrap(async (req, res) => {
   res.json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', id), 'admin'));
 }));
 A.post('/orders/:id/cancel', wrap(async (req, res) => {
-  const o = await db.get('SELECT * FROM orders WHERE id=?', oid(req));
-  if (!o || ['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب');
+  const o = await getAdminOrder(req);
+  if (['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب');
   await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason: 'admin_cancelled' });
   await audit(req.user.id, 'order_cancel', { id: o.id });
   res.json({ ok: true });
 }));
 /** Dispute resolution: captain at fault (damage / delay) → liability = product amount (or custom). */
 A.post('/orders/:id/liability', wrap(async (req, res) => {
-  const o = await db.get('SELECT * FROM orders WHERE id=?', oid(req));
-  if (!o || !o.captain_id) throw bad('الطلب بلا كابتن');
+  const o = await getAdminOrder(req);
+  if (!o.captain_id) throw bad('الطلب بلا كابتن');
   const amount = int(req.body?.amount ?? o.product_amount, 'المبلغ', 0, 100_000_000);
   const reason = str(req.body?.reason, 'السبب', 3, 200);
   await db.run('UPDATE orders SET liability=?, liability_reason=? WHERE id=?', amount, reason, o.id);
@@ -630,13 +727,22 @@ A.post('/orders/:id/liability', wrap(async (req, res) => {
 
 A.get('/settlements', wrap(async (req, res) => {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day)) ? req.query.day : dayOf();
-  const rows = await db.all(
-    `SELECT o.captain_id, u.name, u.phone,
-       SUM(o.status='delivered') orders_count, SUM(o.commission) commission_total, SUM(o.liability) liability_total
-     FROM orders o JOIN users u ON u.id=o.captain_id
-     WHERE o.day=? AND o.status IN ('delivered','failed') GROUP BY o.captain_id`,
-    day
-  );
+  const zId = adminZone(req);
+  const rows = zId != null
+    ? await db.all(
+        `SELECT o.captain_id, u.name, u.phone,
+           SUM(o.status='delivered') orders_count, SUM(o.commission) commission_total, SUM(o.liability) liability_total
+         FROM orders o JOIN users u ON u.id=o.captain_id
+         WHERE o.day=? AND o.status IN ('delivered','failed') AND o.zone_id=? GROUP BY o.captain_id`,
+        day, zId
+      )
+    : await db.all(
+        `SELECT o.captain_id, u.name, u.phone,
+           SUM(o.status='delivered') orders_count, SUM(o.commission) commission_total, SUM(o.liability) liability_total
+         FROM orders o JOIN users u ON u.id=o.captain_id
+         WHERE o.day=? AND o.status IN ('delivered','failed') GROUP BY o.captain_id`,
+        day
+      );
   const out = await Promise.all(rows.map(async (r) => {
     const s = await db.get('SELECT collected_at FROM settlements WHERE captain_id=? AND day=?', r.captain_id, day);
     return { ...r, total: r.commission_total + r.liability_total, collected_at: s?.collected_at ?? null };
@@ -646,7 +752,14 @@ A.get('/settlements', wrap(async (req, res) => {
 A.post('/settlements/collect', wrap(async (req, res) => {
   const day = String(req.body?.day), cid = int(req.body?.captain_id, 'captain', 1, 2 ** 31);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw bad('تاريخ غير صالح');
-  const r = await db.get("SELECT SUM(status='delivered') n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", cid, day);
+  const zId = adminZone(req);
+  if (zId != null) {
+    const cap = await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId);
+    if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  }
+  const r = zId != null
+    ? await db.get("SELECT SUM(status='delivered') n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND zone_id=? AND status IN ('delivered','failed')", cid, day, zId)
+    : await db.get("SELECT SUM(status='delivered') n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", cid, day);
   if (!r.n && !r.l) throw bad('لا توجد تسوية لهذا اليوم');
   await db.run(
     'INSERT OR IGNORE INTO settlements(captain_id,day,orders_count,commission_total,liability_total,total,collected_at,collected_by) VALUES(?,?,?,?,?,?,?,?)',
@@ -656,19 +769,41 @@ A.post('/settlements/collect', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-A.get('/flags', wrap(async (_req, res) => res.json(await db.all(`
-  SELECT f.id,f.reason,f.at,f.resolved,f.captain_id,c.name captain_name,c.status captain_status
-  FROM flags f JOIN users c ON c.id=f.captain_id ORDER BY f.resolved, f.id DESC LIMIT 200`))));
+A.get('/flags', wrap(async (req, res) => {
+  const zId = adminZone(req);
+  const rows = zId != null
+    ? await db.all(`
+        SELECT f.id,f.reason,f.at,f.resolved,f.captain_id,c.name captain_name,c.status captain_status
+        FROM flags f JOIN users c ON c.id=f.captain_id
+        WHERE c.zone_id=? ORDER BY f.resolved, f.id DESC LIMIT 200`, zId)
+    : await db.all(`
+        SELECT f.id,f.reason,f.at,f.resolved,f.captain_id,c.name captain_name,c.status captain_status
+        FROM flags f JOIN users c ON c.id=f.captain_id ORDER BY f.resolved, f.id DESC LIMIT 200`);
+  res.json(rows);
+}));
 A.post('/flags/:id/resolve', wrap(async (req, res) => {
-  await db.run('UPDATE flags SET resolved=1 WHERE id=?', oid(req));
+  const id = oid(req);
+  const zId = adminZone(req);
+  if (zId != null) {
+    const fl = await db.get('SELECT 1 FROM flags f JOIN users c ON c.id=f.captain_id WHERE f.id=? AND c.zone_id=?', id, zId);
+    if (!fl) throw new HttpError(404, 'التنبيه غير موجود');
+  }
+  await db.run('UPDATE flags SET resolved=1 WHERE id=?', id);
   res.json({ ok: true });
 }));
 A.get('/captains/:id/track', wrap(async (req, res) => {
-  const rows = await db.all('SELECT lat,lng,order_id,at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', int(req.params.id, 'id', 1, 2 ** 31));
+  const cid = int(req.params.id, 'id', 1, 2 ** 31);
+  const zId = adminZone(req);
+  if (zId != null) {
+    const cap = await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId);
+    if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  }
+  const rows = await db.all('SELECT lat,lng,order_id,at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', cid);
   res.json(rows.reverse());
 }));
 
 A.put('/settings/commission', wrap(async (req, res) => {
+  if (req.user.role === 'zone_admin') throw new HttpError(403, 'تعديل العمولة متاح للمدير العام فقط');
   const v = int(req.body?.value, 'العمولة', 0, 1_000_000);
   await setSetting('commission', v);
   await audit(req.user.id, 'commission', { v });

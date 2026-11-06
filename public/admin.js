@@ -120,10 +120,13 @@ authScreen('admin', (user) => {
     alarmOsc = alarmGain = null; navigator.vibrate?.(0);
   }
 
+  const isZoneAdmin = user.role === 'zone_admin';
   const feed = [];
   let tab = 'dash', zones = [], liveMap = null, liveFitted = false;
   let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = [];
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
+  const ordersIndex = new Map();
+  const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
   let refreshTimer;
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
 
@@ -193,10 +196,20 @@ authScreen('admin', (user) => {
   function renderOrderRowActions(o) {
     const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
     const canCancel = !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
+    const hasCap = Boolean(o.captain || o.captain_id);
+    const mobPrimary = isClosed
+      ? `<button type="button" class="mob-primary-btn is-closed" data-open-sheet="${o.id}" data-sheet-mode="detail">🔍 تفاصيل الطلب</button>`
+      : hasCap
+        ? `<button type="button" class="mob-primary-btn is-assigned" data-open-sheet="${o.id}" data-sheet-mode="assign">🔄 تغيير الكابتن</button>`
+        : `<button type="button" class="mob-primary-btn" data-open-sheet="${o.id}" data-sheet-mode="assign">🛵 تعيين كابتن</button>`;
     return `<div class="order-action-bar">
       <button type="button" class="act-pill act-details" data-d="${o.id}" title="عرض تفاصيل ومسار الطلب">🔍 تفاصيل</button>
       ${!isClosed ? `<button type="button" class="act-pill act-redispatch" data-redispatch="${o.id}" title="إعادة تدوير وعرض الطلب على الكباتن">🔄 تدوير</button>` : ''}
       ${canCancel ? `<button type="button" class="act-pill act-cancel" data-x="${o.id}" title="إلغاء الطلب نهائياً">✕ إلغاء</button>` : ''}
+    </div>
+    <div class="mob-card-actions">
+      ${mobPrimary}
+      <button type="button" class="mob-more-btn" data-open-sheet="${o.id}" data-sheet-mode="more" aria-label="المزيد من الإجراءات" title="المزيد من الإجراءات">⋯</button>
     </div>`;
   }
 
@@ -206,13 +219,187 @@ authScreen('admin', (user) => {
     else if (tab === 'orders') await views.orders();
   }
 
+  let supportsDisplayTransition;
+  function canTransitionDisplay() {
+    if (supportsDisplayTransition !== undefined) return supportsDisplayTransition;
+    if (!window.CSS?.supports?.('transition-behavior', 'allow-discrete') || !document.body) return false;
+    const probe = document.createElement('div');
+    probe.style.cssText = 'transition: display 1s allow-discrete !important; display: block;';
+    document.body.appendChild(probe);
+    getComputedStyle(probe).display;
+    probe.style.display = 'none';
+    supportsDisplayTransition = getComputedStyle(probe).display === 'block';
+    probe.remove();
+    return supportsDisplayTransition;
+  }
+
+  async function closeActionSheet() {
+    const dlg = document.getElementById('orderActionSheet');
+    if (!dlg || !dlg.open) return;
+    if (!(window.CSS?.supports?.('overlay', 'auto') && canTransitionDisplay())) {
+      dlg.setAttribute('data-closing', '');
+      const animations = dlg.getAnimations({ subtree: true });
+      if (animations.length > 0) {
+        await Promise.race([
+          Promise.allSettled(animations.map((a) => a.finished)),
+          new Promise((r) => setTimeout(r, 400)),
+        ]);
+      }
+      if (!dlg.hasAttribute('data-closing')) return;
+      dlg.removeAttribute('data-closing');
+    }
+    dlg.close();
+  }
+
+  function ensureActionSheetDialog() {
+    let dlg = document.getElementById('orderActionSheet');
+    if (dlg) return dlg;
+    dlg = document.createElement('dialog');
+    dlg.id = 'orderActionSheet';
+    dlg.className = 'action-sheet';
+    dlg.setAttribute('closedby', 'any');
+    dlg.setAttribute('aria-labelledby', 'ashTitle');
+    document.body.appendChild(dlg);
+
+    dlg.addEventListener('cancel', (ev) => {
+      ev.preventDefault();
+      closeActionSheet();
+    });
+
+    if (!('closedBy' in HTMLDialogElement.prototype)) {
+      dlg.addEventListener('click', (ev) => {
+        if (ev.target !== dlg) return;
+        const rect = dlg.getBoundingClientRect();
+        const inside = rect.top <= ev.clientY && ev.clientY <= rect.top + rect.height &&
+                       rect.left <= ev.clientX && ev.clientX <= rect.left + rect.width;
+        if (!inside) closeActionSheet();
+      });
+    }
+
+    dlg.addEventListener('click', async (ev) => {
+      if (ev.target.closest('#ashClose')) {
+        await closeActionSheet();
+        return;
+      }
+      const detBtn = ev.target.closest('[data-sheet-detail]');
+      if (detBtn) {
+        const oid = Number(detBtn.dataset.sheetDetail);
+        const slot = dlg.querySelector('#sheetDetail');
+        if (slot) await detail(oid, slot);
+        return;
+      }
+      const liabBtn = ev.target.closest('[data-sheet-liability]');
+      if (liabBtn) {
+        const oid = Number(liabBtn.dataset.sheetLiability);
+        const reason = prompt('سبب التحميل (تلف / تأخير)');
+        if (reason) {
+          const ok = await act(() => api(`/admin/orders/${oid}/liability`, 'POST', { reason }), 'تم التحميل');
+          if (ok) {
+            await closeActionSheet();
+            await refreshCurrentTab();
+          }
+        }
+        return;
+      }
+      const capLink = ev.target.closest('[data-cap]');
+      if (capLink) {
+        ev.preventDefault();
+        const cid = Number(capLink.dataset.cap);
+        const cap = (liveCache.captains || []).find((c) => c.id === cid);
+        if (cap) {
+          await closeActionSheet();
+          captainModal(cap);
+        }
+        return;
+      }
+      const res = await handleOrderActionClick(ev);
+      if (res === 'done') await closeActionSheet();
+    });
+    return dlg;
+  }
+
+  async function openActionSheet(orderId, initialMode = 'more') {
+    const oid = Number(orderId);
+    let o = ordersIndex.get(oid)
+      || (liveCache.orders || []).find((x) => x.id === oid)
+      || (liveCache.recentOrders || []).find((x) => x.id === oid);
+    if (!o) {
+      try { o = await api(`/admin/orders/${oid}`); } catch (er) { return toast(er.message); }
+    }
+    if (!liveCache.captains?.length) {
+      try { liveCache = await api('/admin/live'); } catch {}
+    }
+    const capList = liveCache.captains || [];
+    const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
+    const canCancel = !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
+    const hasCap = Boolean(o.captain || o.captain_id);
+
+    const dlg = ensureActionSheetDialog();
+    dlg.removeAttribute('data-closing');
+    dlg.innerHTML = `
+      <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
+      <div class="sheet-header">
+        <div class="sheet-title-group">
+          <h3 id="ashTitle">طلب <span dir="ltr">${serialNo(o)}</span></h3>
+          ${badge(o.status)}
+        </div>
+        <button type="button" class="ghost sm sheet-close-btn" id="ashClose" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="sheet-meta">
+        <span>🏪 ${esc(o.merchant?.name || '—')}</span>
+        <span>📍 ${esc(o.customer_address || '—')}</span>
+      </div>
+      ${!isClosed ? `
+        <div class="sheet-assign-box">
+          <div class="sheet-section-lbl">🛵 إدارة الكابتن</div>
+          ${o.captain ? `<div class="sheet-current-cap"><a href="#" class="cap-chip" data-cap="${o.captain.id}">🛵 ${esc(o.captain.name)}</a><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب الطلب</button></div>`
+            : o.offered_captain ? `<div class="sheet-current-cap"><span class="cap-offered-chip">🔔 معروض: ${esc(o.offered_captain.name)}</span><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب العرض</button></div>`
+            : ''}
+          ${capList.length ? `
+            <div class="assign-input-group">
+              <select data-assign-sel="${o.id}">
+                <option value="">${hasCap ? '🔄 اختيار كابتن بديل...' : '🛵 اختر كابتن للتعيين...'}</option>
+                ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+              </select>
+              <button type="button" class="ok sm" data-assign-btn="${o.id}">تعيين ✓</button>
+            </div>
+          ` : '<div class="mut">لا يوجد كباتن مسجلون في هذه المنطقة حالياً</div>'}
+        </div>
+      ` : ''}
+      <div class="sheet-action-list">
+        <button type="button" class="sheet-action-btn" data-sheet-detail="${o.id}">🔍 تفاصيل ومسار الطلب</button>
+        ${!isClosed ? `<button type="button" class="sheet-action-btn" data-redispatch="${o.id}">🔄 إعادة تدوير</button>` : ''}
+        ${hasCap ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ تحميل تعويض</button>` : ''}
+        ${canCancel ? `<button type="button" class="bad sheet-action-btn sheet-cancel-btn" data-x="${o.id}">✕ إلغاء الطلب</button>` : ''}
+      </div>
+      <div id="sheetDetail" class="sheet-detail-slot"></div>
+    `;
+    if (!dlg.open) dlg.showModal();
+    if (initialMode === 'assign') {
+      dlg.querySelector(`[data-assign-sel="${o.id}"]`)?.focus();
+    } else if (initialMode === 'detail') {
+      const slot = dlg.querySelector('#sheetDetail');
+      if (slot) await detail(o.id, slot);
+    }
+  }
+
   async function handleOrderActionClick(e) {
+    const sheetBtn = e.target.closest('[data-open-sheet]');
+    if (sheetBtn) {
+      await openActionSheet(Number(sheetBtn.dataset.openSheet), sheetBtn.dataset.sheetMode || 'more');
+      return 'handled';
+    }
+    const quickAssignBtn = e.target.closest('#shortageBox [data-quick-assign]');
+    if (quickAssignBtn) {
+      await openActionSheet(Number(quickAssignBtn.dataset.quickAssign), 'assign');
+      return 'handled';
+    }
     const redispBtn = e.target.closest('[data-redispatch]');
     if (redispBtn) {
       const oid = Number(redispBtn.dataset.redispatch);
-      await act(() => api(`/admin/orders/${oid}/redispatch`, 'POST'), 'تمت إعادة عرض الطلب ليلف على الكباتن من جديد');
-      await refreshCurrentTab();
-      return true;
+      const ok = await act(() => api(`/admin/orders/${oid}/redispatch`, 'POST'), 'تمت إعادة عرض الطلب ليلف على الكباتن من جديد');
+      if (ok) { await refreshCurrentTab(); return 'done'; }
+      return 'handled';
     }
     const assignBtn = e.target.closest('[data-assign-btn]');
     if (assignBtn) {
@@ -220,31 +407,33 @@ authScreen('admin', (user) => {
       const container = assignBtn.parentElement || document;
       const sel = container.querySelector(`[data-assign-sel="${oid}"]`) || $(`[data-assign-sel="${oid}"]`);
       const capId = Number(sel?.value || 0);
-      if (!capId) { toast('يرجى اختيار الكابتن أولاً من القائمة'); return true; }
-      await act(() => api(`/admin/orders/${oid}/assign-captain`, 'POST', { captain_id: capId }), 'تم تعيين الكابتن للطلب بنجاح');
-      await refreshCurrentTab();
-      return true;
+      if (!capId) { toast('يرجى اختيار الكابتن أولاً من القائمة'); return 'handled'; }
+      const ok = await act(() => api(`/admin/orders/${oid}/assign-captain`, 'POST', { captain_id: capId }), 'تم تعيين الكابتن للطلب بنجاح');
+      if (ok) { await refreshCurrentTab(); return 'done'; }
+      return 'handled';
     }
     const unassignBtn = e.target.closest('[data-unassign]');
     if (unassignBtn) {
       const oid = Number(unassignBtn.dataset.unassign);
       if (confirm('هل تريد إلغاء/سحب الطلب عن هذا الكابتن؟')) {
-        await act(() => api(`/admin/orders/${oid}/unassign-captain`, 'POST'), 'تم سحب الطلب من الكابتن');
-        await refreshCurrentTab();
+        const ok = await act(() => api(`/admin/orders/${oid}/unassign-captain`, 'POST'), 'تم سحب الطلب من الكابتن');
+        if (ok) { await refreshCurrentTab(); return 'done'; }
       }
-      return true;
+      return 'handled';
     }
     const addForCapBtn = e.target.closest('[data-add-order]');
     if (addForCapBtn) {
       const cid = addForCapBtn.dataset.addOrder ? Number(addForCapBtn.dataset.addOrder) : null;
       openAddOrderModal(cid);
-      return true;
+      return 'handled';
     }
     const xEl = e.target.closest('[data-x]');
-    if (xEl && confirm('إلغاء الطلب نهائياً؟')) {
-      await act(() => api(`/admin/orders/${xEl.dataset.x}/cancel`, 'POST'), 'تم إلغاء الطلب');
-      await refreshCurrentTab();
-      return true;
+    if (xEl) {
+      if (confirm('إلغاء الطلب نهائياً؟')) {
+        const ok = await act(() => api(`/admin/orders/${xEl.dataset.x}/cancel`, 'POST'), 'تم إلغاء الطلب');
+        if (ok) { await refreshCurrentTab(); return 'done'; }
+      }
+      return 'handled';
     }
     return false;
   }
@@ -339,7 +528,9 @@ authScreen('admin', (user) => {
           if (td.hasAttribute('colspan')) return;
           const lbl = labels[i] || '';
           if (lbl && td.dataset.label !== lbl) td.dataset.label = lbl;
-          if (td.querySelector('.cap-cell-wrap, .order-action-bar, button[data-st], button[data-c], button[data-r]')) {
+          if (td.querySelector('.cap-cell-wrap')) td.classList.add('td-cap-cell');
+          if (td.querySelector('.mob-card-actions')) td.classList.add('td-actions', 'td-order-actions');
+          else if (td.querySelector('.order-action-bar, button[data-st], button[data-c], button[data-r]')) {
             td.classList.add('td-actions');
           }
         });
@@ -361,8 +552,10 @@ authScreen('admin', (user) => {
       if (isAct) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
     });
-    $('#ptitle').textContent = TABS[t].replace(/^\S+\s/, '');
     zones = await api('/admin/zones');
+    const baseTitle = TABS[t].replace(/^\S+\s/, '');
+    const myZoneName = isZoneAdmin ? (zones.find((z) => z.id === user.zone_id)?.name || '') : '';
+    $('#ptitle').textContent = isZoneAdmin && myZoneName ? `${baseTitle} - ${myZoneName}` : baseTitle;
     await views[t]();
     syncMobileTableLabels();
   }
@@ -393,6 +586,8 @@ authScreen('admin', (user) => {
     async dash() {
       const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
       liveCache = d;
+      rememberOrders(d.orders);
+      rememberOrders(d.recentOrders);
       updateShortageBanner(d.shortage || s.shortage);
       const merchList = d.merchants || [];
       const capList = d.captains || [];
@@ -635,19 +830,31 @@ authScreen('admin', (user) => {
       const rows = await api('/admin/users');
       const mCount = rows.filter((u) => u.role === 'merchant').length;
       const cCount = rows.filter((u) => u.role === 'captain').length;
+      const roleOptions = isZoneAdmin
+        ? `<option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option>`
+        : `<option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option><option value="zone_admin">🛡️ مدير منطقة</option><option value="admin">👑 مدير عام</option>`;
+      const zoneSelectHtml = isZoneAdmin
+        ? `<select name="zone_id" id="nzone" disabled>${zones.map((z) => `<option value="${z.id}" ${z.id === user.zone_id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select>`
+        : `<select name="zone_id" id="nzone">${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}</select>`;
+      const roleBadgeTxt = (r) => ({
+        merchant: '🏪 منشأة',
+        captain: '🛵 كابتن',
+        zone_admin: '🛡️ مدير منطقة',
+        admin: '👑 مدير عام',
+      }[r] || esc(r));
       view().innerHTML = `<div class="card"><div class="row-head"><h3 style="margin:0">إضافة حساب (المنشآت: ${mCount} — الكباتن: ${cCount})</h3><button type="button" id="addb">➕ منشأة / كابتن جديد</button></div><form id="nu" class="hide">
-        <div class="row"><div><label>النوع</label><select name="role" id="nrole"><option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option></select></div>
-        <div><label>المنطقة</label><select name="zone_id">${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}</select></div></div>
+        <div class="row"><div><label>النوع</label><select name="role" id="nrole">${roleOptions}</select></div>
+        <div id="nzoneWrap"><label>المنطقة</label>${zoneSelectHtml}</div></div>
         <div class="row"><div><label>الاسم</label><input name="name" required minlength="2"></div><div><label>رقم الهاتف</label><input name="phone" inputmode="tel" required></div></div>
         <label>كلمة المرور (6 أحرف على الأقل، حروف وأرقام)</label><input name="password" type="text" minlength="6" required autocomplete="off">
         <div id="mfields"><label>اسم المنشأة</label><input name="business_name"><label>العنوان</label><input name="address"><label>موقع المنشأة (اضغط على الخريطة لتحديده)</label><div id="nmap" class="map"></div></div>
         <button class="big ok">إنشاء الحساب</button></form></div>
         <div class="card"><div class="tablewrap"><table><thead><tr><th>النوع</th><th>الاسم</th><th>الهاتف</th><th>المنطقة</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>
       ${rows.map((u) => `<tr>
-        <td>${u.role === 'merchant' ? '🏪 منشأة' : '🛵 كابتن'}</td>
+        <td>${roleBadgeTxt(u.role)}</td>
         <td><b>${esc(u.business_name || u.name)}</b><div class="mut">${esc(u.role === 'merchant' ? u.name + ' — ' + (u.address || '') : '')}</div></td>
         <td dir="ltr">${esc(u.phone)}</td>
-        <td><select data-zone="${u.id}">${zones.map((z) => `<option value="${z.id}" ${z.id === u.zone_id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select></td>
+        <td><select data-zone="${u.id}" ${isZoneAdmin ? 'disabled' : ''}>${zones.map((z) => `<option value="${z.id}" ${z.id === u.zone_id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select></td>
         <td>${badge(u.status)}${u.online ? ' 🟢' : ''}</td>
         <td>
           ${u.status !== 'active' ? `<button type="button" class="ok sm" data-st="active" data-id="${u.id}">تفعيل</button> ` : ''}
@@ -663,10 +870,17 @@ authScreen('admin', (user) => {
         }
         setTimeout(() => nmap?.invalidateSize(), 60);
       };
-      $('#nrole').onchange = (e) => $('#mfields').classList.toggle('hide', e.target.value !== 'merchant');
+      $('#nrole').onchange = (e) => {
+        const val = e.target.value;
+        $('#mfields').classList.toggle('hide', val !== 'merchant');
+        if (!isZoneAdmin) $('#nzoneWrap').classList.toggle('hide', val === 'admin');
+      };
       $('#nu').onsubmit = async (e) => {
         e.preventDefault();
-        const f = Object.fromEntries(new FormData(e.target)); f.zone_id = Number(f.zone_id);
+        const f = Object.fromEntries(new FormData(e.target));
+        if (isZoneAdmin) f.zone_id = Number(user.zone_id);
+        else if (f.role === 'admin') delete f.zone_id;
+        else f.zone_id = Number(f.zone_id);
         if (f.role === 'merchant') {
           if (npos[0] == null) return toast('حدّد موقع المنشأة على الخريطة');
           [f.lat, f.lng] = npos;
@@ -696,6 +910,8 @@ authScreen('admin', (user) => {
     async orders() {
       const [rows, d] = await Promise.all([api('/admin/orders'), api('/admin/live')]);
       liveCache = d;
+      rememberOrders(rows);
+      rememberOrders(d.orders);
       updateShortageBanner(d.shortage);
       const capList = d.captains || [];
       const statusOpts = ['searching', 'offered', 'accepted', 'picked_up', 'arrived', 'delivered', 'cancelled', 'failed', 'expired']
@@ -767,6 +983,11 @@ authScreen('admin', (user) => {
 
     async settings() {
       const s = await api('/admin/stats');
+      if (isZoneAdmin) {
+        view().innerHTML = `<div class="grid"><div class="card commission-card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><p class="mut">العمولة المعتمدة حالياً: <b>${money(s.commission)}</b> (تُحدّد من الإدارة العامة)</p></div>
+          <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
+        return;
+      }
       view().innerHTML = `<div class="grid"><div class="card commission-card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><div class="row"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs">حفظ</button></div></div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
       $('#cs').onclick = () => act(() => api('/admin/settings/commission', 'PUT', { value: Number($('#cm').value) }), 'تم الحفظ');
@@ -774,23 +995,31 @@ authScreen('admin', (user) => {
     },
   };
 
-  async function detail(id) {
-    const detBox = $('#detail');
+  async function detail(id, targetBox = null) {
+    const detBox = targetBox || $('#detail');
     if (!detBox) return;
+    if (targetBox) {
+      const pageDet = $('#view #detail');
+      if (pageDet) pageDet.innerHTML = '';
+    } else {
+      const sheetDet = $('#sheetDetail');
+      if (sheetDet) sheetDet.innerHTML = '';
+    }
     const o = await api(`/admin/orders/${id}`);
+    ordersIndex.set(o.id, o);
     const capList = liveCache.captains || [];
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
     detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
-        <div style="margin:10px 0;padding:10px;background:var(--c-ffffff-a040);border-radius:10px">
+        ${!targetBox ? `<div style="margin:10px 0;padding:10px;background:var(--c-ffffff-a040);border-radius:10px">
           <b>🛵 الكابتن المسند للطلب:</b>
           <div style="margin-top:6px">${renderOrderCaptainCell(o, capList)}</div>
-        </div>
+        </div>` : `<p><b>🛵 الكابتن:</b> ${esc(o.captain?.name || 'غير معيّن')}</p>`}
         <p>العمولة: ${money(o.commission)}${o.liability ? ` — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}` : ''}</p>
-        ${hasMap ? '<div id="dmap" class="map" style="height:300px"></div>' : ''}
+        ${hasMap ? '<div id="dmap" class="map" style="height:260px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
-        <div class="row">${o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">تحميل الكابتن ثمن المنتج (تلف/تأخير)</button>` : ''}
-        ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button type="button" class="sec" id="ca">إلغاء الطلب نهائياً</button>' : ''}</div></div>`;
+        ${!targetBox ? `<div class="row">${o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">تحميل الكابتن ثمن المنتج (تلف/تأخير)</button>` : ''}
+        ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button type="button" class="sec" id="ca">إلغاء الطلب نهائياً</button>' : ''}</div>` : ''}</div>`;
     if (hasMap) {
       const dmap = makeMap('dmap', DAMASCUS, 13);
       const pts = [];
@@ -811,16 +1040,16 @@ authScreen('admin', (user) => {
         const dest = o.status === 'accepted' ? [o.merchant?.lat, o.merchant?.lng] : [o.customer_lat, o.customer_lng];
         if (dest[0] != null) makeRoute(dmap, [o.captain.lat, o.captain.lng], dest);
       }
-      setTimeout(() => dmap.invalidateSize(), 60);
+      setTimeout(() => dmap.invalidateSize(), 120);
     }
-    $('#lb')?.addEventListener('click', async () => {
+    $('#lb', detBox)?.addEventListener('click', async () => {
       const reason = prompt('سبب التحميل (تلف / تأخير)');
-      if (reason) { await act(() => api(`/admin/orders/${id}/liability`, 'POST', { reason }), 'تم التحميل'); detail(id); }
+      if (reason) { await act(() => api(`/admin/orders/${id}/liability`, 'POST', { reason }), 'تم التحميل'); detail(id, targetBox); }
     });
-    $('#ca')?.addEventListener('click', async () => {
+    $('#ca', detBox)?.addEventListener('click', async () => {
       if (confirm('إلغاء الطلب نهائياً؟')) {
         await act(() => api(`/admin/orders/${id}/cancel`, 'POST'), 'تم الإلغاء');
-        detail(id);
+        detail(id, targetBox);
         await refreshCurrentTab();
       }
     });
@@ -832,6 +1061,8 @@ authScreen('admin', (user) => {
     const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
     if (tab !== 'live' || !liveMap) return;
     liveCache = d;
+    rememberOrders(d.orders);
+    rememberOrders(d.recentOrders);
     updateShortageBanner(d.shortage || s.shortage);
 
     const stEl = $('#lstats');
