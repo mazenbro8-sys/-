@@ -26,7 +26,7 @@ export const STATUS = {
   searching: 'جاري البحث عن كابتن', offered: 'بانتظار قبول كابتن', accepted: 'الكابتن في الطريق للمنشأة',
   picked_up: 'تم الاستلام، في الطريق للزبون', arrived: 'وصل عند الزبون', delivered: 'تم التسليم',
   cancelled: 'ملغي', failed: 'فشل التسليم', expired: 'لا يوجد كابتن متاح',
-  pending: 'بانتظار الموافقة', active: 'مفعّل', suspended: 'موقوف',
+  pending: 'بانتظار الموافقة', active: 'مفعّل', suspended: 'موقوف', deleted: 'محذوف',
 };
 export const badge = (s) => `<span class="badge b-${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 

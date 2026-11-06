@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v13';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v16';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -26,7 +26,7 @@ authScreen('admin', (user) => {
   const TABS = {
     dash: '📊 لوحة التحكم',
     live: '📡 غرفة العمليات',
-    users: '🏪 المنشآت والكباتن',
+    users: '🏪 الحسابات',
     orders: '📦 الطلبات',
     settle: '💰 الخزينة',
     flags: '⚠️ التنبيهات الأمنية',
@@ -123,6 +123,7 @@ authScreen('admin', (user) => {
   const isZoneAdmin = user.role === 'zone_admin';
   const feed = [];
   let tab = 'dash', zones = [], liveMap = null, liveFitted = false;
+  let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
   let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = [];
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
   const ordersIndex = new Map();
@@ -217,6 +218,7 @@ authScreen('admin', (user) => {
     if (tab === 'dash') await views.dash();
     else if (tab === 'live') { clearTimeout(refreshTimer); await loadLive(); }
     else if (tab === 'orders') await views.orders();
+    else if (tab === 'users' && $('#nu')?.classList.contains('hide')) await views.users();
   }
 
   let supportsDisplayTransition;
@@ -233,8 +235,7 @@ authScreen('admin', (user) => {
     return supportsDisplayTransition;
   }
 
-  async function closeActionSheet() {
-    const dlg = document.getElementById('orderActionSheet');
+  async function closeSheetDialog(dlg) {
     if (!dlg || !dlg.open) return;
     if (!(window.CSS?.supports?.('overlay', 'auto') && canTransitionDisplay())) {
       dlg.setAttribute('data-closing', '');
@@ -248,7 +249,23 @@ authScreen('admin', (user) => {
       if (!dlg.hasAttribute('data-closing')) return;
       dlg.removeAttribute('data-closing');
     }
+    dlg.returnValue = '';
     dlg.close();
+  }
+
+  function attachLightDismissFallback(dlg, onClose) {
+    if ('closedBy' in HTMLDialogElement.prototype) return;
+    const isOutside = (ev) => {
+      const r = dlg.getBoundingClientRect();
+      return ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom;
+    };
+    let pressedOutside = false;
+    dlg.addEventListener('pointerdown', (ev) => { pressedOutside = isOutside(ev); });
+    dlg.addEventListener('pointerup', (ev) => { if (pressedOutside && isOutside(ev)) onClose(); });
+  }
+
+  async function closeActionSheet() {
+    await closeSheetDialog(document.getElementById('orderActionSheet'));
   }
 
   function ensureActionSheetDialog() {
@@ -266,15 +283,7 @@ authScreen('admin', (user) => {
       closeActionSheet();
     });
 
-    if (!('closedBy' in HTMLDialogElement.prototype)) {
-      dlg.addEventListener('click', (ev) => {
-        if (ev.target !== dlg) return;
-        const rect = dlg.getBoundingClientRect();
-        const inside = rect.top <= ev.clientY && ev.clientY <= rect.top + rect.height &&
-                       rect.left <= ev.clientX && ev.clientX <= rect.left + rect.width;
-        if (!inside) closeActionSheet();
-      });
-    }
+    attachLightDismissFallback(dlg, closeActionSheet);
 
     dlg.addEventListener('click', async (ev) => {
       if (ev.target.closest('#ashClose')) {
@@ -529,6 +538,7 @@ authScreen('admin', (user) => {
           const lbl = labels[i] || '';
           if (lbl && td.dataset.label !== lbl) td.dataset.label = lbl;
           if (td.querySelector('.cap-cell-wrap')) td.classList.add('td-cap-cell');
+          if (td.querySelector('.user-more-btn')) td.classList.add('td-user-actions');
           if (td.querySelector('.mob-card-actions')) td.classList.add('td-actions', 'td-order-actions');
           else if (td.querySelector('.order-action-bar, button[data-st], button[data-c], button[data-r]')) {
             td.classList.add('td-actions');
@@ -827,84 +837,517 @@ authScreen('admin', (user) => {
     },
 
     async users() {
-      const rows = await api('/admin/users');
-      const mCount = rows.filter((u) => u.role === 'merchant').length;
-      const cCount = rows.filter((u) => u.role === 'captain').length;
+      if (isZoneAdmin && usersTab === 'admin') usersTab = 'merchant';
+
+      const wirePwToggle = (btn, inp) => {
+        if (!btn || !inp) return;
+        btn.onclick = () => {
+          const show = inp.type === 'password';
+          inp.type = show ? 'text' : 'password';
+          btn.setAttribute('aria-pressed', String(show));
+          btn.setAttribute('aria-label', show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور');
+          btn.textContent = show ? '🙈' : '👁️';
+        };
+      };
+
+      async function deleteUser(uid) {
+        return await act(() => api(`/admin/users/${uid}`, 'DELETE'), 'تم حذف الحساب');
+      }
+
+      async function closeUserSheet() {
+        await closeSheetDialog(document.getElementById('userActionSheet'));
+      }
+
+      function ensureUserSheetDialog() {
+        let dlg = document.getElementById('userActionSheet');
+        if (dlg) return dlg;
+        dlg = document.createElement('dialog');
+        dlg.id = 'userActionSheet';
+        dlg.className = 'action-sheet';
+        dlg.setAttribute('closedby', 'any');
+        dlg.setAttribute('aria-labelledby', 'ushTitle');
+        document.body.appendChild(dlg);
+        dlg.addEventListener('cancel', (ev) => {
+          ev.preventDefault();
+          closeUserSheet();
+        });
+        attachLightDismissFallback(dlg, closeUserSheet);
+        return dlg;
+      }
+
       const roleOptions = isZoneAdmin
         ? `<option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option>`
         : `<option value="merchant">🏪 منشأة</option><option value="captain">🛵 كابتن</option><option value="zone_admin">🛡️ مدير منطقة</option><option value="admin">👑 مدير عام</option>`;
       const zoneSelectHtml = isZoneAdmin
         ? `<select name="zone_id" id="nzone" disabled>${zones.map((z) => `<option value="${z.id}" ${z.id === user.zone_id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select>`
         : `<select name="zone_id" id="nzone">${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}</select>`;
-      const roleBadgeTxt = (r) => ({
-        merchant: '🏪 منشأة',
-        captain: '🛵 كابتن',
-        zone_admin: '🛡️ مدير منطقة',
-        admin: '👑 مدير عام',
-      }[r] || esc(r));
-      view().innerHTML = `<div class="card"><div class="row-head"><h3 style="margin:0">إضافة حساب (المنشآت: ${mCount} — الكباتن: ${cCount})</h3><button type="button" id="addb">➕ منشأة / كابتن جديد</button></div><form id="nu" class="hide">
-        <div class="row"><div><label>النوع</label><select name="role" id="nrole">${roleOptions}</select></div>
-        <div id="nzoneWrap"><label>المنطقة</label>${zoneSelectHtml}</div></div>
-        <div class="row"><div><label>الاسم</label><input name="name" required minlength="2"></div><div><label>رقم الهاتف</label><input name="phone" inputmode="tel" required></div></div>
-        <label>كلمة المرور (6 أحرف على الأقل، حروف وأرقام)</label><input name="password" type="text" minlength="6" required autocomplete="off">
-        <div id="mfields"><label>اسم المنشأة</label><input name="business_name"><label>العنوان</label><input name="address"><label>موقع المنشأة (اضغط على الخريطة لتحديده)</label><div id="nmap" class="map"></div></div>
-        <button class="big ok">إنشاء الحساب</button></form></div>
-        <div class="card"><div class="tablewrap"><table><thead><tr><th>النوع</th><th>الاسم</th><th>الهاتف</th><th>المنطقة</th><th>الحالة</th><th>إجراءات</th></tr></thead><tbody>
-      ${rows.map((u) => `<tr>
-        <td>${roleBadgeTxt(u.role)}</td>
-        <td><b>${esc(u.business_name || u.name)}</b><div class="mut">${esc(u.role === 'merchant' ? u.name + ' — ' + (u.address || '') : '')}</div></td>
-        <td dir="ltr">${esc(u.phone)}</td>
-        <td><select data-zone="${u.id}" ${isZoneAdmin ? 'disabled' : ''}>${zones.map((z) => `<option value="${z.id}" ${z.id === u.zone_id ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}</select></td>
-        <td>${badge(u.status)}${u.online ? ' 🟢' : ''}</td>
-        <td>
-          ${u.status !== 'active' ? `<button type="button" class="ok sm" data-st="active" data-id="${u.id}">تفعيل</button> ` : ''}
-          ${u.status !== 'suspended' ? `<button type="button" class="bad sm" data-st="suspended" data-id="${u.id}">إيقاف</button> ` : ''}
-          <button type="button" class="sec sm" data-pw="${u.id}">كلمة مرور</button>
-        </td></tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد حسابات مسجلة</td></tr>'}</tbody></table></div></div>`;
-      let npos = [null, null], nmap;
-      $('#addb').onclick = () => {
-        $('#nu').classList.toggle('hide');
-        if (!nmap && !$('#nu').classList.contains('hide')) {
+
+      const addBtnLabelForTab = (t) => ({
+        merchant: '➕ منشأة جديدة',
+        captain: '➕ كابتن جديد',
+        admin: '➕ مسؤول جديد',
+      }[t] || '➕ إضافة حساب جديد');
+
+      view().innerHTML = `
+        <div class="card users-header-card">
+          <div class="row-head">
+            <div>
+              <h3 class="users-view-title">إدارة الحسابات</h3>
+              <div class="mut" id="usersSummaryTxt">جارٍ تحميل الحسابات...</div>
+            </div>
+            <button type="button" class="ok sm" id="addb" aria-expanded="false" aria-controls="nu">${addBtnLabelForTab(usersTab)}</button>
+          </div>
+          <form id="nu" class="users-form hide" method="post" action="/api/admin/users">
+            <div class="users-form-banner" id="nuHeading">إنشاء حساب جديد</div>
+            <div class="row">
+              <div>
+                <label for="nrole">نوع الحساب</label>
+                <select name="role" id="nrole">${roleOptions}</select>
+              </div>
+              <div id="nzoneWrap">
+                <label for="nzone">المنطقة</label>
+                ${zoneSelectHtml}
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="nuName">الاسم الكامل</label>
+                <input id="nuName" name="name" required minlength="2" maxlength="60" autocomplete="name">
+              </div>
+              <div>
+                <label for="nuPhone">رقم الهاتف</label>
+                <input id="nuPhone" name="phone" inputmode="tel" required autocomplete="tel" autocorrect="off" autocapitalize="off" spellcheck="false">
+              </div>
+            </div>
+            <div id="nuPwGroup">
+              <label for="nuPw">كلمة المرور</label>
+              <div id="nuPwHint" class="form-hint">6 أحرف على الأقل (حروف وأرقام).</div>
+              <div class="pw-input-row">
+                <input id="nuPw" name="password" type="password" minlength="6" maxlength="72" required autocomplete="new-password" aria-describedby="nuPwHint">
+                <button type="button" class="sec sm pw-toggle-btn" id="nuPwToggle" aria-pressed="false" aria-label="إظهار كلمة المرور">👁️</button>
+              </div>
+            </div>
+            <div id="mfields">
+              <div class="row">
+                <div>
+                  <label for="nuBiz">اسم المنشأة</label>
+                  <input id="nuBiz" name="business_name" maxlength="80" autocomplete="organization">
+                </div>
+                <div>
+                  <label for="nuAddr">العنوان التفصيلي</label>
+                  <input id="nuAddr" name="address" maxlength="200" autocomplete="street-address">
+                </div>
+              </div>
+              <label>موقع المنشأة على الخريطة (اضغط للتحديد)</label>
+              <div id="nmap" class="map"></div>
+            </div>
+            <div class="nu-form-actions">
+              <button type="submit" class="big ok" id="nuSubmitBtn">إنشاء الحساب</button>
+              <button type="button" class="sec" id="nuCancelBtn">إلغاء</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card users-list-card">
+          <div class="users-toolbar">
+            <div class="users-seg-tabs" id="usersTabs" role="tablist" aria-label="أقسام الحسابات">
+              <button type="button" role="tab" id="utab-merchant" data-utab="merchant" aria-controls="usersTabPanel" aria-selected="${usersTab === 'merchant'}" tabindex="${usersTab === 'merchant' ? '0' : '-1'}" class="${usersTab === 'merchant' ? 'active' : ''}">🏪 المنشآت</button>
+              <button type="button" role="tab" id="utab-captain" data-utab="captain" aria-controls="usersTabPanel" aria-selected="${usersTab === 'captain'}" tabindex="${usersTab === 'captain' ? '0' : '-1'}" class="${usersTab === 'captain' ? 'active' : ''}">🛵 الكباتن</button>
+              ${!isZoneAdmin ? `<button type="button" role="tab" id="utab-admin" data-utab="admin" aria-controls="usersTabPanel" aria-selected="${usersTab === 'admin'}" tabindex="${usersTab === 'admin' ? '0' : '-1'}" class="${usersTab === 'admin' ? 'active' : ''}">🛡️ المسؤولين</button>` : ''}
+            </div>
+            ${!isZoneAdmin ? `
+              <div class="users-zone-filter-wrap">
+                <label for="uZoneFilter" class="visually-hidden">تصفية حسب المنطقة</label>
+                <select id="uZoneFilter" class="users-zone-filter">
+                  <option value="">📍 كل المناطق</option>
+                  ${zones.map((z) => `<option value="${z.id}" ${String(z.id) === String(usersZoneFilter) ? 'selected' : ''}>📍 ${esc(z.name)}</option>`).join('')}
+                </select>
+              </div>
+            ` : ''}
+          </div>
+          <div id="usersTabPanel" role="tabpanel" aria-labelledby="utab-${esc(usersTab)}">
+            <div class="tablewrap" id="usersTableWrap"></div>
+          </div>
+        </div>`;
+
+      let npos = [null, null], nmap = null, editUserId = null, usersReqSeq = 0;
+
+      wirePwToggle($('#nuPwToggle'), $('#nuPw'));
+
+      const ensureNuMap = () => {
+        if (!nmap) {
           nmap = makeMap('nmap', DAMASCUS, 12);
-          pickLocation(nmap, (a, b) => (npos = [a, b]));
+          pickLocation(nmap, (a, b) => { npos = [a, b]; });
         }
         setTimeout(() => nmap?.invalidateSize(), 60);
       };
-      $('#nrole').onchange = (e) => {
-        const val = e.target.value;
-        $('#mfields').classList.toggle('hide', val !== 'merchant');
+
+      const syncNuRoleFields = () => {
+        const val = $('#nrole').value;
+        const isMerch = val === 'merchant';
+        $('#mfields').classList.toggle('hide', !isMerch);
+        $('#nuBiz').required = isMerch;
+        $('#nuAddr').required = isMerch;
         if (!isZoneAdmin) $('#nzoneWrap').classList.toggle('hide', val === 'admin');
+        if (isMerch && !$('#nu').classList.contains('hide')) ensureNuMap();
       };
+
+      const closeNuForm = () => {
+        editUserId = null;
+        $('#nu').classList.add('hide');
+        $('#addb').setAttribute('aria-expanded', 'false');
+      };
+
+      const openCreateForm = () => {
+        const nu = $('#nu');
+        if (!nu.classList.contains('hide') && editUserId == null) {
+          closeNuForm();
+          return;
+        }
+        editUserId = null;
+        nu.reset();
+        npos = [null, null];
+        const defaultRole = usersTab === 'admin' ? 'zone_admin' : usersTab;
+        $('#nrole').value = isZoneAdmin && defaultRole === 'zone_admin' ? 'merchant' : defaultRole;
+        if (!isZoneAdmin && usersZoneFilter) {
+          $('#nzone').value = String(usersZoneFilter);
+        }
+        $('#nuHeading').textContent = '➕ إنشاء حساب جديد';
+        $('#nuPwGroup').classList.remove('hide');
+        $('#nuPw').required = true;
+        $('#nuPw').type = 'password';
+        $('#nuPwToggle').setAttribute('aria-pressed', 'false');
+        $('#nuPwToggle').textContent = '👁️';
+        $('#nuSubmitBtn').textContent = 'إنشاء الحساب';
+        nu.classList.remove('hide');
+        $('#addb').setAttribute('aria-expanded', 'true');
+        syncNuRoleFields();
+        $('#nuName').focus();
+      };
+
+      const openEditForm = (u) => {
+        editUserId = u.id;
+        const nu = $('#nu');
+        nu.reset();
+        $('#nuHeading').textContent = `✏️ تعديل بيانات: ${u.business_name || u.name}`;
+        $('#nrole').value = u.role;
+        if (u.zone_id != null && $('#nzone')) $('#nzone').value = String(u.zone_id);
+        $('#nuName').value = u.name || '';
+        $('#nuPhone').value = u.phone || '';
+        $('#nuBiz').value = u.business_name || '';
+        $('#nuAddr').value = u.address || '';
+        $('#nuPwGroup').classList.add('hide');
+        $('#nuPw').required = false;
+        $('#nuSubmitBtn').textContent = '💾 حفظ التعديلات';
+        nu.classList.remove('hide');
+        $('#addb').setAttribute('aria-expanded', 'true');
+        syncNuRoleFields();
+        if (u.role === 'merchant') {
+          ensureNuMap();
+          if (u.lat != null && u.lng != null) {
+            npos = [u.lat, u.lng];
+            setTimeout(() => {
+              if (!nmap) return;
+              nmap.setView([u.lat, u.lng], 15);
+              nmap.fire('click', { latlng: L.latLng(u.lat, u.lng) });
+            }, 80);
+          } else {
+            npos = [null, null];
+          }
+        }
+        nu.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTimeout(() => $('#nuName')?.focus(), 120);
+      };
+
+      async function renderUsersTable(role, zoneId) {
+        const wrap = $('#usersTableWrap');
+        if (!wrap) return;
+        const seq = ++usersReqSeq;
+        const params = new URLSearchParams({ role });
+        if (!isZoneAdmin && zoneId) params.set('zone_id', String(zoneId));
+        const rows = await api(`/admin/users?${params.toString()}`);
+        if (seq !== usersReqSeq || !$('#usersTableWrap')) return;
+        currentUsersList = rows;
+
+        const tabNouns = { merchant: 'منشأة', captain: 'كابتن', admin: 'مسؤول' };
+        const zoneSuffix = !isZoneAdmin && zoneId ? ` في ${zname(Number(zoneId))}` : '';
+        const sumEl = $('#usersSummaryTxt');
+        if (sumEl) sumEl.textContent = `${rows.length} ${tabNouns[role] || 'حساب'}${zoneSuffix}`;
+
+        let theadHtml = '';
+        let tbodyHtml = '';
+        if (role === 'merchant') {
+          theadHtml = `<tr><th scope="col">الاسم</th><th scope="col">اسم المنشأة</th><th scope="col">الهاتف</th><th scope="col">المنطقة</th><th scope="col">الحالة</th><th scope="col">إجراءات</th></tr>`;
+          tbodyHtml = rows.map((u) => `<tr>
+            <td>${esc(u.name)}</td>
+            <td><b>🏪 ${esc(u.business_name || '—')}</b>${u.address ? `<div class="mut">${esc(u.address)}</div>` : ''}</td>
+            <td dir="ltr">${esc(u.phone)}</td>
+            <td>${esc(zname(u.zone_id))}</td>
+            <td>${badge(u.status)}</td>
+            <td class="td-user-actions">
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المنشأة ${esc(u.business_name || u.name)}</span></button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد منشآت مسجلة في هذا النطاق</td></tr>';
+        } else if (role === 'captain') {
+          theadHtml = `<tr><th scope="col">الاسم</th><th scope="col">الهاتف</th><th scope="col">المنطقة</th><th scope="col">الحالة</th><th scope="col">إجراءات</th></tr>`;
+          tbodyHtml = rows.map((u) => `<tr>
+            <td><b>🛵 ${esc(u.name)}</b></td>
+            <td dir="ltr">${esc(u.phone)}</td>
+            <td>${esc(zname(u.zone_id))}</td>
+            <td>
+              <div class="user-status-cell">
+                ${u.status !== 'active' ? badge(u.status) : ''}
+                <span class="cap-online-pill ${u.online ? 'is-online' : 'is-offline'}"><span class="online-dot" aria-hidden="true"></span>${u.online ? 'متصل' : 'غير متصل'}</span>
+              </div>
+            </td>
+            <td class="td-user-actions">
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات الكابتن ${esc(u.name)}</span></button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="5" class="mut">لا يوجد كباتن مسجلون في هذا النطاق</td></tr>';
+        } else {
+          theadHtml = `<tr><th scope="col">الاسم</th><th scope="col">الهاتف</th><th scope="col">الصلاحية</th><th scope="col">المنطقة</th><th scope="col">الحالة</th><th scope="col">إجراءات</th></tr>`;
+          tbodyHtml = rows.map((u) => `<tr>
+            <td><b>${esc(u.name)}</b>${u.id === user.id ? ' <span class="badge b-active">أنت</span>' : ''}</td>
+            <td dir="ltr">${esc(u.phone)}</td>
+            <td>${u.role === 'admin' ? '<span class="role-pill is-super">👑 مدير عام</span>' : '<span class="role-pill is-zone">🛡️ مدير منطقة</span>'}</td>
+            <td>${u.role === 'admin' && !u.zone_id ? '<span class="mut">كل المناطق</span>' : esc(zname(u.zone_id))}</td>
+            <td>${badge(u.status)}</td>
+            <td class="td-user-actions">
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المسؤول ${esc(u.name)}</span></button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="6" class="mut">لا يوجد مسؤولون في هذا النطاق</td></tr>';
+        }
+
+        wrap.innerHTML = `<table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table>`;
+        syncMobileTableLabels();
+      }
+
+      function openUserSheet(uid) {
+        const u = currentUsersList.find((x) => x.id === Number(uid));
+        if (!u) return;
+        const dlg = ensureUserSheetDialog();
+        dlg.removeAttribute('data-closing');
+        const isSelf = u.id === user.id;
+        const displayTitle = u.business_name || u.name;
+        const zoneLabel = u.role === 'admin' && !u.zone_id ? 'كل المناطق' : zname(u.zone_id);
+
+        const headerMarkup = `
+          <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
+          <div class="sheet-header">
+            <div class="sheet-title-group">
+              <h3 id="ushTitle">${esc(displayTitle)}</h3>
+              ${badge(u.status)}
+            </div>
+            <button type="button" class="ghost sm sheet-close-btn" data-uact="close" aria-label="إغلاق">✕</button>
+          </div>
+          <div class="sheet-meta">
+            <span>📞 <b dir="ltr">${esc(u.phone)}</b></span>
+            <span>📍 ${esc(zoneLabel)}</span>
+          </div>`;
+
+        const renderMain = () => {
+          const toggleLabel = u.status === 'active' ? '⏸️ إيقاف الحساب' : '✅ تفعيل الحساب';
+          const toggleClass = u.status === 'active' ? 'sec' : 'ok';
+          dlg.innerHTML = `${headerMarkup}
+            <div class="sheet-actions-list">
+              <button type="button" class="sec sheet-act-btn" data-uact="edit" autofocus>
+                <span>✏️ تعديل البيانات</span><span class="sheet-chevron" aria-hidden="true">›</span>
+              </button>
+              <button type="button" class="sec sheet-act-btn" data-uact="pw">
+                <span>🔑 تغيير كلمة المرور</span><span class="sheet-chevron" aria-hidden="true">›</span>
+              </button>
+              ${!isSelf ? `
+                <button type="button" class="${toggleClass} sheet-act-btn" data-uact="toggle-status">
+                  <span>${toggleLabel}</span><span class="sheet-chevron" aria-hidden="true">›</span>
+                </button>
+                <button type="button" class="bad sheet-act-btn" data-uact="delete">
+                  <span>🗑️ حذف الحساب</span>
+                </button>
+              ` : ''}
+            </div>`;
+        };
+
+        const renderPwForm = () => {
+          dlg.innerHTML = `${headerMarkup}
+            <form id="sheetPwForm" class="sheet-subform" method="post" action="/api/admin/users/${u.id}/reset-password">
+              <label for="sheetNewPw">كلمة المرور الجديدة لحساب «${esc(displayTitle)}»</label>
+              <div id="sheetPwHint" class="form-hint">6 أحرف على الأقل (تُسجِّل خروج الجلسات السابقة تلقائياً).</div>
+              <div class="pw-input-row">
+                <input id="sheetNewPw" name="password" type="password" minlength="6" maxlength="72" required autocomplete="new-password" aria-describedby="sheetPwHint">
+                <button type="button" class="sec sm pw-toggle-btn" id="sheetPwToggle" aria-pressed="false" aria-label="إظهار كلمة المرور">👁️</button>
+              </div>
+              <div class="sheet-subform-actions">
+                <button type="submit" class="ok">💾 حفظ كلمة المرور</button>
+                <button type="button" class="sec" data-uact="back">رجوع</button>
+              </div>
+            </form>`;
+          wirePwToggle(dlg.querySelector('#sheetPwToggle'), dlg.querySelector('#sheetNewPw'));
+          dlg.querySelector('#sheetPwForm').onsubmit = async (ev) => {
+            ev.preventDefault();
+            const pw = dlg.querySelector('#sheetNewPw').value;
+            const btn = ev.submitter || dlg.querySelector('#sheetPwForm button[type="submit"]');
+            if (btn) btn.disabled = true;
+            const ok = await act(() => api(`/admin/users/${u.id}/reset-password`, 'POST', { password: pw }), 'تم تغيير كلمة المرور');
+            if (btn) btn.disabled = false;
+            if (ok) await closeUserSheet();
+          };
+          dlg.querySelector('#sheetNewPw')?.focus();
+        };
+
+        const renderDeleteConfirm = () => {
+          dlg.innerHTML = `${headerMarkup}
+            <div class="sheet-confirm-box">
+              <p id="delConfirmDesc" class="sheet-confirm-msg">⚠️ هل أنت متأكد من حذف حساب <b>${esc(displayTitle)}</b>؟ سيُمنع الحساب من تسجيل الدخول ويختفي من القائمة مع الاحتفاظ الكامل بسجل الطلبات السابقة.</p>
+              <div class="sheet-subform-actions">
+                <button type="button" class="sec" data-uact="back" id="cancelDeleteUserBtn" autofocus>تراجع</button>
+                <button type="button" class="bad" data-uact="confirm-delete" id="confirmDeleteUserBtn" aria-describedby="delConfirmDesc">🗑️ تأكيد الحذف</button>
+              </div>
+            </div>`;
+          dlg.querySelector('#cancelDeleteUserBtn')?.focus();
+        };
+
+        dlg.onclick = async (ev) => {
+          const btn = ev.target.closest('[data-uact]');
+          if (!btn) return;
+          const action = btn.dataset.uact;
+          if (action === 'close') {
+            await closeUserSheet();
+          } else if (action === 'back') {
+            renderMain();
+            dlg.querySelector('[data-uact="edit"]')?.focus();
+          } else if (action === 'edit') {
+            await closeUserSheet();
+            openEditForm(u);
+          } else if (action === 'pw') {
+            renderPwForm();
+          } else if (action === 'toggle-status') {
+            const nextStatus = u.status === 'active' ? 'suspended' : 'active';
+            btn.disabled = true;
+            const ok = await act(() => api(`/admin/users/${u.id}`, 'PATCH', { status: nextStatus }), nextStatus === 'active' ? 'تم تفعيل الحساب' : 'تم إيقاف الحساب');
+            btn.disabled = false;
+            if (ok) {
+              await closeUserSheet();
+              await renderUsersTable(usersTab, usersZoneFilter);
+            }
+          } else if (action === 'delete') {
+            renderDeleteConfirm();
+          } else if (action === 'confirm-delete') {
+            btn.disabled = true;
+            const ok = await deleteUser(u.id);
+            btn.disabled = false;
+            if (ok) {
+              await closeUserSheet();
+              await renderUsersTable(usersTab, usersZoneFilter);
+            }
+          }
+        };
+
+        renderMain();
+        if (!dlg.open) dlg.showModal();
+      }
+
+      const activateUsersTab = async (nextTab, focusTab = false) => {
+        if (!nextTab || (isZoneAdmin && nextTab === 'admin')) return;
+        usersTab = nextTab;
+        $$('#usersTabs [role="tab"]').forEach((b) => {
+          const on = b.dataset.utab === usersTab;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+          if (on && focusTab) b.focus();
+        });
+        $('#usersTabPanel')?.setAttribute('aria-labelledby', `utab-${usersTab}`);
+        $('#addb').textContent = addBtnLabelForTab(usersTab);
+        if (!$('#nu').classList.contains('hide') && editUserId == null) {
+          const defaultRole = usersTab === 'admin' ? 'zone_admin' : usersTab;
+          $('#nrole').value = isZoneAdmin && defaultRole === 'zone_admin' ? 'merchant' : defaultRole;
+          syncNuRoleFields();
+        }
+        await renderUsersTable(usersTab, usersZoneFilter);
+      };
+
+      $('#addb').onclick = openCreateForm;
+      $('#nuCancelBtn').onclick = closeNuForm;
+      $('#nrole').onchange = syncNuRoleFields;
+
+      $('#usersTabs').onclick = (e) => {
+        const b = e.target.closest('[data-utab]');
+        if (b && b.dataset.utab !== usersTab) activateUsersTab(b.dataset.utab);
+      };
+
+      $('#usersTabs').onkeydown = (e) => {
+        const tabs = $$('#usersTabs [role="tab"]');
+        const idx = tabs.indexOf(document.activeElement);
+        if (idx < 0) return;
+        let nextIdx = -1;
+        // RTL tablist: ArrowLeft moves to next tab, ArrowRight moves to previous tab
+        if (e.key === 'ArrowLeft') nextIdx = (idx + 1) % tabs.length;
+        else if (e.key === 'ArrowRight') nextIdx = (idx - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'Home') nextIdx = 0;
+        else if (e.key === 'End') nextIdx = tabs.length - 1;
+        if (nextIdx >= 0) {
+          e.preventDefault();
+          activateUsersTab(tabs[nextIdx].dataset.utab, true);
+        }
+      };
+
+      if ($('#uZoneFilter')) {
+        $('#uZoneFilter').onchange = async (e) => {
+          usersZoneFilter = e.target.value;
+          if (!$('#nu').classList.contains('hide') && editUserId == null && usersZoneFilter) {
+            $('#nzone').value = String(usersZoneFilter);
+          }
+          await renderUsersTable(usersTab, usersZoneFilter);
+        };
+      }
+
       $('#nu').onsubmit = async (e) => {
         e.preventDefault();
+        const subBtn = $('#nuSubmitBtn');
         const f = Object.fromEntries(new FormData(e.target));
         if (isZoneAdmin) f.zone_id = Number(user.zone_id);
-        else if (f.role === 'admin') delete f.zone_id;
+        else if (f.role === 'admin') f.zone_id = null;
         else f.zone_id = Number(f.zone_id);
+
         if (f.role === 'merchant') {
           if (npos[0] == null) return toast('حدّد موقع المنشأة على الخريطة');
           [f.lat, f.lng] = npos;
-        } else { delete f.business_name; delete f.address; }
-        if (await act(() => api('/admin/users', 'POST', f), 'تم إنشاء الحساب')) views.users();
-      };
-      view().onclick = async (e) => {
-        const stBtn = e.target.closest('[data-st]');
-        if (stBtn) {
-          const d = stBtn.dataset;
-          if (d.st === 'suspended' && !confirm('إيقاف الحساب فوراً؟')) return;
-          await act(() => api(`/admin/users/${d.id}`, 'PATCH', { status: d.st }), 'تم التحديث');
-          views.users();
-          return;
+        } else {
+          delete f.business_name;
+          delete f.address;
         }
-        const pwBtn = e.target.closest('[data-pw]');
-        if (pwBtn) {
-          const p = prompt('كلمة مرور جديدة (6 أحرف على الأقل، حروف وأرقام)');
-          if (p) act(() => api(`/admin/users/${pwBtn.dataset.pw}/reset-password`, 'POST', { password: p }), 'تم تغيير كلمة المرور');
+
+        if (subBtn) subBtn.disabled = true;
+        let ok = false;
+        if (editUserId != null) {
+          delete f.password;
+          ok = await act(() => api(`/admin/users/${editUserId}`, 'PATCH', f), 'تم تحديث بيانات الحساب');
+        } else {
+          if (f.zone_id === null) delete f.zone_id;
+          ok = await act(() => api('/admin/users', 'POST', f), 'تم إنشاء الحساب');
+        }
+        if (subBtn) subBtn.disabled = false;
+
+        if (ok) {
+          const targetTab = (f.role === 'admin' || f.role === 'zone_admin') ? 'admin' : f.role;
+          closeNuForm();
+          if (!isZoneAdmin && targetTab !== usersTab) {
+            await activateUsersTab(targetTab);
+          } else {
+            await renderUsersTable(usersTab, usersZoneFilter);
+          }
         }
       };
-      view().onchange = (e) => {
-        if (e.target.dataset.zone) act(() => api(`/admin/users/${e.target.dataset.zone}`, 'PATCH', { zone_id: Number(e.target.value) }), 'تم نقل المنطقة');
+
+      view().onclick = (e) => {
+        const sheetBtn = e.target.closest('[data-user-sheet]');
+        if (sheetBtn) {
+          openUserSheet(sheetBtn.dataset.userSheet);
+        }
       };
+      view().onchange = null;
+
+      await renderUsersTable(usersTab, usersZoneFilter);
     },
 
     async orders() {

@@ -138,6 +138,43 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   const zaUsers = (await call('/admin/users', 'GET', null, zaToken)).data;
   assert.equal(zaUsers.length, 1);
   assert.equal(zaUsers[0].zone_id, z2Id);
+  const z2CapId = zaUsers[0].id;
+
+  // Segmented Users Tabs & Zone Filter API checks
+  assert.equal((await call('/admin/users?role=admin', 'GET', null, zaToken)).status, 403);
+  const allAdmins = (await call('/admin/users?role=admin', 'GET', null, admin)).data;
+  assert.ok(allAdmins.some((u) => u.role === 'admin') && allAdmins.some((u) => u.role === 'zone_admin'));
+  const z1Caps = (await call('/admin/users?role=captain&zone_id=1', 'GET', null, admin)).data;
+  assert.ok(z1Caps.length >= 2 && z1Caps.every((u) => u.role === 'captain' && u.zone_id === 1));
+  const z2Caps = (await call(`/admin/users?role=captain&zone_id=${z2Id}`, 'GET', null, admin)).data;
+  assert.equal(z2Caps.length, 1);
+  assert.equal(z2Caps[0].id, z2CapId);
+
+  // Full user edit via PATCH /admin/users/:id
+  assert.equal((await call(`/admin/users/${z2CapId}`, 'PATCH', { name: 'كابتن المالكي المعدّل' }, zaToken)).status, 200);
+  assert.equal((await call('/admin/users?role=captain', 'GET', null, zaToken)).data[0].name, 'كابتن المالكي المعدّل');
+
+  // Delete permissions + Soft Delete + Order History preservation
+  const zaUserRow = allAdmins.find((u) => u.phone === '0966666666');
+  const superAdminRow = allAdmins.find((u) => u.role === 'admin');
+  assert.equal((await call(`/admin/users/${superAdminRow.id}`, 'DELETE', null, zaToken)).status, 403);
+  assert.equal((await call(`/admin/users/${zaUserRow.id}`, 'DELETE', null, zaToken)).status, 403);
+  assert.equal((await call(`/admin/users/${z1Caps[0].id}`, 'DELETE', null, zaToken)).status, 403);
+  assert.equal((await call(`/admin/users/${superAdminRow.id}`, 'DELETE', null, admin)).status, 400); // self delete blocked
+
+  // Zone Admin can soft-delete a captain in their own zone
+  assert.equal((await call(`/admin/users/${z2CapId}`, 'DELETE', null, zaToken)).status, 200);
+  assert.equal((await call('/admin/users?role=captain', 'GET', null, zaToken)).data.length, 0);
+  assert.equal((await call('/auth/login', 'POST', { phone: '0966666669', password: 'Passw0rdX' })).status, 403);
+
+  // Super Admin soft-deletes a Zone 1 captain who already delivered orders -> disappears from list, order history stays intact!
+  const ordersBeforeDel = (await call('/admin/orders', 'GET', null, admin)).data.length;
+  const delCap = z1Caps[0];
+  assert.equal((await call(`/admin/users/${delCap.id}`, 'DELETE', null, admin)).status, 200);
+  assert.ok(!(await call('/admin/users?role=captain', 'GET', null, admin)).data.some((u) => u.id === delCap.id));
+  assert.ok((await call('/admin/users?role=captain&include_deleted=true', 'GET', null, admin)).data.some((u) => u.id === delCap.id && u.status === 'deleted'));
+  assert.equal((await call('/auth/login', 'POST', { phone: delCap.phone, password: 'Passw0rdX' })).status, 403);
+  assert.equal((await call('/admin/orders', 'GET', null, admin)).data.length, ordersBeforeDel);
 });
 
 test('login rate / lockout and bad input', async () => {

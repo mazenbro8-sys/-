@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   pass_hash TEXT NOT NULL,
   zone_id INTEGER REFERENCES zones(id),
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended','deleted')),
   business_name TEXT, address TEXT, lat REAL, lng REAL,
   online INTEGER NOT NULL DEFAULT 0,
   last_lat REAL, last_lng REAL, last_loc_at INTEGER,
@@ -160,9 +160,9 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 `);
 
-// Migrate existing databases where `users` was created before `zone_admin` role existed
+// Migrate existing databases where `users` was created before `zone_admin` role or `deleted` status existed
 const usersMeta = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
-if (usersMeta?.sql && !usersMeta.sql.includes("'zone_admin'")) {
+if (usersMeta?.sql && (!usersMeta.sql.includes("'zone_admin'") || !usersMeta.sql.includes("'deleted'"))) {
   await client.executeMultiple(`
     PRAGMA foreign_keys = OFF;
     DROP TABLE IF EXISTS users_new;
@@ -174,7 +174,7 @@ if (usersMeta?.sql && !usersMeta.sql.includes("'zone_admin'")) {
       name TEXT NOT NULL,
       pass_hash TEXT NOT NULL,
       zone_id INTEGER REFERENCES zones(id),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended','deleted')),
       business_name TEXT, address TEXT, lat REAL, lng REAL,
       online INTEGER NOT NULL DEFAULT 0,
       last_lat REAL, last_lng REAL, last_loc_at INTEGER,

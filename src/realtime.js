@@ -84,6 +84,14 @@ export function sendTo(userId, msg) {
   const s = JSON.stringify(msg);
   for (const ws of clients.get(userId) ?? []) if (ws.readyState === 1) ws.send(s);
 }
+
+export function disconnectUser(userId) {
+  if (!userId) return;
+  for (const ws of clients.get(userId) ?? []) {
+    try { ws.close(4003, 'revoked'); } catch {}
+  }
+  clients.delete(userId);
+}
 export function sendToAdmins(msg, zoneId = null) {
   const fullJson = JSON.stringify(msg);
   for (const set of clients.values()) {
