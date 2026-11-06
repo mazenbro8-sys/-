@@ -1,8 +1,11 @@
+# ⚠️ FREE PLAN — No persistent disk.
+# ⚠️ SQLite DB (data/mashwar.db) will RESET on every deploy.
+# ⚠️ Upgrade to 'plan: starter' + add disk block after month 1 for production.
 services:
   - type: web
     name: panther-app
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install
     startCommand: node src/server.js
     envVars:
@@ -10,7 +13,3 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
-    disk:
-      name: panther-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
