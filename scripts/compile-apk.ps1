@@ -81,6 +81,5 @@ if (Test-Path "$Root\android-captain\release-key.jks") {
 
 $OutApk = "$Root\public\panther-captain.apk"
 Copy-Item -Force "$StageDir\panther-captain.apk" $OutApk
-Copy-Item -Force "$StageDir\panther-captain.apk" "$Root\panther-captain.apk"
 
 Write-Host "✅ APK built and signed successfully: $OutApk" -ForegroundColor Green

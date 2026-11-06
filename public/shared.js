@@ -58,10 +58,18 @@ export function setToken(t) {
 export const isNativeApk = () =>
   Boolean(window.Capacitor?.isNativePlatform?.() || window.PANTHER_APK || location.protocol === 'file:' || (location.hostname === 'localhost' && !location.port));
 
+export const DEFAULT_APK_SERVER = 'https://mashwar-app.onrender.com';
+
+// Auto-migrate stale temporary Cloudflare Quick Tunnel URLs on upgraded APK installs
+if ((localStorage.getItem('panther_server_url') || '').includes('.trycloudflare.com')) {
+  localStorage.removeItem('panther_server_url');
+}
+
 export function getServerUrl() {
   const saved = (localStorage.getItem('panther_server_url') || '').trim().replace(/\/+$/, '');
   if (saved) return saved;
   if (window.PANTHER_DEFAULT_SERVER) return String(window.PANTHER_DEFAULT_SERVER).trim().replace(/\/+$/, '');
+  if (isNativeApk()) return DEFAULT_APK_SERVER;
   return '';
 }
 
@@ -83,7 +91,7 @@ export function openServerConfigModal(onSaved) {
       <button type="button" class="ghost sm" id="srvCfgClose">✕</button>
     </div>
     <p class="mut" style="font-size:13px;margin:0 0 12px">أدخل رابط السيرفر (مثل رابط Cloudflare أو الدومين أو IP الشبكة المحلية):</p>
-    <input id="srvUrlInput" dir="ltr" type="url" placeholder="https://example.trycloudflare.com" value="${esc(current)}" style="width:100%;margin-bottom:10px;text-align:left">
+    <input id="srvUrlInput" dir="ltr" type="url" placeholder="https://mashwar-app.onrender.com" value="${esc(current)}" style="width:100%;margin-bottom:10px;text-align:left">
     <div id="srvTestMsg" class="mut" style="font-size:12.5px;margin-bottom:10px;min-height:18px"></div>
     <div class="row">
       <button type="button" class="sec" id="srvTestBtn">🔌 فحص الاتصال</button>

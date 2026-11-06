@@ -16,7 +16,7 @@ for (const f of files) {
 }
 
 // Write index.html from captain.html with window.PANTHER_APK = true injected
-const defaultSrv = process.env.SERVER_URL || 'https://layers-luck-translate-roses.trycloudflare.com';
+const defaultSrv = process.env.SERVER_URL || 'https://mashwar-app.onrender.com';
 const captainHtml = fs.readFileSync(path.join(PUB, 'captain.html'), 'utf8')
   .replace('<head>', `<head><script>window.PANTHER_APK=true;window.PANTHER_DEFAULT_SERVER=${JSON.stringify(defaultSrv)};</script>`);
 fs.writeFileSync(path.join(OUT, 'index.html'), captainHtml, 'utf8');
