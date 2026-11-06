@@ -66,6 +66,18 @@ public class MainActivity extends Activity {
         public void stopSiren() {
             CaptainService.stopSiren();
         }
+
+        @JavascriptInterface
+        public void setTone(String tone) {
+            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+            prefs.edit().putString("tone", tone != null ? tone : "soft_bell").apply();
+        }
+
+        @JavascriptInterface
+        public void setVibrate(boolean enabled) {
+            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+            prefs.edit().putBoolean("vibrate", enabled).apply();
+        }
     }
 
     @Override

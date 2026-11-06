@@ -690,3 +690,98 @@ export function captainModal(cap) {
     setTimeout(() => m.invalidateSize(), 60);
   }
 }
+
+// ---------- Soft Captain Notification Audio Synthesis (Web Audio API) ----------
+export const CAPTAIN_TONES = ['soft_bell', 'marimba', 'chime', 'pulse', 'classic', 'rapid', 'high'];
+
+export function normalizeCaptainTone(tone) {
+  return CAPTAIN_TONES.includes(tone) ? tone : 'soft_bell';
+}
+
+/**
+ * Plays a pleasant, non-harsh synthesized notification phrase (gain <= 0.28, sine/triangle only).
+ * Returns { stop, repeatMs } so repeating alarms can cancel active oscillators cleanly.
+ */
+export function playCaptainTone(actx, rawTone = 'soft_bell') {
+  const tone = normalizeCaptainTone(rawTone);
+  const now = actx.currentTime;
+  const nodes = [];
+
+  const note = (type, freq, offsetSec, durSec, peak = 0.25, attackSec = 0.012) => {
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    const t0 = now + offsetSec;
+    const tAtk = t0 + Math.min(attackSec, durSec * 0.4);
+    const tEnd = t0 + durSec;
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(Math.min(peak, 0.28), tAtk);
+    g.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    o.connect(g);
+    g.connect(actx.destination);
+    o.start(t0);
+    o.stop(tEnd + 0.015);
+    nodes.push({ o, g });
+  };
+
+  let repeatMs = 2000;
+  switch (tone) {
+    case 'soft_bell':
+      // Gentle two-tone doorbell chime (880Hz -> 1046.5Hz)
+      note('sine', 880, 0, 0.46, 0.26, 0.014);
+      note('sine', 1046.5, 0.24, 0.60, 0.25, 0.014);
+      repeatMs = 2000;
+      break;
+    case 'marimba':
+      // Warm wooden xylophone sound (440Hz -> 523.25Hz -> 659.25Hz)
+      note('triangle', 440, 0, 0.52, 0.28, 0.008);
+      note('triangle', 523.25, 0.17, 0.60, 0.27, 0.008);
+      note('triangle', 659.25, 0.34, 0.68, 0.23, 0.008);
+      repeatMs = 2100;
+      break;
+    case 'chime':
+      // Soft glass / electronic chime (1200Hz -> 1600Hz, fast clean decay)
+      note('sine', 1200, 0, 0.30, 0.22, 0.008);
+      note('sine', 1600, 0.14, 0.38, 0.20, 0.008);
+      repeatMs = 1900;
+      break;
+    case 'pulse':
+      // Subtle low-frequency double pulse (220Hz, slow attack/release, zero harsh highs)
+      note('sine', 220, 0, 0.48, 0.28, 0.09);
+      note('sine', 220, 0.56, 0.52, 0.24, 0.09);
+      repeatMs = 2200;
+      break;
+    case 'rapid':
+      // Backward-compatible softened double alert
+      note('triangle', 880, 0, 0.20, 0.26, 0.01);
+      note('triangle', 659.25, 0.22, 0.22, 0.25, 0.01);
+      note('triangle', 880, 0.46, 0.24, 0.26, 0.01);
+      repeatMs = 1600;
+      break;
+    case 'high':
+      // Backward-compatible softened clear chime
+      note('sine', 1046.5, 0, 0.28, 0.24, 0.012);
+      note('sine', 1318.5, 0.26, 0.36, 0.22, 0.012);
+      repeatMs = 1750;
+      break;
+    case 'classic':
+    default:
+      // Backward-compatible classic two-tone (softened triangle instead of harsh square)
+      note('triangle', 784, 0, 0.34, 0.27, 0.015);
+      note('triangle', 587.33, 0.36, 0.40, 0.25, 0.015);
+      repeatMs = 1850;
+      break;
+  }
+
+  return {
+    repeatMs,
+    stop() {
+      for (const { o, g } of nodes) {
+        try { o.stop(); } catch {}
+        try { o.disconnect(); g.disconnect(); } catch {}
+      }
+      nodes.length = 0;
+    },
+  };
+}

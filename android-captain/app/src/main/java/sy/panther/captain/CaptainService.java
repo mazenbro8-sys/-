@@ -287,9 +287,7 @@ public class CaptainService extends Service {
         alarmThread = new Thread(() -> {
             long start = System.currentTimeMillis();
             int sampleRate = 16000;
-            int halfSecSamples = sampleRate / 3; // ~333ms per tone
-            short[] hiBuf = buildToneBuffer(sampleRate, halfSecSamples, 1050.0);
-            short[] loBuf = buildToneBuffer(sampleRate, halfSecSamples, 700.0);
+            int chunkSize = sampleRate / 10; // 100ms chunks for responsive stop
             AudioTrack track = null;
             try {
                 int minBuf = AudioTrack.getMinBufferSize(
@@ -306,23 +304,34 @@ public class CaptainService extends Service {
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build();
-                track = new AudioTrack(attrs, fmt, Math.max(minBuf, halfSecSamples * 2), AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE);
+                track = new AudioTrack(attrs, fmt, Math.max(minBuf, chunkSize * 4), AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE);
                 track.play();
 
                 Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                boolean hi = false;
+                SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+                String cachedTone = null;
+                short[] phraseBuf = null;
+
                 while (alarmRunning && (System.currentTimeMillis() - start) < maxDurationMs) {
-                    hi = !hi;
-                    short[] buf = hi ? hiBuf : loBuf;
-                    track.write(buf, 0, buf.length);
-                    if (hi && vib != null) {
+                    String tone = prefs.getString("tone", "soft_bell");
+                    if (phraseBuf == null || !tone.equals(cachedTone)) {
+                        cachedTone = tone;
+                        phraseBuf = buildPhrasePcm(sampleRate, tone, true);
+                    }
+                    boolean vibOn = prefs.getBoolean("vibrate", true);
+                    if (vibOn && vib != null) {
                         try {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                vib.vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE));
+                                vib.vibrate(VibrationEffect.createOneShot(180, VibrationEffect.DEFAULT_AMPLITUDE));
                             } else {
-                                vib.vibrate(250);
+                                vib.vibrate(180);
                             }
                         } catch (Exception ignored) {}
+                    }
+                    for (int off = 0; off < phraseBuf.length && alarmRunning; off += chunkSize) {
+                        if ((System.currentTimeMillis() - start) >= maxDurationMs) break;
+                        int len = Math.min(chunkSize, phraseBuf.length - off);
+                        track.write(phraseBuf, off, len);
                     }
                 }
             } catch (Exception ignored) {
@@ -343,9 +352,9 @@ public class CaptainService extends Service {
         if (alarmRunning) return;
         new Thread(() -> {
             int sampleRate = 16000;
-            int samples = sampleRate / 3;
-            short[] hi = buildToneBuffer(sampleRate, samples, 1050.0);
-            short[] lo = buildToneBuffer(sampleRate, samples, 700.0);
+            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+            String tone = prefs.getString("tone", "soft_bell");
+            short[] phrase = buildPhrasePcm(sampleRate, tone, false);
             AudioTrack track = null;
             try {
                 int minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -358,10 +367,9 @@ public class CaptainService extends Service {
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build();
-                track = new AudioTrack(attrs, fmt, Math.max(minBuf, samples * 2), AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE);
+                track = new AudioTrack(attrs, fmt, Math.max(minBuf, 4096), AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE);
                 track.play();
-                track.write(hi, 0, hi.length);
-                track.write(lo, 0, lo.length);
+                track.write(phrase, 0, phrase.length);
             } catch (Exception ignored) {
             } finally {
                 if (track != null) {
@@ -371,14 +379,94 @@ public class CaptainService extends Service {
         }).start();
     }
 
-    private short[] buildToneBuffer(int sampleRate, int count, double freqHz) {
-        short[] buf = new short[count];
-        double period = sampleRate / freqHz;
-        for (int i = 0; i < count; i++) {
-            double phase = (i % period) / period;
-            buf[i] = (short) (phase < 0.5 ? 24000 : -24000);
+    private short[] buildPhrasePcm(int sampleRate, String rawTone, boolean includePause) {
+        String tone = rawTone != null ? rawTone : "soft_bell";
+        double cycleSec;
+        switch (tone) {
+            case "marimba": cycleSec = includePause ? 2.10 : 1.05; break;
+            case "chime":   cycleSec = includePause ? 1.90 : 0.60; break;
+            case "pulse":   cycleSec = includePause ? 2.20 : 1.12; break;
+            case "rapid":   cycleSec = includePause ? 1.60 : 0.75; break;
+            case "high":    cycleSec = includePause ? 1.75 : 0.68; break;
+            case "classic": cycleSec = includePause ? 1.85 : 0.80; break;
+            case "soft_bell":
+            default:
+                tone = "soft_bell";
+                cycleSec = includePause ? 2.00 : 0.90;
+                break;
         }
-        return buf;
+        int totalSamples = Math.max(1, (int) (sampleRate * cycleSec));
+        int[] mix = new int[totalSamples];
+
+        switch (tone) {
+            case "marimba":
+                addSoftNote(mix, sampleRate, true, 440.0, 0.00, 0.52, 0.28, 0.008);
+                addSoftNote(mix, sampleRate, true, 523.25, 0.17, 0.60, 0.27, 0.008);
+                addSoftNote(mix, sampleRate, true, 659.25, 0.34, 0.68, 0.23, 0.008);
+                break;
+            case "chime":
+                addSoftNote(mix, sampleRate, false, 1200.0, 0.00, 0.30, 0.22, 0.008);
+                addSoftNote(mix, sampleRate, false, 1600.0, 0.14, 0.38, 0.20, 0.008);
+                break;
+            case "pulse":
+                addSoftNote(mix, sampleRate, false, 220.0, 0.00, 0.48, 0.28, 0.090);
+                addSoftNote(mix, sampleRate, false, 220.0, 0.56, 0.52, 0.24, 0.090);
+                break;
+            case "rapid":
+                addSoftNote(mix, sampleRate, true, 880.0, 0.00, 0.20, 0.26, 0.010);
+                addSoftNote(mix, sampleRate, true, 659.25, 0.22, 0.22, 0.25, 0.010);
+                addSoftNote(mix, sampleRate, true, 880.0, 0.46, 0.24, 0.26, 0.010);
+                break;
+            case "high":
+                addSoftNote(mix, sampleRate, false, 1046.5, 0.00, 0.28, 0.24, 0.012);
+                addSoftNote(mix, sampleRate, false, 1318.5, 0.26, 0.36, 0.22, 0.012);
+                break;
+            case "classic":
+                addSoftNote(mix, sampleRate, true, 784.0, 0.00, 0.34, 0.27, 0.015);
+                addSoftNote(mix, sampleRate, true, 587.33, 0.36, 0.40, 0.25, 0.015);
+                break;
+            case "soft_bell":
+            default:
+                addSoftNote(mix, sampleRate, false, 880.0, 0.00, 0.46, 0.26, 0.014);
+                addSoftNote(mix, sampleRate, false, 1046.5, 0.24, 0.60, 0.25, 0.014);
+                break;
+        }
+
+        short[] out = new short[totalSamples];
+        for (int i = 0; i < totalSamples; i++) {
+            int v = mix[i];
+            if (v > 11000) v = 11000;
+            else if (v < -11000) v = -11000;
+            out[i] = (short) v;
+        }
+        return out;
+    }
+
+    private void addSoftNote(int[] mix, int sampleRate, boolean triangle, double freqHz, double offsetSec, double durSec, double peakGain, double attackSec) {
+        int startIdx = (int) (offsetSec * sampleRate);
+        int durSamples = (int) (durSec * sampleRate);
+        if (durSamples <= 0 || startIdx >= mix.length) return;
+        int atkSamples = Math.max(1, (int) (Math.min(attackSec, durSec * 0.4) * sampleRate));
+        double cappedGain = Math.min(peakGain, 0.28);
+        double maxAmp = 32767.0 * cappedGain;
+
+        for (int i = 0; i < durSamples; i++) {
+            int idx = startIdx + i;
+            if (idx >= mix.length) break;
+            double env;
+            if (i < atkSamples) {
+                env = (double) i / atkSamples;
+            } else {
+                double decayProgress = (double) (i - atkSamples) / Math.max(1, durSamples - atkSamples);
+                env = Math.exp(-5.0 * decayProgress);
+            }
+            double phase = (i * freqHz) / sampleRate;
+            double frac = phase - Math.floor(phase);
+            double wave = triangle
+                ? (frac < 0.5 ? (4.0 * frac - 1.0) : (3.0 - 4.0 * frac))
+                : Math.sin(2.0 * Math.PI * frac);
+            mix[idx] += (int) (wave * maxAmp * env);
+        }
     }
 
     public static void stopSiren() {

@@ -2,7 +2,7 @@ import {
   $, $$, esc, money, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, openServerConfigModal
+  setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone
 } from './shared.js?v=panther2026v13';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
@@ -132,13 +132,17 @@ authScreen('captain', (user) => {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-title">نغمة صافرة الإنذار</div>
+            <div class="setting-title">نغمة التنبيه الصوتية</div>
             <div class="setting-sub">اختر نمط صوت التنبيه عند وصول الطلب</div>
           </div>
-          <select id="toneSelect" style="width:auto;min-width:150px;padding:7px 10px">
-            <option value="classic">🚨 صافرة كلاسيكية عالية</option>
-            <option value="rapid">⚡ تنبيه سريع مزدوج</option>
-            <option value="high">🔔 رنين حاد متواصل</option>
+          <select id="toneSelect" style="width:auto;min-width:170px;padding:7px 10px">
+            <option value="soft_bell">جرس ناعم (موصى به)</option>
+            <option value="marimba">ماريمبا (دافئ)</option>
+            <option value="chime">رنين خفيف</option>
+            <option value="pulse">نبض هادئ</option>
+            <option value="classic">تنبيه كلاسيكي</option>
+            <option value="rapid">تنبيه سريع مزدوج</option>
+            <option value="high">رنين واضح</option>
           </select>
         </div>
       </div>
@@ -229,22 +233,28 @@ authScreen('captain', (user) => {
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null;
 
   let vibEnabled = localStorage.getItem('panther_vibrate') !== '0';
-  let alarmTone = localStorage.getItem('panther_tone') || 'classic';
+  let alarmTone = normalizeCaptainTone(localStorage.getItem('panther_tone'));
   let navApp = localStorage.getItem('panther_nav_app') || 'google';
 
   $('#vibToggle').checked = vibEnabled;
   $('#toneSelect').value = alarmTone;
+  try {
+    window.PantherNative?.setTone?.(alarmTone);
+    window.PantherNative?.setVibrate?.(vibEnabled);
+  } catch {}
   $('#navAppSelect').value = navApp;
   $('#mapStyleSelect').value = localStorage.getItem('mashwar_map_style') || 'google';
 
   $('#vibToggle').onchange = (e) => {
     vibEnabled = e.target.checked;
     localStorage.setItem('panther_vibrate', vibEnabled ? '1' : '0');
+    try { window.PantherNative?.setVibrate?.(vibEnabled); } catch {}
     toast(vibEnabled ? '✅ تم تفعيل الاهتزاز' : 'تم إيقاف الاهتزاز');
   };
   $('#toneSelect').onchange = (e) => {
-    alarmTone = e.target.value;
+    alarmTone = normalizeCaptainTone(e.target.value);
     localStorage.setItem('panther_tone', alarmTone);
+    try { window.PantherNative?.setTone?.(alarmTone); } catch {}
     testSound();
   };
   $('#navAppSelect').onchange = (e) => {
@@ -282,32 +292,23 @@ authScreen('captain', (user) => {
     toast('✅ تم تغيير مظهر الخريطة');
   };
 
-  // ---------- Audio & Siren ----------
-  let actx = null, alarmTimer = null, alarmGain = null, alarmOsc = null;
+  // ---------- Audio & Notification Chimes ----------
+  let actx = null, alarmTimer = null, alarmStopTimer = null, activePhrase = null, previewPhrase = null;
   const unlockAudio = () => {
     try {
-      actx ??= new AudioContext();
+      actx ??= new (window.AudioContext || window.webkitAudioContext)();
       if (actx.state === 'suspended') actx.resume();
     } catch {}
   };
   ['pointerdown', 'touchstart', 'keydown'].forEach((ev) => document.addEventListener(ev, unlockAudio, { passive: true }));
 
-  function getToneFreqs() {
-    if (alarmTone === 'rapid') return [1200, 850, 220];
-    if (alarmTone === 'high') return [1350, 950, 300];
-    return [1050, 700, 350];
-  }
-
   function testSound() {
     unlockAudio();
     if (!actx) return;
-    const [f1, f2] = getToneFreqs();
-    const o = actx.createOscillator(), g = actx.createGain();
-    o.type = 'square'; g.gain.value = 1; o.connect(g); g.connect(actx.destination);
-    o.frequency.setValueAtTime(f1, actx.currentTime);
-    o.frequency.setValueAtTime(f2, actx.currentTime + 0.35);
-    o.start(); o.stop(actx.currentTime + 0.7);
-    if (vibEnabled) navigator.vibrate?.([200]);
+    alarmTone = normalizeCaptainTone($('#toneSelect')?.value || alarmTone);
+    try { previewPhrase?.stop(); } catch {}
+    previewPhrase = playCaptainTone(actx, alarmTone);
+    if (vibEnabled) navigator.vibrate?.([140]);
   }
 
   const updateSndBtn = () => {
@@ -323,7 +324,7 @@ authScreen('captain', (user) => {
     testSound();
     try { Notification?.requestPermission?.(); } catch {}
     setTimeout(updateSndBtn, 300);
-    toast('🔊 تم اختبار صوت التنبيه بنجاح');
+    toast('🔊 تم تشغيل نغمة التنبيه المختارة');
   };
   setInterval(updateSndBtn, 2000);
 
@@ -343,30 +344,30 @@ authScreen('captain', (user) => {
   }
 
   function startAlarm() {
-    if (window.PantherNative) return; // Native foreground service plays the alarm stream siren
+    if (window.PantherNative) return; // Native foreground service plays the selected soft chime
     if (alarmTimer) return;
     unlockAudio();
     if (!actx) return;
-    const [f1, f2, intervalMs] = getToneFreqs();
-    alarmOsc = actx.createOscillator(); alarmGain = actx.createGain();
-    alarmOsc.type = 'square'; alarmGain.gain.value = 1;
-    alarmOsc.connect(alarmGain); alarmGain.connect(actx.destination); alarmOsc.start();
-    let hi = false;
-    const step = () => {
-      hi = !hi;
-      alarmOsc.frequency.setValueAtTime(hi ? f1 : f2, actx.currentTime);
-      if (vibEnabled) navigator.vibrate?.(hi ? [250] : [0]);
+    const playOnce = () => {
+      try { activePhrase?.stop(); } catch {}
+      const phrase = playCaptainTone(actx, alarmTone);
+      activePhrase = phrase;
+      if (vibEnabled) navigator.vibrate?.([180, 90, 180]);
+      return phrase.repeatMs;
     };
-    step();
-    alarmTimer = setInterval(step, intervalMs);
-    setTimeout(stopAlarm, 60_000);
+    const intervalMs = playOnce();
+    alarmTimer = setInterval(playOnce, intervalMs);
+    clearTimeout(alarmStopTimer);
+    alarmStopTimer = setTimeout(stopAlarm, 60_000);
   }
 
   function stopAlarm() {
     try { window.PantherNative?.stopSiren(); } catch {}
     clearInterval(alarmTimer); alarmTimer = null;
-    try { alarmOsc?.stop(); alarmOsc?.disconnect(); alarmGain?.disconnect(); } catch {}
-    alarmOsc = alarmGain = null; navigator.vibrate?.(0);
+    clearTimeout(alarmStopTimer); alarmStopTimer = null;
+    try { activePhrase?.stop(); } catch {}
+    activePhrase = null;
+    navigator.vibrate?.(0);
   }
 
   // ---------- Data Refresh & Rendering ----------
