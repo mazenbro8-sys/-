@@ -118,8 +118,9 @@ export function tx(fn) {
 if (!db.prepare('SELECT 1 FROM zones').get()) {
   db.prepare('INSERT INTO zones(name) VALUES (?)').run('المزة');
 }
+const OWNER_ADMIN_PASS = 'Pan@2026!Admin#9';
 const adminPhone = (process.env.DB_FILE && process.env.ADMIN_PHONE) || '0782070936';
-const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || 'asd123';
+const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || OWNER_ADMIN_PASS;
 tx(() => {
   db.prepare('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0').run();
   const existingAdmin = db.prepare("SELECT * FROM users WHERE role='admin'").get();
@@ -146,26 +147,15 @@ tx(() => {
     }
   }
 
-  // Ensure owner admin account (0782070936 / asd123) always works even if cloud env vars differ
+  // Ensure owner admin account (0782070936) always works even if cloud env vars differ
   if (!process.env.DB_FILE && adminPhone !== '0782070936') {
     const owner = db.prepare('SELECT * FROM users WHERE phone=?').get('0782070936');
     if (!owner) {
       db.prepare("INSERT INTO users(role,phone,name,pass_hash,status,created_at) VALUES('admin','0782070936','المدير',?,'active',?)")
-        .run(bcrypt.hashSync('asd123', 12), Date.now());
-    } else if (owner.role !== 'admin' || owner.status !== 'active' || !bcrypt.compareSync('asd123', owner.pass_hash)) {
+        .run(bcrypt.hashSync(OWNER_ADMIN_PASS, 12), Date.now());
+    } else if (owner.role !== 'admin' || owner.status !== 'active' || !bcrypt.compareSync(OWNER_ADMIN_PASS, owner.pass_hash)) {
       db.prepare("UPDATE users SET role='admin', status='active', pass_hash=?, failed_logins=0, locked_until=0 WHERE id=?")
-        .run(bcrypt.hashSync('asd123', 12), owner.id);
+        .run(bcrypt.hashSync(OWNER_ADMIN_PASS, 12), owner.id);
     }
-  }
-
-  // On ephemeral cloud containers (e.g. Render free tier), restore core accounts on fresh DB boot
-  if (!process.env.DB_FILE && !db.prepare("SELECT 1 FROM users WHERE role IN ('merchant','captain') LIMIT 1").get()) {
-    const z1 = db.prepare('SELECT id FROM zones ORDER BY id LIMIT 1').get()?.id ?? 1;
-    const now = Date.now();
-    const defaultHash = bcrypt.hashSync('asd123', 12);
-    const ins = db.prepare('INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,last_lat,last_lng,last_loc_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    ins.run('merchant', '0796149466', 'تورينو', defaultHash, z1, 'active', 'تورينو', 'دمشق', 33.5001785, 36.2913831, null, null, null, now);
-    ins.run('captain', '123123123', 'مازن', defaultHash, z1, 'active', null, null, null, null, 32.0034088, 35.9579298, now, now);
-    ins.run('captain', '0922000001', 'ياسر', defaultHash, z1, 'active', null, null, null, null, 32.0030816, 35.9584115, now, now);
   }
 });

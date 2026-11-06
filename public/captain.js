@@ -3,7 +3,7 @@ import {
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, openServerConfigModal
-} from './shared.js?v=panther2026v8';
+} from './shared.js?v=panther2026v13';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -53,7 +53,7 @@ authScreen('captain', (user) => {
         <button type="button" id="tog" class="ok hero-tog-btn">🚀 ابدأ العمل الآن</button>
       </div>
 
-      <div class="bento-stats-grid">
+      <div class="stats4">
         <div class="card bento-stat-card bento-primary">
           <div class="bento-watermark">📦</div>
           <div class="bento-label">طلبات اليوم المسلّمة</div>
@@ -113,25 +113,6 @@ authScreen('captain', (user) => {
 
     <!-- TAB 4: SETTINGS & PROFILE (Audio, Server, Map/GPS, Password, Logout) -->
     <section id="tab-settings" class="cap-tab hide">
-      <!-- Account Info -->
-      <div class="card">
-        <h3>👤 بيانات الكابتن</h3>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title">${esc(user.name)}</div>
-            <div class="setting-sub">اسم الكابتن المسجّل في المنصة</div>
-          </div>
-          <span class="badge b-active">حساب مفعّل</span>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title" dir="ltr">${esc(user.phone || '—')}</div>
-            <div class="setting-sub">رقم الهاتف</div>
-          </div>
-          <span class="mut">ID #${esc(user.id)}</span>
-        </div>
-      </div>
-
       <!-- Sound & Notification Settings -->
       <div class="card">
         <h3>🔊 إعدادات الصوت والتنبيهات</h3>
@@ -227,10 +208,10 @@ authScreen('captain', (user) => {
       </div>
 
       <!-- Logout -->
-      <div class="card" style="border-color:rgba(239,68,68,.35)">
+      <div class="card" style="border-color:var(--c-ef4444-a350)">
         <div class="setting-row" style="padding:0">
           <div>
-            <div class="setting-title" class="clr-bad-soft">🚪 تسجيل الخروج من الحساب</div>
+            <div class="setting-title clr-bad-soft">🚪 تسجيل الخروج من الحساب</div>
             <div class="setting-sub">إيقاف استقبال الطلبات والخروج من الجلسة الحالية</div>
           </div>
           <button type="button" class="bad sm" id="logoutBtn" style="padding:9px 18px">خروج</button>
@@ -442,22 +423,27 @@ authScreen('captain', (user) => {
     notifyOffer(o);
     startAlarm();
     box.innerHTML = `<div class="card offer">
-      <div class="row-head">
-        <h3>🔔 طلب توصيل جديد — <span dir="ltr">${serialNo(o)}</span></h3>
-        <span class="badge b-offered">⏱️ متبقي <b id="cd"></b> ث</span>
-      </div>
-      ${st.active ? '<div style="margin-bottom:8px;padding:7px 10px;border-radius:8px;background:rgba(234,179,8,.18);color:#fde047;font-size:13px;font-weight:700">⚡ طلب إضافي (لديك طلب نشط حالياً — يمكنك قبوله أو رفضه)</div>' : ''}
-      <p style="margin:6px 0"><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
-      <p style="font-size:16.5px;background:rgba(255,107,0,.14);padding:12px 14px;border-radius:12px;border:1px solid rgba(255,107,0,.45);margin:10px 0"><b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
-      <p class="mut fin-hide" style="margin:4px 0 10px">عمولة المنصة على هذا الطلب: <b>${money(st.commission)}</b></p>
-      <div class="row" style="margin-top:12px">
-        <button type="button" class="ok" id="acc" style="flex:2">✅ قبول الطلب</button>
-        <button type="button" class="bad" id="rej" style="flex:1">✕ رفض</button>
-      </div>
-    </div>`;
+  <div class="row-head">
+    <h3>🔔 طلب توصيل جديد — <span dir="ltr">${serialNo(o)}</span></h3>
+    <span class="badge b-offered">بانتظار قبول كابتن</span>
+  </div>
+  ${st.activeOrders && st.activeOrders.length > 0 ? '<div class="mut" style="margin-bottom:8px">⚡ طلب إضافي (لديك طلب نشط حالياً)</div>' : ''}
+  <p><b>🏪 من المنشأة:</b> ${esc(o.merchant.name)}<br><span class="mut">${esc(o.merchant.address)}</span></p>
+  <p style="background:var(--brand-primary-soft);padding:12px 14px;border-radius:12px;border:1px solid var(--border-brand-soft);margin:10px 0">
+    <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}
+  </p>
+  <p class="mut fin-hide">عمولة المنصة: <b>${money(st.commission)}</b></p>
+  <div id="cd" style="text-align:center;font-size:18px;font-weight:900;color:var(--status-warn-text);padding:8px">
+    ⏱️ الوقت المتبقي: <span id="cdVal">--</span> ثانية
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button type="button" class="ok big" id="acc">✅ قبول الطلب</button>
+    <button type="button" class="bad big" id="rej">✕ رفض</button>
+  </div>
+</div>`;
     const tick = () => {
       const s = Math.max(0, Math.round((o.offer_expires_at - Date.now()) / 1000));
-      const e = $('#cd');
+      const e = document.getElementById('cdVal');
       if (e) e.textContent = s;
       if (!s) { clearInterval(cd); setTimeout(refresh, 1500); }
     };
@@ -540,7 +526,7 @@ authScreen('captain', (user) => {
         ${stepperHtml}
 
         <!-- Merchant Box -->
-        <div style="padding:12px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(245,158,11,.2);margin-bottom:10px">
+        <div style="padding:12px;border-radius:12px;background:var(--c-ffffff-a030);border:1px solid var(--c-f59e0b-a200);margin-bottom:10px">
           <div style="font-weight:800;color:var(--gold);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
           <div><b>${esc(o.merchant.name)}</b> — <span class="mut">${esc(o.merchant.address)}</span></div>
           <div class="row" style="margin-top:8px">
@@ -550,7 +536,7 @@ authScreen('captain', (user) => {
         </div>
 
         <!-- Customer Box -->
-        <div style="padding:12px;border-radius:12px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);margin-bottom:10px">
+        <div style="padding:12px;border-radius:12px;background:var(--c-22c55e-a080);border:1px solid var(--c-22c55e-a300);margin-bottom:10px">
           <div class="clr-ok-soft" style="font-weight:800;margin-bottom:4px">📍 بيانات التوصيل والزبون</div>
           <div style="font-size:16px;font-weight:800;margin-bottom:4px">${esc(o.customer_address || '—')}</div>
           ${o.customer_name && o.customer_name !== '—' ? `<div>الزبون: <b>${esc(o.customer_name)}</b></div>` : ''}
@@ -562,10 +548,10 @@ authScreen('captain', (user) => {
         </div>
 
         <!-- Financial Box -->
-        ${(o.product_amount || o.delivery_fee) ? `<div class="fin-hide" style="padding:12px;border-radius:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);margin-bottom:10px">
+        ${(o.product_amount || o.delivery_fee) ? `<div class="fin-hide" style="padding:12px;border-radius:12px;background:var(--c-f59e0b-a100);border:1px solid var(--c-f59e0b-a260);margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mut">💵 ادفع للمنشأة ثمن الطلب:</span><b>${money(o.product_amount)}</b></div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mut">🛵 أجرة التوصيل:</span><b>${money(o.delivery_fee)}</b></div>
-          <div style="display:flex;justify-content:space-between;border-top:1px solid rgba(245,158,11,.2);padding-top:6px;font-size:15.5px"><span style="color:var(--gold);font-weight:800">💰 استلم من الزبون الإجمالي:</span><b class="clr-ok-soft">${money(o.product_amount + o.delivery_fee)}</b></div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--c-f59e0b-a200);padding-top:6px;font-size:15.5px"><span style="color:var(--gold);font-weight:800">💰 استلم من الزبون الإجمالي:</span><b class="clr-ok-soft">${money(o.product_amount + o.delivery_fee)}</b></div>
         </div>` : ''}
 
 

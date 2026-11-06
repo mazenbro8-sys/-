@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v8';
+import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v13';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -116,46 +116,21 @@ authScreen('admin', (user) => {
     if (!box) return;
     if (!shortage || !shortage.alert || !shortage.orders?.length) {
       box.innerHTML = '';
+      box.classList.toggle('hide', !shortage || shortage.length === 0);
       mutedShortageKey = '';
       stopAdminAlarm();
       return;
     }
     const key = shortage.orders.map((o) => `${o.id}:${o.status}`).join(',');
-    const capList = liveCache.captains || [];
-    box.innerHTML = `
-      <div class="card offer" style="border:2px solid #ef4444;background:rgba(239,68,68,.16);margin-top:12px;margin-bottom:0">
-        <div class="row-head" style="flex-wrap:wrap;gap:10px">
-          <div>
-            <h3 class="clr-bad-soft" style="margin:0">🚨 إنذار عاجل للإدارة: يوجد (${shortage.unassignedCount}) طلب عُرض على جميع الكباتن (المتاحين والمشغولين) ولم يقبله أحد!</h3>
-            <div class="mut" class="clr-bad-pale" style="margin-top:4px">
-              يرجى تعيين كابتن للطلب مباشرة أو إعادة عرضه على الكباتن — الكباتن الأونلاين حالياً: <b>${shortage.onlineCaptains}</b> (منهم متاحون: <b>${shortage.freeOnlineCaptains}</b>)
-            </div>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم صوت الإنذار</button>
-          </div>
-        </div>
-        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-          ${shortage.orders.map((o) => `
-            <div class="shortage-order-row">
-              <div>
-                <b dir="ltr" class="serial-pill">${serialNo(o)}</b> — <b>🏪 ${esc(o.merchant?.name || '—')}</b> — 📍 <b>${esc(o.customer_address || '—')}</b> ${badge(o.status)}
-              </div>
-              <div class="order-action-bar">
-                <div class="assign-input-group">
-                  <select data-assign-sel="${o.id}">
-                    <option value="">-- اختر كابتن فوراً --</option>
-                    ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
-                  </select>
-                  <button type="button" data-assign-btn="${o.id}">🛵 تعيين</button>
-                </div>
-                <button type="button" class="act-pill act-redispatch" data-redispatch="${o.id}" title="إعادة تدوير الطلب على الكباتن">🔄 تدوير</button>
-                <button type="button" class="act-pill act-cancel" data-x="${o.id}" title="إلغاء الطلب نهائياً">✕ إلغاء</button>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>`;
+    const o = shortage.orders[0];
+    box.innerHTML = `<div class="card offer">
+  <div class="row-head">
+    <h3>⚠️ طلب مرفوض من كل الكباتن</h3>
+    <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم</button>
+  </div>
+  <p>الطلب <b dir="ltr">${serialNo(o)}</b> — ${esc(o.customer_address || '')}</p>
+  <button type="button" class="sec" data-quick-assign="${o.id}">➕ إسناد لكابتن</button>
+</div>`;
     $('#muteShortageBtn').onclick = () => {
       mutedShortageKey = key;
       stopAdminAlarm();
@@ -265,7 +240,7 @@ authScreen('admin', (user) => {
     const unassignedOrders = (liveCache.orders || []).filter((o) => !['delivered', 'cancelled', 'failed'].includes(o.status));
     const el = document.createElement('div');
     el.id = 'addordmodal';
-    el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
+    el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:var(--c-000000-a700);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
     el.innerHTML = `<div class="card" style="width:100%;max-width:480px;padding:18px;background:var(--c-ground);color:var(--c-ink);max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h3 style="margin:0">➕ إضافة / تعيين طلب لكابتن</h3>
@@ -286,11 +261,11 @@ authScreen('admin', (user) => {
         <button class="big ok" style="margin-top:12px">🛵 إضافة وإسناد الطلب</button>
       </form>
       ${defaultCapId && unassignedOrders.length ? `
-        <hr style="border-color:rgba(255,255,255,.1);margin:14px 0">
+        <hr style="border-color:var(--c-ffffff-a100);margin:14px 0">
         <h4 style="margin:0 0 8px">أو إسناد طلب حالي موجود لهذا الكابتن:</h4>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${unassignedOrders.map((o) => `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:rgba(255,255,255,.05);border-radius:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:var(--c-ffffff-a050);border-radius:8px">
               <div><b dir="ltr">${serialNo(o)}</b> — 📍 ${esc(o.customer_address || '—')} ${o.captain ? `<span class="mut">(حالياً مع ${esc(o.captain.name)})</span>` : ''}</div>
               <button type="button" class="ok sm" data-quick-assign="${o.id}">🛵 إسناد للكابتن</button>
             </div>
@@ -760,7 +735,7 @@ authScreen('admin', (user) => {
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
     detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
-        <div style="margin:10px 0;padding:10px;background:rgba(255,255,255,.04);border-radius:10px">
+        <div style="margin:10px 0;padding:10px;background:var(--c-ffffff-a040);border-radius:10px">
           <b>🛵 الكابتن المسند للطلب:</b>
           <div style="margin-top:6px">${renderOrderCaptainCell(o, capList)}</div>
         </div>

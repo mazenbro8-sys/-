@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,7 @@ function loadSecret() {
 export const config = {
   port: Number(process.env.PORT || 3000),
   jwtSecret: loadSecret(),
-  jwtTtl: '12h',
+  jwtTtl: '30d',
   prod: process.env.NODE_ENV === 'production',
   offerTimeoutMs: Number(process.env.OFFER_TIMEOUT_MS || 30_000), // 30 seconds
   searchMaxMs: 10 * 60_000,

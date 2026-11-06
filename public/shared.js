@@ -36,17 +36,20 @@ export function toast(msg, ms = 3500) {
   t.textContent = msg; t.style.display = 'block';
   clearTimeout(t._t); t._t = setTimeout(() => (t.style.display = 'none'), ms);
 }
+document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
 
 const ROLE_KEY = location.pathname.includes('admin') ? 'admin' : location.pathname.includes('merchant') ? 'merchant' : location.pathname.includes('captain') ? 'captain' : 'app';
-let token = sessionStorage.getItem('token') || localStorage.getItem('panther_token_' + ROLE_KEY);
+// Remove the old unscoped sessionStorage key if it exists
+sessionStorage.removeItem('token');
+let token = sessionStorage.getItem('token_' + ROLE_KEY) || localStorage.getItem('panther_token_' + ROLE_KEY);
 export const getToken = () => token;
 export function setToken(t) {
   token = t;
   if (t) {
-    sessionStorage.setItem('token', t);
+    sessionStorage.setItem('token_' + ROLE_KEY, t);
     localStorage.setItem('panther_token_' + ROLE_KEY, t);
   } else {
-    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('token_' + ROLE_KEY);
     localStorage.removeItem('panther_token_' + ROLE_KEY);
   }
 }
@@ -73,8 +76,8 @@ export function openServerConfigModal(onSaved) {
   const current = getServerUrl() || (!isNativeApk() ? location.origin : '');
   const modal = document.createElement('div');
   modal.id = 'srvCfgModal';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
-  modal.innerHTML = `<div class="card" style="width:100%;max-width:430px;padding:20px;border:1.5px solid rgba(251,191,36,.45);text-align:right">
+  modal.style.cssText = 'position:fixed;inset:0;z-index:var(--z-modal);background:var(--surface-overlay);backdrop-filter:var(--blur-sm);display:grid;place-items:center;padding:var(--space-4)';
+  modal.innerHTML = `<div class="card" style="width:100%;max-width:430px;text-align:right">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h3 style="margin:0;color:var(--gold)">🌐 إعدادات اتصال السيرفر</h3>
       <button type="button" class="ghost sm" id="srvCfgClose">✕</button>
@@ -94,14 +97,14 @@ export function openServerConfigModal(onSaved) {
   const inp = $('#srvUrlInput', modal), msg = $('#srvTestMsg', modal);
   $('#srvTestBtn', modal).onclick = async () => {
     const val = inp.value.trim().replace(/\/+$/, '');
-    if (!val) { msg.textContent = '⚠️ يرجى إدخال رابط السيرفر أولاً'; msg.style.color = '#fbbf24'; /* warn */ return; }
-    msg.textContent = '⏳ جاري فحص الاتصال بالسيرفر...'; msg.style.color = '#a1a1aa'; /* zinc */
+    if (!val) { msg.textContent = '⚠️ يرجى إدخال رابط السيرفر أولاً'; msg.style.color = 'var(--c-fbbf24)'; return; }
+    msg.textContent = '⏳ جاري فحص الاتصال بالسيرفر...'; msg.style.color = 'var(--c-a1a1aa)';
     try {
       const r = await fetch(val + '/api/zones');
-      if (r.ok) { msg.textContent = '✅ الاتصال بالسيرفر ناجح ويعمل بشكل ممتاز!'; msg.style.color = '#22c55e'; /* ok */ }
-      else { msg.textContent = `❌ السيرفر استجاب برمز خطأ (${r.status})`; msg.style.color = '#ef4444'; /* bad */ }
+      if (r.ok) { msg.textContent = '✅ الاتصال بالسيرفر ناجح ويعمل بشكل ممتاز!'; msg.style.color = 'var(--c-22c55e)'; }
+      else { msg.textContent = `❌ السيرفر استجاب برمز خطأ (${r.status})`; msg.style.color = 'var(--c-bad)'; }
     } catch {
-      msg.textContent = '❌ تعذّر الوصول للسيرفر، تأكد من الرابط أو اتصال الإنترنت'; msg.style.color = '#ef4444'; /* bad */
+      msg.textContent = '❌ تعذّر الوصول للسيرفر، تأكد من الرابط أو اتصال الإنترنت'; msg.style.color = 'var(--c-bad)';
     }
   };
   $('#srvSaveBtn', modal).onclick = () => {
@@ -177,11 +180,11 @@ export async function promptInstallApp(role = ROLE_KEY) {
   document.getElementById('pwaInstallModal')?.remove();
   const modal = document.createElement('div');
   modal.id = 'pwaInstallModal';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.78);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
-  modal.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:20px;border:1.5px solid rgba(251,191,36,.45);text-align:right">
+  modal.style.cssText = 'position:fixed;inset:0;z-index:10000;background:var(--c-000000-a780);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
+  modal.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:20px;border:1.5px solid var(--c-fbbf24-a450);text-align:right">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <div style="display:flex;align-items:center;gap:10px">
-        <img src="/icon-192.png" alt="PANTHER" style="width:48px;height:48px;border-radius:12px;border:1px solid rgba(251,191,36,.4)">
+        <img src="/icon-192.png" alt="PANTHER" style="width:48px;height:48px;border-radius:12px;border:1px solid var(--c-fbbf24-a450)">
         <div>
           <h3 style="margin:0;color:var(--gold)">📲 تثبيت ${esc(meta.short)}</h3>
           <div class="mut" style="font-size:12px">يعمل كتطبيق هاتف مستقل بشاشة كاملة</div>
@@ -189,7 +192,7 @@ export async function promptInstallApp(role = ROLE_KEY) {
       </div>
       <button type="button" class="ghost sm" id="pwaClose">✕</button>
     </div>
-    <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:12px;margin-bottom:10px">
+    <div style="background:var(--c-f59e0b-a100);border:1px solid var(--c-f59e0b-a400);border-radius:12px;padding:12px;margin-bottom:10px">
       <b class="clr-warn" style="display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
       <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
         <li>اضغط على زر القائمة <b>(⋮)</b> في أعلى المتصفح.</li>
@@ -197,7 +200,7 @@ export async function promptInstallApp(role = ROLE_KEY) {
         <li>اضغط <b>تثبيت</b> ليظهر التطبيق بأيقونة <b>PANTHER</b> على هاتفك.</li>
       </ol>
     </div>
-    <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;margin-bottom:14px">
+    <div style="background:var(--c-ffffff-a040);border:1px solid var(--c-ffffff-a120);border-radius:12px;padding:12px;margin-bottom:14px">
       <b class="clr-near-wht" style="display:block;margin-bottom:6px">🍎 على هواتف آيفون (Safari):</b>
       <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
         <li>اضغط على زر المشاركة <b>(⬆️ Share)</b> في أسفل المتصفح.</li>
@@ -224,11 +227,11 @@ export async function promptInstallApp(role = ROLE_KEY) {
 export function renderInstallBanner(role = ROLE_KEY) {
   const meta = APP_META[role] || APP_META.merchant;
   const wantInstall = new URLSearchParams(location.search).get('install') === '1';
-  if (isStandalone() && !wantInstall) return '';
-  return `<div class="card" id="appInstallCard" style="border:1.5px solid rgba(251,191,36,.45);background:linear-gradient(145deg,rgba(24,20,17,.96),rgba(234,88,12,.14));margin-bottom:14px;text-align:right">
+  if (!wantInstall) return '';
+  return `<div class="card" id="appInstallCard" style="border:1.5px solid var(--c-fbbf24-a450);background:linear-gradient(145deg,var(--c-181411-a960),var(--c-ea580c-a140));margin-bottom:14px;text-align:right">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:12px">
-        <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid rgba(251,191,36,.5);box-shadow:0 6px 18px rgba(234,88,12,.3)">
+        <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid var(--c-fbbf24-a500);box-shadow:0 6px 18px var(--c-ea580c-a300)">
         <div>
           <div style="font-weight:900;font-size:15.5px;color:var(--c-ink)">${meta.icon} ${esc(meta.name)}</div>
           <div class="mut" style="font-size:12.5px">${esc(meta.desc)}</div>
@@ -279,7 +282,9 @@ export async function api(path, method = 'GET', body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (r.status === 401 && token) { setToken(null); location.reload(); }
-    throw new Error(data.error || 'حدث خطأ');
+    const err = new Error(data.error || 'حدث خطأ');
+    err.status = r.status;
+    throw err;
   }
   return data;
 }
@@ -344,7 +349,7 @@ if (!document.getElementById('_mapCSS')) {
     }
     .pulsing-dot {
       width: 14px; height: 14px; border-radius: 50%;
-      border: 2px solid var(--c-ink); box-shadow: 0 2px 6px rgba(0,0,0,.5);
+      border: 2px solid var(--c-ink); box-shadow: 0 2px 6px var(--c-000000-a500);
       position: relative;
     }
     .pulsing-dot::after {
@@ -439,7 +444,7 @@ export function makeMap(el, center = DAMASCUS, zoom = 13) {
 }
 
 export const emoji = (e) => L.divIcon({
-  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 5px rgba(0,0,0,.55))">${e}</div>`,
+  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 5px var(--c-000000-a550))">${e}</div>`,
   className: '', iconSize: [28, 28], iconAnchor: [14, 14],
 });
 
@@ -503,6 +508,30 @@ export function createPulsingDot(color = '#22c55e') {
 }
 
 // ---------- login / register ----------
+function showAuthRetryBanner(_err, role) {
+  const el = document.getElementById('auth');
+  if (!el) return;
+  el.classList.remove('hide');
+  el.innerHTML = `
+    <div class="card" style="text-align:center;padding:var(--space-6)">
+      <div style="font-size:48px;margin-bottom:var(--space-3)">📡</div>
+      <h2 style="margin:0 0 var(--space-3);color:var(--text-primary)">تعذّر الاتصال بالسيرفر</h2>
+      <p class="mut" style="margin-bottom:var(--space-4)">يرجى التحقق من اتصال الإنترنت</p>
+      <button type="button" class="ok" id="authRetryBtn" style="width:100%;min-height:var(--touch-jumbo)">🔄 إعادة المحاولة</button>
+      <button type="button" class="ghost sm" id="authResetBtn" style="width:100%;margin-top:var(--space-3)">تسجيل الخروج وإعادة الدخول</button>
+    </div>
+  `;
+  $('#authRetryBtn', el).onclick = () => location.reload();
+  $('#authResetBtn', el).onclick = () => {
+    sessionStorage.clear();
+    localStorage.removeItem('panther_token_' + (role || 'app'));
+    localStorage.removeItem('panther_token_admin');
+    localStorage.removeItem('panther_token_merchant');
+    localStorage.removeItem('panther_token_captain');
+    location.reload();
+  };
+}
+
 export async function authScreen(role, onReady) {
   const root = $('#auth');
   const wantInstall = new URLSearchParams(location.search).get('install') === '1';
@@ -514,8 +543,18 @@ export async function authScreen(role, onReady) {
         if (wantInstall) setTimeout(() => promptInstallApp(role), 350);
         return;
       }
-    } catch {}
-    setToken(null);
+      // Role mismatch: legitimately clear (user switched roles)
+      setToken(null);
+    } catch (err) {
+      // Only clear on 401 (token expired/invalid). Keep on network errors.
+      if (err && (err.status === 401 || err.message?.includes('401') || err.message?.includes('Unauthorized'))) {
+        setToken(null);
+      } else {
+        // Network/server error: keep token, show retry banner, do NOT clear
+        showAuthRetryBanner(err, role);
+        return;
+      }
+    }
   }
   const zones = [];
   root.classList.remove('hide');
@@ -625,13 +664,13 @@ export function captainModal(cap) {
   document.getElementById('capmodal')?.remove();
   const el = document.createElement('div');
   el.id = 'capmodal';
-  el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
+  el.style.cssText = 'position:fixed;inset:0;z-index:var(--z-modal);background:var(--surface-overlay);backdrop-filter:var(--blur-sm);display:grid;place-items:center;padding:var(--space-4)';
   const hasLoc = cap.lat != null && cap.lng != null;
-  el.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:18px;background:var(--c-ground);color:var(--c-ink)">
+  el.innerHTML = `<div class="card" style="width:100%;max-width:440px">
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🛵 ${esc(cap.name)}</h3><button type="button" class="ghost" id="capx">✕</button></div>
     <p style="margin:10px 0">📞 <b dir="ltr">${esc(cap.phone || '—')}</b></p>
     ${hasLoc ? '<div id="capmap" class="map" style="height:240px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}
-    ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:block;text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:#22c55e;color:#fff;font-weight:700;text-decoration:none">📞 اتصال مباشر</a>` : ''}
+    ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:block;text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:var(--c-22c55e);color:var(--c-ink);font-weight:700;text-decoration:none">📞 اتصال مباشر</a>` : ''}
   </div>`;
   document.body.appendChild(el);
   const close = () => el.remove();

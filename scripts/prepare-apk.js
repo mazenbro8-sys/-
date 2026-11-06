@@ -10,13 +10,13 @@ const OUT = path.join(ROOT, 'android-captain', 'app', 'src', 'main', 'assets', '
 fs.mkdirSync(path.join(OUT, 'vendor', 'leaflet'), { recursive: true });
 
 // Copy captain assets
-const files = ['captain.js', 'shared.js', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-captain.json'];
+const files = ['captain.js', 'shared.js', 'design-tokens.css', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-captain.json'];
 for (const f of files) {
   fs.copyFileSync(path.join(PUB, f), path.join(OUT, f));
 }
 
 // Write index.html from captain.html with window.PANTHER_APK = true injected
-const defaultSrv = process.env.SERVER_URL || 'https://cheese-souls-committee-conviction.trycloudflare.com';
+const defaultSrv = process.env.SERVER_URL || 'https://layers-luck-translate-roses.trycloudflare.com';
 const captainHtml = fs.readFileSync(path.join(PUB, 'captain.html'), 'utf8')
   .replace('<head>', `<head><script>window.PANTHER_APK=true;window.PANTHER_DEFAULT_SERVER=${JSON.stringify(defaultSrv)};</script>`);
 fs.writeFileSync(path.join(OUT, 'index.html'), captainHtml, 'utf8');

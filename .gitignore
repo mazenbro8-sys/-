@@ -4,4 +4,11 @@ data
 android-captain/build
 android-captain/app/src/main/assets/public
 android-captain/*.jks
+*.bak-*
+_trash/
+*.jks
+*.keystore
+*.log
+*.tmp
+panther-merge/
 
