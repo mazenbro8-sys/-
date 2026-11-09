@@ -1,5 +1,6 @@
 import { createClient } from '@libsql/client';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import bcrypt from 'bcryptjs';
@@ -229,17 +230,17 @@ export const audit = (actor, action, data) =>
 export const addEvent = (orderId, type, actor, data) =>
   db.run('INSERT INTO order_events(order_id,type,actor_id,data,at) VALUES(?,?,?,?,?)', orderId, type, actor ?? null, data ? JSON.stringify(data) : null, Date.now());
 
-// --- Seed or Sync: default zone + admin ---
+// --- Seed: default zone + initial admin ---
 if (!(await db.get('SELECT 1 FROM zones LIMIT 1'))) {
   await db.run('INSERT INTO zones(name) VALUES (?)', 'المزة');
 }
-const OWNER_ADMIN_PASS = 'admin1234';
-const adminPhone = (process.env.DB_FILE && process.env.ADMIN_PHONE) || '0782070936';
-const adminPass = (process.env.DB_FILE && process.env.ADMIN_PASSWORD) || OWNER_ADMIN_PASS;
+const adminPhone = (process.env.ADMIN_PHONE || '').trim() || '0782070936';
+const envAdminPass = (process.env.ADMIN_PASSWORD || '').trim();
 await tx(async () => {
-  await db.run('UPDATE users SET failed_logins=0, locked_until=0 WHERE failed_logins>0 OR locked_until>0');
   const existingAdmin = await db.get("SELECT * FROM users WHERE role='admin'");
   if (!existingAdmin) {
+    const generated = !envAdminPass;
+    const adminPass = envAdminPass || crypto.randomBytes(12).toString('base64url');
     const conflict = await db.get('SELECT id FROM users WHERE phone=?', adminPhone);
     if (conflict) await db.run('UPDATE users SET phone=? WHERE id=?', `${adminPhone}_old_${conflict.id}`, conflict.id);
     await db.run(
@@ -251,21 +252,11 @@ await tx(async () => {
     );
     console.log('\n=== تم إنشاء حساب المدير ===');
     console.log(`الهاتف: ${adminPhone}`);
+    if (generated) {
+      console.log(`كلمة المرور المؤقتة (تظهر عند التأسيس فقط): ${adminPass}`);
+    }
     console.log('============================\n');
-  } else {
-    if (existingAdmin.status !== 'active') {
-      await db.run("UPDATE users SET status='active' WHERE id=?", existingAdmin.id);
-    }
-    if (process.env.DB_FILE && process.env.ADMIN_PASSWORD) {
-      const sameCreds = existingAdmin.phone === adminPhone && bcrypt.compareSync(adminPass, existingAdmin.pass_hash);
-      if (!sameCreds) {
-        await db.run(
-          "UPDATE users SET phone=?, pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0, status='active' WHERE id=?",
-          adminPhone,
-          bcrypt.hashSync(adminPass, 12),
-          existingAdmin.id
-        );
-      }
-    }
+  } else if (existingAdmin.status !== 'active') {
+    await db.run("UPDATE users SET status='active' WHERE id=?", existingAdmin.id);
   }
 });
