@@ -16,7 +16,7 @@ export async function viewOrder(o, role) {
   if (!o) return null;
   const [m, cap] = await Promise.all([
     db.get('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?', o.merchant_id),
-    o.captain_id ? db.get('SELECT id,name,phone,last_lat,last_lng,last_loc_at FROM users WHERE id=?', o.captain_id) : null,
+    o.captain_id ? db.get('SELECT id,name,phone,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE id=?', o.captain_id) : null,
   ]);
   const v = {
     id: o.id, serial_no: String(o.id).padStart(4, '0'),
@@ -36,10 +36,10 @@ export async function viewOrder(o, role) {
     let eta = null;
     if (cap.last_lat != null && target.lat != null)
       eta = Math.max(1, Math.round((haversineKm(cap.last_lat, cap.last_lng, target.lat, target.lng) / config.etaSpeedKmh) * 60));
-    v.captain = { id: cap.id, name: cap.name, phone: cap.phone, lat: cap.last_lat, lng: cap.last_lng, at: cap.last_loc_at };
+    v.captain = { id: cap.id, name: cap.name, phone: cap.phone, lat: cap.last_lat, lng: cap.last_lng, at: cap.last_loc_at, last_loc_at: cap.last_loc_at, last_loc_vis: cap.last_loc_vis ?? null };
     v.eta_minutes = eta;
   } else if (role !== 'captain' && cap) {
-    v.captain = { id: cap.id, name: cap.name, phone: cap.phone };
+    v.captain = { id: cap.id, name: cap.name, phone: cap.phone, at: cap.last_loc_at, last_loc_at: cap.last_loc_at, last_loc_vis: cap.last_loc_vis ?? null };
   }
   if (role === 'admin') {
     v.captain_id = o.captain_id;

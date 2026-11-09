@@ -299,6 +299,11 @@ C.post('/location', wrap(async (req, res) => {
   const u = req.user;
   if (!u.online) return res.status(204).end(); // offline: no tracking at all
   const [lat, lng] = coord(req.body?.lat, req.body?.lng, true);
+  const rawVis = req.body?.vis;
+  if (rawVis !== undefined && rawVis !== null && rawVis !== '' && rawVis !== 'visible' && rawVis !== 'hidden') {
+    throw bad('حالة الظهور غير صالحة');
+  }
+  const vis = rawVis === 'visible' || rawVis === 'hidden' ? rawVis : (u.last_loc_vis ?? null);
   const now = Date.now();
   const act = await activeOrder(u.id);
   const minGap = (act ? config.activeLocIntervalMs : config.idleLocIntervalMs) * 0.8;
@@ -309,7 +314,7 @@ C.post('/location', wrap(async (req, res) => {
     const hrs = (now - u.last_loc_at) / 3.6e6;
     if (hrs > 0 && haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) return res.status(204).end();
   }
-  await db.run('UPDATE users SET last_lat=?, last_lng=?, last_loc_at=? WHERE id=?', lat, lng, now, u.id);
+  await db.run('UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, last_loc_vis=? WHERE id=?', lat, lng, now, vis, u.id);
   await db.run('INSERT INTO locations(captain_id,lat,lng,order_id,at) VALUES(?,?,?,?,?)', u.id, lat, lng, act?.id ?? null, now);
   if (act) {
     const m = { type: 'loc', order_id: act.id, lat, lng, at: now };
@@ -318,7 +323,7 @@ C.post('/location', wrap(async (req, res) => {
   } else {
     await detectBypass(u, lat, lng, now);
   }
-  sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, busy: !!act }, u.zone_id);
+  sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, vis, busy: !!act }, u.zone_id);
   res.status(204).end();
 }));
 
@@ -465,14 +470,14 @@ A.get('/live', wrap(async (req, res) => {
     ? await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId),
         db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 100', zId),
-        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
+        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId),
         computeShortage(zId),
       ])
     : await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
         db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
-        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
+        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
         computeShortage(),
       ]);
@@ -491,7 +496,14 @@ A.get('/live', wrap(async (req, res) => {
       };
     })),
   ]);
-  res.json({ orders, recentOrders, captains, merchants, shortage });
+  res.json({
+    orders,
+    recentOrders,
+    captains,
+    merchants,
+    shortage,
+    intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
+  });
 }));
 
 A.post('/users', createAccount);
@@ -530,10 +542,12 @@ A.get('/users', wrap(async (req, res) => {
     }
   }
   const rows = await db.all(
-    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,created_at FROM users WHERE ${clauses.join(' AND ')} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
+    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
+       EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=users.id AND o.status IN ('accepted','picked_up','arrived')) busy
+     FROM users WHERE ${clauses.join(' AND ')} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
     ...args
   );
-  res.json(rows);
+  res.json(rows.map((r) => ({ ...r, busy: !!r.busy })));
 }));
 A.patch('/users/:id', wrap(async (req, res) => {
   const id = oid(req);

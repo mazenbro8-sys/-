@@ -64,8 +64,8 @@ authScreen('admin', (user) => {
     const d = new Date();
     $('#clk').textContent = enDigits(d.toLocaleTimeString('en-GB'));
     $('#dt').textContent = enDigits(d.toLocaleDateString('ar-SY-u-nu-latn', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
+    tickCaptainLocAges();
   };
-  tick(); setInterval(tick, 1000);
 
   // ---------- Admin Audio Alarm (Siren when orders > available captains) ----------
   let actx = null, alarmTimer = null, alarmGain = null, alarmOsc = null;
@@ -126,10 +126,84 @@ authScreen('admin', (user) => {
   let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
   let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = [];
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
+  let locIntervals = { active: 10_000, idle: 60_000 };
   const ordersIndex = new Map();
   const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
   let refreshTimer;
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
+
+  function computeCaptainLocDiag(ts, vis, busy, now = Date.now()) {
+    const t = Number(ts) || 0;
+    const expectedMs = busy ? (locIntervals.active || 10_000) : (locIntervals.idle || 60_000);
+    const visLabel = vis === 'visible'
+      ? '🟢 التطبيق بالواجهة'
+      : vis === 'hidden'
+      ? '🌑 بالخلفية'
+      : '⚪ غير محدد';
+    if (!t) {
+      return {
+        ageText: 'آخر موقع: غير متوفر',
+        colorClass: 'loc-age-muted',
+        visLabel,
+      };
+    }
+    const ageMs = Math.max(0, now - t);
+    const ageSec = Math.floor(ageMs / 1000);
+    let ageText;
+    if (ageSec < 60) {
+      ageText = `آخر موقع: منذ ${ageSec} ثانية`;
+    } else if (ageSec < 3600) {
+      ageText = `آخر موقع: منذ ${Math.floor(ageSec / 60)} دقيقة`;
+    } else {
+      ageText = `آخر موقع: منذ ${Math.floor(ageSec / 3600)} ساعة`;
+    }
+    const colorClass = ageMs <= 2 * expectedMs
+      ? 'loc-age-ok'
+      : ageMs <= 4 * expectedMs
+      ? 'loc-age-warn'
+      : 'loc-age-bad';
+    return { ageText, colorClass, visLabel };
+  }
+
+  function renderCaptainLocDiag(c) {
+    const ts = c.last_loc_at ?? c.at ?? '';
+    const vis = c.last_loc_vis || '';
+    const busy = Boolean(c.busy || c.active_order_id || (c.active_orders && c.active_orders.length));
+    const d = computeCaptainLocDiag(ts, vis, busy);
+    return `<div class="cap-loc-diag" data-loc-cap="${c.id}" data-loc-at="${ts || ''}" data-loc-vis="${esc(vis)}" data-loc-busy="${busy ? '1' : '0'}">
+      <span class="cap-loc-age ${d.colorClass}">${esc(d.ageText)}</span>
+      <span class="cap-loc-vis">${esc(d.visLabel)}</span>
+    </div>`;
+  }
+
+  function renderCaptainPopupHtml(c) {
+    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? '🟢 أونلاين متاح' : '⚪ أوفلاين';
+    return `<div class="cap-map-popup">
+      <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b> <span class="mut">(${esc(stTxt)})</span></div>
+      ${renderCaptainLocDiag(c)}
+    </div>`;
+  }
+
+  function tickCaptainLocAges() {
+    const now = Date.now();
+    document.querySelectorAll('[data-loc-cap]').forEach((el) => {
+      const ts = el.dataset.locAt;
+      const vis = el.dataset.locVis;
+      const busy = el.dataset.locBusy === '1';
+      const d = computeCaptainLocDiag(ts, vis, busy, now);
+      const ageEl = el.querySelector('.cap-loc-age');
+      const visEl = el.querySelector('.cap-loc-vis');
+      if (ageEl) {
+        if (ageEl.textContent !== d.ageText) ageEl.textContent = d.ageText;
+        ageEl.className = `cap-loc-age ${d.colorClass}`;
+      }
+      if (visEl && visEl.textContent !== d.visLabel) {
+        visEl.textContent = d.visLabel;
+      }
+    });
+  }
+
+  tick(); setInterval(tick, 1000);
 
   function orderStatusBadge(o) {
     const delayed = o?.delay_until && o.delay_until > Date.now()
@@ -247,6 +321,7 @@ authScreen('admin', (user) => {
       try {
         const d = await api('/admin/live');
         liveCache = d;
+      if (d.intervals) locIntervals = d.intervals;
         rememberOrders(d.orders);
         rememberOrders(d.recentOrders);
         updateShortageBanner(d.shortage);
@@ -760,6 +835,7 @@ authScreen('admin', (user) => {
     async dash() {
       const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
       liveCache = d;
+      if (d.intervals) locIntervals = d.intervals;
       rememberOrders(d.orders);
       rememberOrders(d.recentOrders);
       updateShortageBanner(d.shortage || s.shortage);
@@ -839,9 +915,11 @@ authScreen('admin', (user) => {
         if (c.lat != null && c.lng != null) {
           const icon = c.busy ? emoji('🛵') : c.online ? createPulsingDot('#22c55e') : createPulsingDot('#94a3b8');
           const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
-          L.marker([c.lat, c.lng], { icon })
+          const mk = L.marker([c.lat, c.lng], { icon })
             .addTo(dashMap)
-            .bindTooltip(`🛵 ${c.name} — ${stTxt}`);
+            .bindTooltip(`🛵 ${c.name} — ${stTxt}`)
+            .bindPopup(renderCaptainPopupHtml(c));
+          mk.on('popupopen', tickCaptainLocAges);
         }
       });
       liveOrders.forEach((o) => {
@@ -1263,6 +1341,7 @@ authScreen('admin', (user) => {
                 ${u.status !== 'active' ? badge(u.status) : ''}
                 <span class="cap-online-pill ${u.online ? 'is-online' : 'is-offline'}"><span class="online-dot" aria-hidden="true"></span>${u.online ? 'متصل' : 'غير متصل'}</span>
               </div>
+              ${renderCaptainLocDiag(u)}
             </td>
             <td class="td-user-actions">
               <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات الكابتن ${esc(u.name)}</span></button>
@@ -1517,6 +1596,7 @@ authScreen('admin', (user) => {
     async orders() {
       const [rows, d] = await Promise.all([api('/admin/orders'), api('/admin/live')]);
       liveCache = d;
+      if (d.intervals) locIntervals = d.intervals;
       rememberOrders(rows);
       rememberOrders(d.orders);
       updateShortageBanner(d.shortage);
@@ -1639,7 +1719,11 @@ authScreen('admin', (user) => {
         pts.push([o.customer_lat, o.customer_lng]);
       }
       if (o.captain?.lat != null) {
-        L.marker([o.captain.lat, o.captain.lng], { icon: emoji('🛵') }).addTo(dmap).bindTooltip(`🛵 ${o.captain.name}`);
+        L.marker([o.captain.lat, o.captain.lng], { icon: emoji('🛵') })
+          .addTo(dmap)
+          .bindTooltip(`🛵 ${o.captain.name}`)
+          .bindPopup(renderCaptainPopupHtml({ ...o.captain, busy: true, active_order_id: o.serial_id || o.id, online: true }))
+          .on('popupopen', tickCaptainLocAges);
         pts.push([o.captain.lat, o.captain.lng]);
       }
       if (pts.length) fitMapToPoints(dmap, pts);
@@ -1668,6 +1752,7 @@ authScreen('admin', (user) => {
     const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
     if (tab !== 'live' || !liveMap) return;
     liveCache = d;
+    if (d.intervals) locIntervals = d.intervals;
     rememberOrders(d.orders);
     rememberOrders(d.recentOrders);
     updateShortageBanner(d.shortage || s.shortage);
@@ -1704,7 +1789,7 @@ authScreen('admin', (user) => {
     $('#lcaps').innerHTML = captains.map((c) => `<tr>
       <td><a href="#" class="cap-chip" data-cap="${c.id}">🛵 ${esc(c.name)}</a></td>
       <td dir="ltr">${esc(c.phone)}</td>
-      <td>${capStatusTag(c)}</td>
+      <td>${capStatusTag(c)}${renderCaptainLocDiag(c)}</td>
       <td>
         <div class="order-action-bar">
           <button type="button" class="act-pill act-assign" data-add-order="${c.id}">➕ إسناد طلب</button>
@@ -1742,7 +1827,7 @@ authScreen('admin', (user) => {
       if (c.lat == null || c.lng == null) return;
       seenC.add(c.id);
       const label = `🛵 ${c.name} — ${c.busy ? `مشغول #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين'}`;
-      setCap(c.id, c.lat, c.lng, label, c.busy, c.online);
+      setCap(c.id, c.lat, c.lng, label, c.busy, c.online, c);
     });
     [...capMarkers.keys()].filter((k) => !seenC.has(k)).forEach((k) => { capMarkers.get(k).remove(); capMarkers.delete(k); });
 
@@ -1777,7 +1862,7 @@ authScreen('admin', (user) => {
     refreshTimer = setTimeout(loadLive, 15000);
   }
 
-  function setCap(id, lat, lng, label, busy, online = true) {
+  function setCap(id, lat, lng, label, busy, online = true, capObj = null) {
     let m = capMarkers.get(id);
     const icon = busy ? emoji('🛵') : online ? createPulsingDot('#22c55e') : createPulsingDot('#94a3b8');
     if (!m) {
@@ -1788,6 +1873,10 @@ authScreen('admin', (user) => {
       m.setIcon(icon);
     }
     if (label) m.bindTooltip(label);
+    if (capObj) {
+      m.bindPopup(renderCaptainPopupHtml(capObj));
+      m.on('popupopen', tickCaptainLocAges);
+    }
   }
 
   connectWs((m) => {
@@ -1804,10 +1893,36 @@ authScreen('admin', (user) => {
       if (tab === 'dash') views.dash();
       else if (tab === 'orders') views.orders();
     }
-    if (m.type === 'loc' && tab === 'live' && liveMap) {
-      const existing = capMarkers.get(m.captain_id);
-      if (existing) animateMarker(existing, [m.lat, m.lng]);
-      else setCap(m.captain_id, m.lat, m.lng, null, m.busy, true);
+    if (m.type === 'loc') {
+      const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
+      if (capInCache) {
+        capInCache.lat = m.lat;
+        capInCache.lng = m.lng;
+        if (m.at) capInCache.last_loc_at = m.at;
+        if (m.vis) capInCache.last_loc_vis = m.vis;
+        if (m.busy !== undefined) capInCache.busy = m.busy;
+      }
+      const capInUsers = (currentUsersList || []).find((c) => c.id === m.captain_id);
+      if (capInUsers) {
+        if (m.at) capInUsers.last_loc_at = m.at;
+        if (m.vis) capInUsers.last_loc_vis = m.vis;
+        if (m.busy !== undefined) capInUsers.busy = m.busy;
+      }
+      document.querySelectorAll(`[data-loc-cap="${m.captain_id}"]`).forEach((el) => {
+        if (m.at) el.dataset.locAt = String(m.at);
+        if (m.vis) el.dataset.locVis = m.vis;
+        if (m.busy !== undefined) el.dataset.locBusy = m.busy ? '1' : '0';
+      });
+      tickCaptainLocAges();
+      if (tab === 'live' && liveMap) {
+        const existing = capMarkers.get(m.captain_id);
+        if (existing) {
+          animateMarker(existing, [m.lat, m.lng]);
+          if (capInCache) existing.setPopupContent(renderCaptainPopupHtml(capInCache));
+        } else {
+          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, capInCache);
+        }
+      }
     } else if (['order', 'pending_user', 'flag', 'captain'].includes(m.type)) {
       if (m.type === 'pending_user') toast('طلب تسجيل جديد بانتظار الموافقة');
       if (m.type === 'flag') toast('⚠️ تنبيه أمني جديد');

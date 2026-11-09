@@ -751,7 +751,8 @@ authScreen('captain', (user) => {
     const gap = st.active ? st.intervals.active : st.intervals.idle;
     if (Date.now() - lastSent < gap) return;
     lastSent = Date.now();
-    api('/captain/location', 'POST', pos).catch(() => {});
+    const vis = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
+    api('/captain/location', 'POST', { ...pos, vis }).catch(() => {});
   }
   setInterval(maybeSend, 3000);
 

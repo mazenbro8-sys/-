@@ -70,7 +70,8 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(acc.data.customer_phone, '0944444444');
   // invalid transition
   assert.equal((await call(`/captain/orders/${o1.id}/status`, 'POST', { status: 'delivered' }, other)).status, 400);
-  await call('/captain/location', 'POST', { lat: 33.505, lng: 36.255 }, other);
+  await call('/captain/location', 'POST', { lat: 33.505, lng: 36.255, vis: 'visible' }, other);
+  assert.equal((await call('/captain/location', 'POST', { lat: 33.505, lng: 36.255, vis: 'invalid' }, other)).status, 400);
   const trk = (await call(`/merchant/orders/${o1.id}`, 'GET', null, m)).data;
   assert.ok(trk.eta_minutes >= 1);
   for (const s of ['picked_up', 'arrived', 'delivered']) assert.equal((await call(`/captain/orders/${o1.id}/status`, 'POST', { status: s }, other)).status, 200);
@@ -80,6 +81,9 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
 
   // Admin: add order for a captain, unassign captain, and reassign captain
   const liveData = (await call('/admin/live', 'GET', null, admin)).data;
+  assert.ok(liveData.intervals?.active && liveData.intervals?.idle);
+  const locCap = liveData.captains.find((c) => c.last_loc_at);
+  assert.ok(locCap && locCap.last_loc_vis === 'visible');
   const capId = liveData.captains[0].id;
   const admOrd = await call('/admin/orders', 'POST', { customer_address: 'أبو رمانة - الجاحظ', captain_id: capId }, admin);
   assert.equal(admOrd.status, 201);

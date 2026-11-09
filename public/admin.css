@@ -1449,6 +1449,72 @@ body.ad select:focus-visible {
   }
 }
 
+/* ==========================================================================
+   CAPTAIN LOCATION TRACKING DIAGNOSTICS
+   ========================================================================== */
+.cap-loc-diag {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin-block-start: var(--space-1);
+  width: 100%;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+
+.cap-loc-age {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-0) var(--space-2);
+  border-radius: var(--radius-pill);
+  font-weight: var(--weight-bold);
+  border: var(--border-w-thin) solid var(--border-neutral);
+  background: var(--surface-glass-1);
+}
+
+.cap-loc-age.loc-age-ok {
+  background: var(--status-ok-soft);
+  border-color: var(--status-ok-border);
+  color: var(--status-ok-text);
+}
+
+.cap-loc-age.loc-age-warn {
+  background: var(--status-warn-soft);
+  border-color: var(--status-warn-border);
+  color: var(--status-warn-text);
+}
+
+.cap-loc-age.loc-age-bad {
+  background: var(--status-bad-soft);
+  border-color: var(--status-bad-border);
+  color: var(--status-bad-text);
+}
+
+.cap-loc-age.loc-age-muted {
+  color: var(--text-muted);
+  border-color: var(--border-neutral);
+}
+
+.cap-loc-vis {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+
+.cap-map-popup {
+  font-family: var(--font-sans);
+  direction: rtl;
+  text-align: right;
+  min-width: 180px;
+}
+
+.cap-map-popup-head {
+  font-size: var(--text-xs);
+  margin-block-end: var(--space-1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sc[data-go]:active,
   .admin-bottom-dock button[data-t].active .dock-ico {

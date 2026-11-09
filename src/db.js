@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended','deleted')),
   business_name TEXT, address TEXT, lat REAL, lng REAL,
   online INTEGER NOT NULL DEFAULT 0,
-  last_lat REAL, last_lng REAL, last_loc_at INTEGER,
+  last_lat REAL, last_lng REAL, last_loc_at INTEGER, last_loc_vis TEXT,
   last_assigned_at INTEGER NOT NULL DEFAULT 0,
   token_version INTEGER NOT NULL DEFAULT 0,
   failed_logins INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +178,7 @@ if (usersMeta?.sql && (!usersMeta.sql.includes("'zone_admin'") || !usersMeta.sql
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended','deleted')),
       business_name TEXT, address TEXT, lat REAL, lng REAL,
       online INTEGER NOT NULL DEFAULT 0,
-      last_lat REAL, last_lng REAL, last_loc_at INTEGER,
+      last_lat REAL, last_lng REAL, last_loc_at INTEGER, last_loc_vis TEXT,
       last_assigned_at INTEGER NOT NULL DEFAULT 0,
       token_version INTEGER NOT NULL DEFAULT 0,
       failed_logins INTEGER NOT NULL DEFAULT 0,
@@ -209,6 +209,12 @@ if (usersMeta?.sql && (!usersMeta.sql.includes("'zone_admin'") || !usersMeta.sql
 const ordersMeta = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'");
 if (ordersMeta?.sql && !ordersMeta.sql.includes('delay_until')) {
   await client.execute('ALTER TABLE orders ADD COLUMN delay_until INTEGER');
+}
+
+// Migrate existing databases where `users` was created before `last_loc_vis` column existed
+const usersVisMeta = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
+if (usersVisMeta?.sql && !usersVisMeta.sql.includes('last_loc_vis')) {
+  await client.execute('ALTER TABLE users ADD COLUMN last_loc_vis TEXT');
 }
 
 export const getSetting = async (k, def) =>
