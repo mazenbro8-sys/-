@@ -109,8 +109,18 @@ authScreen('merchant', (user) => {
   };
 
   const LIVE = ['searching', 'offered', 'accepted', 'picked_up', 'arrived'];
-  function upsert(o) { orders.set(o.id, o); render(); if (selected === o.id) track(o); }
-  const capLink = (o) => o.captain ? `<a href="#" data-cap="${o.id}">🛵 ${esc(o.captain.name)} • 📞</a>` : '<span class="mut">— جاري التعيين —</span>';
+  function upsert(o) {
+    const prev = orders.get(o.id);
+    if (prev?.status_text && ['searching', 'offered'].includes(o.status) && !o.captain) {
+      o.status_text = o.status_text || prev.status_text;
+    }
+    orders.set(o.id, o);
+    render();
+    if (selected === o.id) track(o);
+  }
+  const capLink = (o) => o.captain
+    ? `<a href="#" data-cap="${o.id}">🛵 ${esc(o.captain.name)} • 📞</a>`
+    : `<span class="mut">${o.status_text ? `🔄 ${esc(o.status_text)}` : '— جاري التعيين —'}</span>`;
 
   function render() {
     const list = [...orders.values()].sort((a, b) => b.id - a.id);
@@ -211,6 +221,15 @@ authScreen('merchant', (user) => {
       upsert(m.order);
       if (prev && prev.status !== m.order.status && m.order.status === 'accepted') toast(`الكابتن ${m.order.captain?.name} قبل الطلب #${m.order.id}`);
       if (m.order.status === 'expired') toast(`لم يتوفر كابتن للطلب #${m.order.id}`);
+    } else if (m.type === 'order_update') {
+      const o = orders.get(m.order_id);
+      const txt = m.status_text || m.message || 'جاري البحث عن كابتن آخر...';
+      if (o) {
+        o.status_text = txt;
+        render();
+        if (selected === o.id) track(o);
+      }
+      toast(txt);
     } else if (m.type === 'admin_notice' && m.message) {
       toast(m.message, 7000);
     } else if (m.type === 'loc') {

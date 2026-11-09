@@ -56,11 +56,15 @@ export async function viewOrder(o, role) {
 export async function computeShortage(zoneId = null) {
   const hasZ = zoneId != null;
   const now = Date.now();
-  const searchingRows = hasZ
-    ? await db.all("SELECT * FROM orders WHERE status='searching' AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
-    : await db.all("SELECT * FROM orders WHERE status='searching' AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now);
+  const waitingRows = hasZ
+    ? await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
+    : await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now);
   const checked = await Promise.all(
-    searchingRows.map(async (o) => {
+    waitingRows.map(async (o) => {
+      const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
+      const isTimedOut = now - effectiveStart >= config.shortageTimeoutMs;
+      if (isTimedOut) return viewOrder(o, 'admin');
+      if (o.status !== 'searching') return null;
       const untriedCap = await db.get(
         `SELECT 1 FROM users u
          WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
@@ -170,20 +174,34 @@ export async function dispatchOrder(orderId) {
   return !!offered;
 }
 
-/** Offer → back to the pool (rejected / timed out). */
+/** Offer → back to the pool (rejected / timed out). Silently redispatches to next available captain. */
 export async function releaseOffer(orderId, outcome) {
   let prevCaptainId = null;
+  let merchantId = null;
   await tx(async () => {
     const o = await db.get("SELECT * FROM orders WHERE id=? AND status='offered'", orderId);
     if (!o) return;
     prevCaptainId = o.offered_captain_id;
+    merchantId = o.merchant_id;
     await db.run("UPDATE offers SET outcome=? WHERE order_id=? AND captain_id=? AND outcome='pending'", outcome, o.id, o.offered_captain_id);
     await db.run("UPDATE orders SET status='searching', offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?", o.id);
     await addEvent(o.id, outcome, o.offered_captain_id);
   });
   if (prevCaptainId) sendTo(prevCaptainId, { type: 'offer_end', order_id: orderId, reason: outcome });
-  await dispatchOrder(orderId);
-  await notifyOrder(orderId);
+  const reoffered = await dispatchOrder(orderId);
+  if (reoffered) {
+    if (merchantId) {
+      sendTo(merchantId, {
+        type: 'order_update',
+        order_id: orderId,
+        status: 'offered',
+        status_text: 'جاري البحث عن كابتن آخر...',
+        message: 'جاري البحث عن كابتن بديل...',
+      });
+    }
+  } else {
+    await notifyOrder(orderId);
+  }
 }
 
 export async function closeOrder(orderId, status, { actor, reason, withCommission = false, liability = 0, liabilityReason = null } = {}) {
@@ -213,9 +231,10 @@ export async function closeOrder(orderId, status, { actor, reason, withCommissio
   await notifyOrder(orderId);
 }
 
-/** Periodic tick: expire offers, (re)dispatch waiting orders, expire stale searches. */
+/** Periodic tick: expire offers, (re)dispatch waiting orders, trigger 5m shortage timeout, expire stale searches. */
 export function startDispatcher() {
   let running = false;
+  const alertedTimeouts = new Set();
   setInterval(async () => {
     if (running) return;
     running = true;
@@ -224,11 +243,22 @@ export function startDispatcher() {
       for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
         await releaseOffer(o.id, 'timeout');
       }
-      for (const o of await db.all("SELECT id, created_at, delay_until FROM orders WHERE status='searching'")) {
+      for (const o of await db.all("SELECT id, status, created_at, delay_until FROM orders WHERE status IN ('searching','offered')")) {
         if (o.delay_until && o.delay_until > now) continue;
         const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
-        if (now - effectiveStart > config.searchMaxMs) await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
-        else await dispatchOrder(o.id);
+        const elapsed = now - effectiveStart;
+        if (o.status === 'searching') {
+          if (elapsed > config.searchMaxMs) {
+            await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
+            alertedTimeouts.delete(o.id);
+            continue;
+          }
+          await dispatchOrder(o.id);
+        }
+        if (elapsed >= config.shortageTimeoutMs && !alertedTimeouts.has(o.id)) {
+          alertedTimeouts.add(o.id);
+          await notifyOrder(o.id);
+        }
       }
     } catch (e) { console.error('dispatcher', e); }
     finally { running = false; }

@@ -155,7 +155,7 @@ authScreen('admin', (user) => {
       <div class="row-head shortage-panel-head">
         <div class="shortage-title-wrap">
           <h3>⚠️ لوحة تحكم الطلب المرفوض (${shortage.orders.length})</h3>
-          <span class="shortage-sub">رفض جميع الكباتن المتاحين استلام الطلب — اختر الإجراء الفوري:</span>
+          <span class="shortage-sub">رفض جميع الكباتن المتاحين استلام الطلب أو تجاوز الانتظار 5 دقائق — اختر الإجراء الفوري:</span>
         </div>
         <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم</button>
       </div>

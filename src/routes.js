@@ -744,7 +744,7 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
   const now = Date.now();
   await tx(async () => {
     const newStatus = ['picked_up', 'arrived'].includes(o.status) ? o.status : 'accepted';
-    await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
+    await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
       'UPDATE orders SET status=?, captain_id=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
       newStatus, cap.id, now, id
@@ -767,7 +767,7 @@ A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
   const oldOfferedId = o.offered_captain_id;
   if (!oldCapId && !oldOfferedId) throw bad('الطلب ليس مسنداً لأي كابتن حالياً');
   await tx(async () => {
-    await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
+    await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
       "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?",
       Date.now(), id
@@ -809,7 +809,7 @@ A.post('/orders/:id/delay', wrap(async (req, res) => {
   const delayUntil = Date.now() + minutes * 60_000;
   const oldOfferedId = o.offered_captain_id;
   await tx(async () => {
-    await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
+    await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
       "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=? WHERE id=?",
       delayUntil, id

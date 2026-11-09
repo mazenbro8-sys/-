@@ -146,6 +146,48 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(cancelRejRes.data.ok, true);
   assert.equal((await call(`/admin/orders/${oBusy.id}`, 'GET', null, admin)).data.status, 'cancelled');
 
+  // Silent Auto-Redispatch across 3 online captains:
+  // Captain 1 rejects -> goes to Captain 2 (no shortage alert)
+  // Captain 2 rejects -> goes to Captain 3 (no shortage alert)
+  // Captain 3 rejects -> NOW shortage.alert === true!
+  await reg('captain', '0933333333');
+  const c3 = await login('0933333333');
+  await call('/captain/online', 'POST', { online: true }, c3);
+  const allThree = [c1, c2, c3];
+  const o3 = (await call('/merchant/orders', 'POST', { customer_address: 'أبو رمانة - ساحة المطاعم' }, m)).data;
+  assert.equal(o3.status, 'offered');
+  assert.equal((await call('/admin/live', 'GET', null, admin)).data.shortage.alert, false);
+
+  const findOfferedToken = async (orderId) => {
+    for (const tok of allThree) {
+      const st = (await call('/captain/state', 'GET', null, tok)).data;
+      if (st.offer?.id === orderId) return tok;
+    }
+    return null;
+  };
+
+  // Rejection 1 of 3 -> silently moves to 2nd captain, no shortage alert
+  const rCap1 = await findOfferedToken(o3.id);
+  assert.ok(rCap1);
+  await call(`/captain/offers/${o3.id}/reject`, 'POST', null, rCap1);
+  const rCap2 = await findOfferedToken(o3.id);
+  assert.ok(rCap2 && rCap2 !== rCap1);
+  assert.equal((await call('/admin/live', 'GET', null, admin)).data.shortage.alert, false);
+
+  // Rejection 2 of 3 -> silently moves to 3rd captain, no shortage alert
+  await call(`/captain/offers/${o3.id}/reject`, 'POST', null, rCap2);
+  const rCap3 = await findOfferedToken(o3.id);
+  assert.ok(rCap3 && rCap3 !== rCap1 && rCap3 !== rCap2);
+  assert.equal((await call('/admin/live', 'GET', null, admin)).data.shortage.alert, false);
+
+  // Rejection 3 of 3 -> all 3 online captains rejected, NOW shortage alert triggers!
+  await call(`/captain/offers/${o3.id}/reject`, 'POST', null, rCap3);
+  assert.equal(await findOfferedToken(o3.id), null);
+  const after3Rej = (await call('/admin/live', 'GET', null, admin)).data;
+  assert.equal(after3Rej.shortage.alert, true);
+  assert.ok(after3Rej.shortage.orders.some((x) => x.id === o3.id));
+  await call(`/admin/orders/${o3.id}/cancel`, 'POST', { reason: 'انتهاء اختبار التدوير' }, admin);
+
   // Zone Admin RBAC & multi-tenancy isolation
   const z2 = await call('/admin/zones', 'POST', { name: 'المالكي' }, admin);
   assert.equal(z2.status, 201);

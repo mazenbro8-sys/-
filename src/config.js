@@ -32,6 +32,7 @@ export const config = {
   jwtTtl: '30d',
   prod: process.env.NODE_ENV === 'production',
   offerTimeoutMs: Number(process.env.OFFER_TIMEOUT_MS || 30_000), // 30 seconds
+  shortageTimeoutMs: Number(process.env.SHORTAGE_TIMEOUT_MS || 5 * 60_000), // 5 minutes
   searchMaxMs: 10 * 60_000,
   activeLocIntervalMs: 10_000,
   idleLocIntervalMs: 60_000,
