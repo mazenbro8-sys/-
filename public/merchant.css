@@ -87,11 +87,6 @@ body.mt thead th {
 }
 #liveRows tr:last-child td, #rows tr:last-child td { border-block-end: none; }
 #liveRows tr:hover td, #rows tr:hover td { background: var(--surface-hover); }
-#liveRows.skeleton, #rows.skeleton {
-  min-height: calc(var(--touch-jumbo) * 3);
-  background: var(--bg-subtle);
-  animation: histSkeletonPulse var(--dur-slow) var(--ease-standard) infinite;
-}
 #trkinfo {
   padding: var(--space-3) var(--space-4);
   margin-block-end: var(--space-3);
@@ -140,6 +135,5 @@ button[data-sel] { min-height: var(--touch-min); padding: var(--space-2) var(--s
   #heroBtn, .hero-btn { font-size: var(--text-lg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #liveRows.skeleton, #rows.skeleton { animation: none; }
   #heroBtn:active:not(:disabled), .hero-btn:active:not(:disabled) { transform: none; }
 }

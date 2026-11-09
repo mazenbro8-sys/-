@@ -1144,7 +1144,6 @@ a:hover { text-decoration: underline; }
   header h1 { font-size: 15.5px; }
   #auth .card.hero, .vault-card { padding: 26px 18px 22px; border-radius: 24px; }
   .captain-hero-card { padding: 18px 16px; border-radius: 22px; }
-  .stepper .step { font-size: 11.5px; padding: 8px 4px; }
   th, td { padding: 9px 7px; font-size: 13px; }
 }
 @media (pointer: coarse) {
@@ -1384,30 +1383,11 @@ header, .panther-header {
 
 
 /* ========== JS-friendly utility colours (replaces inline hex in template literals) ========== */
-.clr-ok       { color: var(--c-22c55e); }
 .clr-ok-soft  { color: var(--c-86efac); }
 .clr-warn     { color: var(--c-fbbf24); }
-.clr-warn-hot { color: var(--c-fde68a); }
-.clr-bad      { color: var(--c-bad); }
 .clr-bad-soft { color: var(--c-fca5a5); }
-.clr-bad-pale { color: var(--c-fecaca); }
-.clr-zinc     { color: var(--c-a1a1aa); }
-.clr-zinc-lt  { color: var(--c-e4e4e7); }
-.clr-white    { color: var(--c-ink); }
 .clr-near-wht { color: var(--c-f4f4f5); }
-
-.bg-glass-overlay { background: var(--c-000000-a700); backdrop-filter: blur(4px); }
-.bg-glass-heavy   { background: var(--c-000000-a780); backdrop-filter: blur(6px); }
-.bg-dark-card      { background: var(--c-18181b); color: var(--c-ink); }
-.bg-warn-subtle    { background: var(--c-eab308-a180); }
-.bg-ok-subtle      { background: var(--c-22c55e-a080); }
-.bg-bad-subtle     { background: var(--c-ef4444-a160); }
-.bg-brand-subtle   { background: var(--c-ff6b00-a140); }
-.bg-white-subtle   { background: var(--c-ffffff-a040); }
-.bd-warn           { border: 1px solid var(--c-f59e0b-a200); }
-.bd-ok             { border: 1px solid var(--c-22c55e-a300); }
-.bd-bad            { border: 1px solid var(--c-ef4444-a350); }
-.accent-warn       { accent-color: var(--c-f59e0b); }
+.accent-warn  { accent-color: var(--c-f59e0b); }
 
 
 /* ===== BATCH 4 v3 — Captain CSS (merged) ===== */
@@ -1802,19 +1782,6 @@ input[type="search"]:focus-visible {
   border: var(--border-w-thin) solid var(--border-neutral);
 }
 
-@keyframes histSkeletonPulse {
-  0%, 100% { opacity: var(--opacity-muted); }
-  50%      { opacity: var(--opacity-disabled); }
-}
-
-.hist-card.skeleton {
-  min-height: calc(var(--touch-jumbo) + var(--space-5));
-  border-radius: var(--radius-md);
-  background: var(--bg-subtle);
-  border: var(--border-w-thin) solid var(--border-neutral);
-  animation: histSkeletonPulse var(--dur-slow) var(--ease-standard) infinite;
-}
-
 /* ===== 4. #tab-settings layout + .setting-row structure ===== */
 .setting-row {
   display: flex;
@@ -1953,17 +1920,6 @@ input[type="search"]:focus-visible {
   border-radius: var(--radius-md);
 }
 
-/* ===== 6. Offline banner (in .card, uses --status-warn-*) ===== */
-.offline-banner {
-  background: var(--status-warn-soft);
-  border: var(--border-w-thin) solid var(--status-warn-border);
-  color: var(--status-warn-text);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-bold);
-}
-
 /* ===== 7. Cross-tab: #toast position above #bottomNav ===== */
 #toast {
   position: fixed;
@@ -2005,9 +1961,6 @@ body:has(.bottom-nav) #toast {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hist-card.skeleton {
-    animation: none;
-  }
   button:active:not(:disabled),
   a.btn-nav:active,
   #homeActCard:active {

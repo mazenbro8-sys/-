@@ -171,7 +171,16 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.loadUrl("https://" + VIRTUAL_HOST + "/index.html");
+        try (InputStream testAsset = getAssets().open("public/index.html")) {
+            webView.loadUrl("https://" + VIRTUAL_HOST + "/index.html");
+        } catch (Exception e) {
+            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+            String fallbackSrv = prefs.getString("server_url", "https://mashwar-app.onrender.com");
+            if (fallbackSrv == null || fallbackSrv.isEmpty()) {
+                fallbackSrv = "https://mashwar-app.onrender.com";
+            }
+            webView.loadUrl(fallbackSrv.replaceAll("/+$", "") + "/captain");
+        }
     }
 
     private void requestAppPermissions() {

@@ -540,7 +540,7 @@ authScreen('admin', (user) => {
           if (td.querySelector('.cap-cell-wrap')) td.classList.add('td-cap-cell');
           if (td.querySelector('.user-more-btn')) td.classList.add('td-user-actions');
           if (td.querySelector('.mob-card-actions')) td.classList.add('td-actions', 'td-order-actions');
-          else if (td.querySelector('.order-action-bar, button[data-st], button[data-c], button[data-r]')) {
+          else if (td.querySelector('.order-action-bar, button[data-c], button[data-r]')) {
             td.classList.add('td-actions');
           }
         });

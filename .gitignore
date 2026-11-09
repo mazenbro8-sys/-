@@ -1,11 +1,14 @@
-node_modules
-data
+node_modules/
+data/
 .env
+_trash/
+/*.apk
 android-captain/build
 android-captain/app/src/main/assets/public
 android-captain/*.jks
+*.bak
 *.bak-*
-_trash/
+*.old
 *.jks
 *.keystore
 *.log

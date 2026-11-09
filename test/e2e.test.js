@@ -140,8 +140,11 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(zaUsers[0].zone_id, z2Id);
   const z2CapId = zaUsers[0].id;
 
-  // Segmented Users Tabs & Zone Filter API checks
+  // Segmented Users Tabs & Zone Filter API checks + Zone Injection Exploit Tests
   assert.equal((await call('/admin/users?role=admin', 'GET', null, zaToken)).status, 403);
+  const zaInjectedQuery = (await call('/admin/users?zone_id=1', 'GET', null, zaToken)).data;
+  assert.equal(zaInjectedQuery.length, 1);
+  assert.equal(zaInjectedQuery[0].zone_id, z2Id);
   const allAdmins = (await call('/admin/users?role=admin', 'GET', null, admin)).data;
   assert.ok(allAdmins.some((u) => u.role === 'admin') && allAdmins.some((u) => u.role === 'zone_admin'));
   const z1Caps = (await call('/admin/users?role=captain&zone_id=1', 'GET', null, admin)).data;
@@ -150,7 +153,9 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(z2Caps.length, 1);
   assert.equal(z2Caps[0].id, z2CapId);
 
-  // Full user edit via PATCH /admin/users/:id
+  // Full user edit via PATCH /admin/users/:id + Cross-Zone PATCH exploit checks
+  assert.equal((await call(`/admin/users/${z1Caps[0].id}`, 'PATCH', { name: 'اختراق' }, zaToken)).status, 404);
+  assert.equal((await call(`/admin/users/${z2CapId}`, 'PATCH', { zone_id: 1 }, zaToken)).status, 403);
   assert.equal((await call(`/admin/users/${z2CapId}`, 'PATCH', { name: 'كابتن المالكي المعدّل' }, zaToken)).status, 200);
   assert.equal((await call('/admin/users?role=captain', 'GET', null, zaToken)).data[0].name, 'كابتن المالكي المعدّل');
 
@@ -162,8 +167,12 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal((await call(`/admin/users/${z1Caps[0].id}`, 'DELETE', null, zaToken)).status, 403);
   assert.equal((await call(`/admin/users/${superAdminRow.id}`, 'DELETE', null, admin)).status, 400); // self delete blocked
 
-  // Zone Admin can soft-delete a captain in their own zone
+  // Zone Admin can soft-delete a captain in their own zone & existing JWT is immediately invalidated
+  const z2CapToken = await login('0966666669');
+  assert.equal((await call('/me', 'GET', null, z2CapToken)).status, 200);
   assert.equal((await call(`/admin/users/${z2CapId}`, 'DELETE', null, zaToken)).status, 200);
+  assert.equal((await call('/me', 'GET', null, z2CapToken)).status, 401);
+  assert.equal((await call('/captain/state', 'GET', null, z2CapToken)).status, 401);
   assert.equal((await call('/admin/users?role=captain', 'GET', null, zaToken)).data.length, 0);
   assert.equal((await call('/auth/login', 'POST', { phone: '0966666669', password: 'Passw0rdX' })).status, 403);
 

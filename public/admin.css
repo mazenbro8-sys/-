@@ -302,16 +302,6 @@ body.ad tbody td {
 body.ad tbody tr:last-child td { border-block-end: none; }
 body.ad tbody tr:hover td { background: var(--surface-hover); }
 
-#dashOrderRows.skeleton,
-#lrows.skeleton,
-#lcaps.skeleton,
-#lmerchs.skeleton,
-#orderRows.skeleton {
-  min-height: calc(var(--touch-jumbo) * 3);
-  background: var(--bg-subtle);
-  animation: histSkeletonPulse var(--dur-slow) var(--ease-standard) infinite;
-}
-
 /* ---------- Row Action Groups & Captain Assignment Controls ---------- */
 .cap-cell-wrap {
   display: flex;
@@ -880,8 +870,7 @@ dialog.action-sheet[open]:where(:not([data-closing]))::backdrop {
   font-size: var(--text-xs);
 }
 
-select[data-assign-sel],
-select[data-zone] {
+select[data-assign-sel] {
   min-height: var(--touch-min);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-xs);
@@ -898,8 +887,6 @@ button[data-redispatch],
 button[data-x],
 button[data-d],
 button[data-add-order],
-button[data-st],
-button[data-pw],
 button[data-c],
 button[data-r],
 button[data-s] {
@@ -1364,11 +1351,6 @@ body.ad select:focus-visible {
     flex: 1 1 auto;
   }
 
-  body.ad tbody td select[data-zone] {
-    width: auto;
-    min-width: 140px;
-  }
-
   .users-zone-filter-wrap {
     flex: 1 1 100%;
   }
@@ -1390,13 +1372,6 @@ body.ad select:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #dashOrderRows.skeleton,
-  #lrows.skeleton,
-  #lcaps.skeleton,
-  #lmerchs.skeleton,
-  #orderRows.skeleton {
-    animation: none;
-  }
   .sc[data-go]:active,
   .admin-bottom-dock button[data-t].active .dock-ico {
     transform: none;
