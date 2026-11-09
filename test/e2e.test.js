@@ -256,6 +256,23 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.ok((await call('/admin/users?role=captain&include_deleted=true', 'GET', null, admin)).data.some((u) => u.id === delCap.id && u.status === 'deleted'));
   assert.equal((await call('/auth/login', 'POST', { phone: delCap.phone, password: 'Passw0rdX' })).status, 403);
   assert.equal((await call('/admin/orders', 'GET', null, admin)).data.length, ordersBeforeDel);
+
+  // Captain password change via /auth/password invalidates old token and requires new password
+  const pwCapPhone = '0933333331';
+  const pwCapToken = c1;
+  assert.equal((await call('/me', 'GET', null, pwCapToken)).status, 200);
+  assert.equal((await call('/auth/password', 'POST', { old_password: 'WrongOld1', new_password: 'NewPass99' }, pwCapToken)).status, 403);
+  const pwChangeRes = await call('/auth/password', 'POST', { old_password: 'Passw0rdX', new_password: 'NewPass99' }, pwCapToken);
+  assert.equal(pwChangeRes.status, 200);
+  assert.equal(pwChangeRes.data.ok, true);
+  // Old token is invalidated immediately because token_version incremented
+  assert.equal((await call('/me', 'GET', null, pwCapToken)).status, 401);
+  assert.equal((await call('/captain/state', 'GET', null, pwCapToken)).status, 401);
+  // Old password rejected, new password succeeds
+  assert.equal((await call('/auth/login', 'POST', { phone: pwCapPhone, password: 'Passw0rdX' })).status, 401);
+  const newCapLogin = await call('/auth/login', 'POST', { phone: pwCapPhone, password: 'NewPass99' });
+  assert.equal(newCapLogin.status, 200);
+  assert.equal((await call('/me', 'GET', null, newCapLogin.data.token)).status, 200);
 });
 
 test('login rate / lockout and bad input', async () => {

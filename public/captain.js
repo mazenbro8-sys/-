@@ -661,7 +661,7 @@ authScreen('captain', (user) => {
   $('#pwForm').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
-    const r = await act(() => api('/me/password', 'POST', f), '✅ تم تغيير كلمة المرور بنجاح');
+    const r = await act(() => api('/auth/password', 'POST', f), '✅ تم تغيير كلمة المرور بنجاح');
     if (r) e.target.reset();
   };
   $('#logoutBtn').onclick = async () => {
