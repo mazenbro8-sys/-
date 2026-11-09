@@ -17,9 +17,9 @@ android {
     signingConfigs {
         release {
             storeFile file("../release-key.jks")
-            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "panther123"
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: { throw new GradleException("Missing required environment variable KEYSTORE_PASSWORD for APK signing") }()
             keyAlias System.getenv("KEY_ALIAS") ?: "panther"
-            keyPassword System.getenv("KEY_PASSWORD") ?: "panther123"
+            keyPassword System.getenv("KEY_PASSWORD") ?: { throw new GradleException("Missing required environment variable KEY_PASSWORD for APK signing") }()
         }
     }
 

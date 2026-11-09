@@ -68,16 +68,23 @@ jar -uf "$StageDir\unaligned.apk" -C "$StageDir\dex" classes.dex -C "$StageDir\s
 Write-Host "7) Aligning and signing panther-captain.apk..." -ForegroundColor Cyan
 & $ZipAlign -f 4 "$StageDir\unaligned.apk" "$StageDir\aligned.apk"
 
+$KsPass = $env:KEYSTORE_PASSWORD
+$KeyPass = if ($env:KEY_PASSWORD) { $env:KEY_PASSWORD } else { $KsPass }
+$KeyAlias = if ($env:KEY_ALIAS) { $env:KEY_ALIAS } else { "panther" }
+if (-not $KsPass -or -not $KeyPass) {
+    throw "Missing required environment variable KEYSTORE_PASSWORD (and/or KEY_PASSWORD) for APK signing."
+}
+
 $Keystore = "$StageDir\release-key.jks"
 if (Test-Path "$Root\android-captain\release-key.jks") {
     Copy-Item -Force "$Root\android-captain\release-key.jks" $Keystore
 } else {
-    keytool -genkeypair -v -keystore $Keystore -alias panther -keyalg RSA -keysize 2048 -validity 10000 `
-        -storepass panther123 -keypass panther123 -dname "CN=PANTHER Delivery, O=PANTHER, C=SY"
+    keytool -genkeypair -v -keystore $Keystore -alias $KeyAlias -keyalg RSA -keysize 2048 -validity 10000 `
+        -storepass $KsPass -keypass $KeyPass -dname "CN=PANTHER Delivery, O=PANTHER, C=SY"
     Copy-Item -Force $Keystore "$Root\android-captain\release-key.jks"
 }
 
-& $ApkSigner sign --ks $Keystore --ks-pass pass:panther123 --key-pass pass:panther123 --out "$StageDir\panther-captain.apk" "$StageDir\aligned.apk"
+& $ApkSigner sign --ks $Keystore --ks-key-alias $KeyAlias --ks-pass "pass:$KsPass" --key-pass "pass:$KeyPass" --out "$StageDir\panther-captain.apk" "$StageDir\aligned.apk"
 
 $OutApk = "$Root\public\panther-captain.apk"
 Copy-Item -Force "$StageDir\panther-captain.apk" $OutApk
