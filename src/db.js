@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS orders (
   captain_id INTEGER REFERENCES users(id),
   offered_captain_id INTEGER REFERENCES users(id),
   offer_expires_at INTEGER,
+  delay_until INTEGER,
   commission INTEGER NOT NULL DEFAULT 0,
   liability INTEGER NOT NULL DEFAULT 0,
   liability_reason TEXT,
@@ -202,6 +203,12 @@ if (usersMeta?.sql && (!usersMeta.sql.includes("'zone_admin'") || !usersMeta.sql
     COMMIT;
     PRAGMA foreign_keys = ON;
   `);
+}
+
+// Migrate existing databases where `orders` was created before `delay_until` column existed
+const ordersMeta = await db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'");
+if (ordersMeta?.sql && !ordersMeta.sql.includes('delay_until')) {
+  await client.execute('ALTER TABLE orders ADD COLUMN delay_until INTEGER');
 }
 
 export const getSetting = async (k, def) =>

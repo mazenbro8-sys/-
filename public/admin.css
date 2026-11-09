@@ -193,6 +193,67 @@ section.main {
   background: var(--status-bad);
   color: var(--text-on-bad);
 }
+.shortage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.shortage-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.shortage-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.shortage-sub {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.shortage-orders-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+}
+.shortage-order-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-glass-2);
+  border: var(--border-w-thin) solid var(--status-bad-border);
+}
+.shortage-order-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.shortage-serial {
+  font-size: var(--text-sm);
+}
+.shortage-merchant {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.shortage-addr {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.shortage-order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.shortage-order-actions > button {
+  flex: 1 1 auto;
+}
 
 /* ---------- KPIs, Feeds & Timelines ---------- */
 .sc {
@@ -844,6 +905,23 @@ dialog.action-sheet[open]:where(:not([data-closing]))::backdrop {
 .sheet-subform-actions > button {
   flex: 1 1 130px;
   min-height: var(--touch-comfortable);
+}
+
+.delay-pills-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.delay-pill-btn {
+  min-height: var(--touch-comfortable);
+  font-weight: var(--weight-bold);
+}
+
+.delay-pill-btn.active {
+  background: var(--brand-primary);
+  color: var(--text-on-brand);
+  border-color: var(--brand-primary);
 }
 
 .cap-busy-stack {

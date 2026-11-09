@@ -131,26 +131,52 @@ authScreen('admin', (user) => {
   let refreshTimer;
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
 
+  function orderStatusBadge(o) {
+    const delayed = o?.delay_until && o.delay_until > Date.now()
+      ? ` <span class="badge b-offered">⏱️ مؤجل (${Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000))} د)</span>`
+      : '';
+    return badge(o.status) + delayed;
+  }
+
   function updateShortageBanner(shortage) {
     const box = $('#shortageBox');
     if (!box) return;
     if (!shortage || !shortage.alert || !shortage.orders?.length) {
       box.innerHTML = '';
-      box.classList.toggle('hide', !shortage || shortage.length === 0);
+      box.classList.add('hide');
       mutedShortageKey = '';
       stopAdminAlarm();
       return;
     }
+    box.classList.remove('hide');
+    rememberOrders(shortage.orders);
     const key = shortage.orders.map((o) => `${o.id}:${o.status}`).join(',');
-    const o = shortage.orders[0];
-    box.innerHTML = `<div class="card offer">
-  <div class="row-head">
-    <h3>⚠️ طلب مرفوض من كل الكباتن</h3>
-    <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم</button>
-  </div>
-  <p>الطلب <b dir="ltr">${serialNo(o)}</b> — ${esc(o.customer_address || '')}</p>
-  <button type="button" class="sec" data-quick-assign="${o.id}">➕ إسناد لكابتن</button>
-</div>`;
+    box.innerHTML = `<div class="card offer shortage-panel">
+      <div class="row-head shortage-panel-head">
+        <div class="shortage-title-wrap">
+          <h3>⚠️ لوحة تحكم الطلب المرفوض (${shortage.orders.length})</h3>
+          <span class="shortage-sub">رفض جميع الكباتن المتاحين استلام الطلب — اختر الإجراء الفوري:</span>
+        </div>
+        <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم</button>
+      </div>
+      <div class="shortage-orders-list">
+        ${shortage.orders.map((o) => `
+          <div class="shortage-order-card" data-shortage-oid="${o.id}">
+            <div class="shortage-order-info">
+              <span class="shortage-serial" dir="ltr">${serialNo(o)}</span>
+              <span class="shortage-merchant">🏪 ${esc(o.merchant?.name || '—')}</span>
+              <span class="shortage-addr">📍 ${esc(o.customer_address || '—')}</span>
+            </div>
+            <div class="shortage-order-actions">
+              <button type="button" class="ok sm" data-open-sheet="${o.id}" data-sheet-mode="assign">🛵 إسناد لكابتن</button>
+              <button type="button" class="sec sm" data-open-sheet="${o.id}" data-sheet-mode="delay">⏱️ تأخير الطلب</button>
+              <button type="button" class="sec sm" data-open-sheet="${o.id}" data-sheet-mode="notify">🔔 تنبيه المنشأة</button>
+              <button type="button" class="bad sm" data-open-sheet="${o.id}" data-sheet-mode="cancel">✕ إلغاء الطلب</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
     $('#muteShortageBtn').onclick = () => {
       mutedShortageKey = key;
       stopAdminAlarm();
@@ -187,7 +213,7 @@ authScreen('admin', (user) => {
       <div class="assign-input-group">
         <select data-assign-sel="${o.id}">
           <option value="">${o.captain ? '🔄 تحويل لكابتن...' : '🛵 تعيين كابتن...'}</option>
-          ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+          ${capList.map((c) => `<option value="${c.id}">${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
         </select>
         <button type="button" data-assign-btn="${o.id}" title="تثبيت تعيين الكابتن">تعيين ✓</button>
       </div>
@@ -217,8 +243,17 @@ authScreen('admin', (user) => {
   async function refreshCurrentTab() {
     if (tab === 'dash') await views.dash();
     else if (tab === 'live') { clearTimeout(refreshTimer); await loadLive(); }
-    else if (tab === 'orders') await views.orders();
-    else if (tab === 'users' && $('#nu')?.classList.contains('hide')) await views.users();
+    else {
+      try {
+        const d = await api('/admin/live');
+        liveCache = d;
+        rememberOrders(d.orders);
+        rememberOrders(d.recentOrders);
+        updateShortageBanner(d.shortage);
+      } catch {}
+      if (tab === 'orders') await views.orders();
+      else if (tab === 'users' && $('#nu')?.classList.contains('hide')) await views.users();
+    }
   }
 
   let supportsDisplayTransition;
@@ -284,25 +319,210 @@ authScreen('admin', (user) => {
     });
 
     attachLightDismissFallback(dlg, closeActionSheet);
+    return dlg;
+  }
 
-    dlg.addEventListener('click', async (ev) => {
+  async function openActionSheet(orderId, initialMode = 'more') {
+    const oid = Number(orderId);
+    let o = ordersIndex.get(oid)
+      || (liveCache.orders || []).find((x) => x.id === oid)
+      || (liveCache.recentOrders || []).find((x) => x.id === oid);
+    if (!o) {
+      try { o = await api(`/admin/orders/${oid}`); } catch (er) { return toast(er.message); }
+    }
+    if (!liveCache.captains?.length) {
+      try { liveCache = await api('/admin/live'); } catch {}
+    }
+    const capList = liveCache.captains || [];
+    const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
+    const isWaiting = ['searching', 'offered'].includes(o.status);
+    const canCancel = !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
+    const hasCap = Boolean(o.captain || o.captain_id);
+
+    const dlg = ensureActionSheetDialog();
+    dlg.removeAttribute('data-closing');
+
+    const headerMarkup = `
+      <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
+      <div class="sheet-header">
+        <div class="sheet-title-group">
+          <h3 id="ashTitle">طلب <span dir="ltr">${serialNo(o)}</span></h3>
+          ${orderStatusBadge(o)}
+        </div>
+        <button type="button" class="ghost sm sheet-close-btn" id="ashClose" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="sheet-meta">
+        <span>🏪 ${esc(o.merchant?.name || '—')}</span>
+        <span>📍 ${esc(o.customer_address || '—')}</span>
+      </div>`;
+
+    const renderMain = () => {
+      dlg.innerHTML = `${headerMarkup}
+        ${!isClosed ? `
+          <div class="sheet-assign-box">
+            <div class="sheet-section-lbl">🛵 إدارة الكابتن</div>
+            ${o.captain ? `<div class="sheet-current-cap"><a href="#" class="cap-chip" data-cap="${o.captain.id}">🛵 ${esc(o.captain.name)}</a><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب الطلب</button></div>`
+              : o.offered_captain ? `<div class="sheet-current-cap"><span class="cap-offered-chip">🔔 معروض: ${esc(o.offered_captain.name)}</span><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب العرض</button></div>`
+              : ''}
+            ${capList.length ? `
+              <div class="assign-input-group">
+                <select data-assign-sel="${o.id}">
+                  <option value="">${hasCap ? '🔄 اختيار كابتن بديل...' : '🛵 اختر كابتن للتعيين...'}</option>
+                  ${capList.map((c) => `<option value="${c.id}">${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+                </select>
+                <button type="button" class="ok sm" data-assign-btn="${o.id}">تعيين ✓</button>
+              </div>
+            ` : '<div class="mut">لا يوجد كباتن مسجلون في هذه المنطقة حالياً</div>'}
+          </div>
+        ` : ''}
+        <div class="sheet-action-list">
+          ${isWaiting ? `
+            <button type="button" class="sheet-action-btn" data-sheet-subview="delay">⏱️ تأخير الطلب</button>
+            <button type="button" class="sheet-action-btn" data-sheet-subview="notify">🔔 إرسال تنبيه للمنشأة</button>
+          ` : ''}
+          <button type="button" class="sheet-action-btn" data-sheet-detail="${o.id}">🔍 تفاصيل ومسار الطلب</button>
+          ${!isClosed ? `<button type="button" class="sheet-action-btn" data-redispatch="${o.id}">🔄 إعادة تدوير</button>` : ''}
+          ${hasCap ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ تحميل تعويض</button>` : ''}
+          ${canCancel ? `<button type="button" class="bad sheet-action-btn sheet-cancel-btn" data-sheet-subview="cancel">✕ إلغاء الطلب</button>` : ''}
+        </div>
+        <div id="sheetDetail" class="sheet-detail-slot"></div>`;
+    };
+
+    const renderDelayForm = () => {
+      dlg.innerHTML = `${headerMarkup}
+        <form id="sheetDelayForm" class="sheet-subform">
+          <label for="sheetDelayMinutes">⏱️ اختر مدة تأخير الطلب</label>
+          <div class="form-hint">سيتم إيقاف البحث التلقائي مؤقتاً وإشعار المنشأة «${esc(o.merchant?.name || 'المنشأة')}» فوراً.</div>
+          <div class="delay-pills-row" role="group" aria-label="مدة التأخير السريعة">
+            <button type="button" class="sec delay-pill-btn" data-delay-pick="10">10 دقائق</button>
+            <button type="button" class="sec delay-pill-btn active" data-delay-pick="15">15 دقيقة</button>
+            <button type="button" class="sec delay-pill-btn" data-delay-pick="30">30 دقيقة</button>
+          </div>
+          <select id="sheetDelayMinutes" name="minutes" required>
+            <option value="10">10 دقائق</option>
+            <option value="15" selected>15 دقيقة</option>
+            <option value="30">30 دقيقة</option>
+          </select>
+          <div class="sheet-subform-actions">
+            <button type="submit" class="ok" id="confirmDelayOrderBtn" autofocus>⏱️ تأكيد التأخير</button>
+            <button type="button" class="sec" data-sheet-subview="main">رجوع</button>
+          </div>
+        </form>`;
+      const selEl = dlg.querySelector('#sheetDelayMinutes');
+      const syncPills = (val) => {
+        dlg.querySelectorAll('[data-delay-pick]').forEach((b) => b.classList.toggle('active', b.dataset.delayPick === String(val)));
+      };
+      selEl.onchange = () => syncPills(selEl.value);
+      dlg.querySelector('#sheetDelayForm').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const minutes = Number(selEl.value || 15);
+        const btn = ev.submitter || dlg.querySelector('#confirmDelayOrderBtn');
+        if (btn) btn.disabled = true;
+        const updated = await act(() => api(`/admin/orders/${o.id}/delay`, 'POST', { minutes }), `تم تأخير الطلب لمدة ${minutes} دقيقة وإشعار المنشأة`);
+        if (btn) btn.disabled = false;
+        if (updated) {
+          rememberOrders([updated]);
+          await closeActionSheet();
+          await refreshCurrentTab();
+        }
+      };
+      dlg.querySelector('#confirmDelayOrderBtn')?.focus();
+    };
+
+    const renderNotifyForm = () => {
+      const defMsg = `الطلب ${serialNo(o)} متأخر قليلاً، جاري البحث عن كابتن وتأمينه بأسرع وقت.`;
+      dlg.innerHTML = `${headerMarkup}
+        <form id="sheetNotifyForm" class="sheet-subform">
+          <label for="sheetNotifyMsg">🔔 رسالة التنبيه للمنشأة «${esc(o.merchant?.name || 'المنشأة')}»</label>
+          <div class="form-hint">ستصل الرسالة فوراً كإشعار مباشر على شاشة المنشأة.</div>
+          <div class="delay-pills-row">
+            <button type="button" class="sec sm" data-notify-preset="الطلب متأخر قليلاً، جاري البحث عن كابتن وتأمينه بأسرع وقت.">⏳ جاري تأمين كابتن</button>
+            <button type="button" class="sec sm" data-notify-preset="جميع الكباتن مشغولون بطلبات حالية، سيتم توجيه أقرب كابتن فور تفرغه.">🛵 الكباتن مشغولون حالياً</button>
+          </div>
+          <input id="sheetNotifyMsg" name="message" value="${esc(defMsg)}" required minlength="3" maxlength="250" autocomplete="off">
+          <div class="sheet-subform-actions">
+            <button type="submit" class="ok" id="confirmNotifyMerchantBtn" autofocus>🔔 تأكيد وإرسال التنبيه</button>
+            <button type="button" class="sec" data-sheet-subview="main">رجوع</button>
+          </div>
+        </form>`;
+      dlg.querySelector('#sheetNotifyForm').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const message = dlg.querySelector('#sheetNotifyMsg').value.trim();
+        if (!message) return;
+        const btn = ev.submitter || dlg.querySelector('#confirmNotifyMerchantBtn');
+        if (btn) btn.disabled = true;
+        const ok = await act(() => api(`/admin/orders/${o.id}/notify-merchant`, 'POST', { message }), 'تم إرسال التنبيه للمنشأة بنجاح');
+        if (btn) btn.disabled = false;
+        if (ok) await closeActionSheet();
+      };
+      dlg.querySelector('#sheetNotifyMsg')?.focus();
+    };
+
+    const renderCancelForm = () => {
+      dlg.innerHTML = `${headerMarkup}
+        <form id="sheetCancelForm" class="sheet-confirm-box">
+          <p id="cancelOrderDesc" class="sheet-confirm-msg">⚠️ هل أنت متأكد من إلغاء الطلب <b dir="ltr">${serialNo(o)}</b> نهائياً؟</p>
+          <label for="sheetCancelReason">سبب الإلغاء (اختياري — يُرسل للمنشأة)</label>
+          <input id="sheetCancelReason" name="reason" placeholder="مثال: عدم توفر كباتن حالياً..." maxlength="200" autocomplete="off">
+          <div class="sheet-subform-actions">
+            <button type="button" class="sec" data-sheet-subview="main" id="cancelOrderBackBtn" autofocus>تراجع</button>
+            <button type="submit" class="bad" id="confirmCancelOrderBtn" aria-describedby="cancelOrderDesc">✕ تأكيد إلغاء الطلب</button>
+          </div>
+        </form>`;
+      dlg.querySelector('#sheetCancelForm').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const reason = dlg.querySelector('#sheetCancelReason').value.trim();
+        const btn = ev.submitter || dlg.querySelector('#confirmCancelOrderBtn');
+        if (btn) btn.disabled = true;
+        const ok = await act(() => api(`/admin/orders/${o.id}/cancel`, 'POST', reason ? { reason } : {}), 'تم إلغاء الطلب');
+        if (btn) btn.disabled = false;
+        if (ok) {
+          await closeActionSheet();
+          await refreshCurrentTab();
+        }
+      };
+      dlg.querySelector('#cancelOrderBackBtn')?.focus();
+    };
+
+    dlg.onclick = async (ev) => {
       if (ev.target.closest('#ashClose')) {
         await closeActionSheet();
         return;
       }
+      const subBtn = ev.target.closest('[data-sheet-subview]');
+      if (subBtn) {
+        const sub = subBtn.dataset.sheetSubview;
+        if (sub === 'main') renderMain();
+        else if (sub === 'delay') renderDelayForm();
+        else if (sub === 'notify') renderNotifyForm();
+        else if (sub === 'cancel') renderCancelForm();
+        return;
+      }
+      const pickBtn = ev.target.closest('[data-delay-pick]');
+      if (pickBtn) {
+        const val = pickBtn.dataset.delayPick;
+        const selEl = dlg.querySelector('#sheetDelayMinutes');
+        if (selEl) selEl.value = val;
+        dlg.querySelectorAll('[data-delay-pick]').forEach((b) => b.classList.toggle('active', b.dataset.delayPick === val));
+        return;
+      }
+      const presetBtn = ev.target.closest('[data-notify-preset]');
+      if (presetBtn) {
+        const inp = dlg.querySelector('#sheetNotifyMsg');
+        if (inp) { inp.value = presetBtn.dataset.notifyPreset; inp.focus(); }
+        return;
+      }
       const detBtn = ev.target.closest('[data-sheet-detail]');
       if (detBtn) {
-        const oid = Number(detBtn.dataset.sheetDetail);
         const slot = dlg.querySelector('#sheetDetail');
-        if (slot) await detail(oid, slot);
+        if (slot) await detail(Number(detBtn.dataset.sheetDetail), slot);
         return;
       }
       const liabBtn = ev.target.closest('[data-sheet-liability]');
       if (liabBtn) {
-        const oid = Number(liabBtn.dataset.sheetLiability);
         const reason = prompt('سبب التحميل (تلف / تأخير)');
         if (reason) {
-          const ok = await act(() => api(`/admin/orders/${oid}/liability`, 'POST', { reason }), 'تم التحميل');
+          const ok = await act(() => api(`/admin/orders/${Number(liabBtn.dataset.sheetLiability)}/liability`, 'POST', { reason }), 'تم التحميل');
           if (ok) {
             await closeActionSheet();
             await refreshCurrentTab();
@@ -323,66 +543,13 @@ authScreen('admin', (user) => {
       }
       const res = await handleOrderActionClick(ev);
       if (res === 'done') await closeActionSheet();
-    });
-    return dlg;
-  }
+    };
 
-  async function openActionSheet(orderId, initialMode = 'more') {
-    const oid = Number(orderId);
-    let o = ordersIndex.get(oid)
-      || (liveCache.orders || []).find((x) => x.id === oid)
-      || (liveCache.recentOrders || []).find((x) => x.id === oid);
-    if (!o) {
-      try { o = await api(`/admin/orders/${oid}`); } catch (er) { return toast(er.message); }
-    }
-    if (!liveCache.captains?.length) {
-      try { liveCache = await api('/admin/live'); } catch {}
-    }
-    const capList = liveCache.captains || [];
-    const isClosed = ['delivered', 'cancelled', 'failed'].includes(o.status);
-    const canCancel = !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
-    const hasCap = Boolean(o.captain || o.captain_id);
+    if (initialMode === 'delay') renderDelayForm();
+    else if (initialMode === 'notify') renderNotifyForm();
+    else if (initialMode === 'cancel') renderCancelForm();
+    else renderMain();
 
-    const dlg = ensureActionSheetDialog();
-    dlg.removeAttribute('data-closing');
-    dlg.innerHTML = `
-      <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
-      <div class="sheet-header">
-        <div class="sheet-title-group">
-          <h3 id="ashTitle">طلب <span dir="ltr">${serialNo(o)}</span></h3>
-          ${badge(o.status)}
-        </div>
-        <button type="button" class="ghost sm sheet-close-btn" id="ashClose" aria-label="إغلاق">✕</button>
-      </div>
-      <div class="sheet-meta">
-        <span>🏪 ${esc(o.merchant?.name || '—')}</span>
-        <span>📍 ${esc(o.customer_address || '—')}</span>
-      </div>
-      ${!isClosed ? `
-        <div class="sheet-assign-box">
-          <div class="sheet-section-lbl">🛵 إدارة الكابتن</div>
-          ${o.captain ? `<div class="sheet-current-cap"><a href="#" class="cap-chip" data-cap="${o.captain.id}">🛵 ${esc(o.captain.name)}</a><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب الطلب</button></div>`
-            : o.offered_captain ? `<div class="sheet-current-cap"><span class="cap-offered-chip">🔔 معروض: ${esc(o.offered_captain.name)}</span><button type="button" class="sec sm" data-unassign="${o.id}">✕ سحب العرض</button></div>`
-            : ''}
-          ${capList.length ? `
-            <div class="assign-input-group">
-              <select data-assign-sel="${o.id}">
-                <option value="">${hasCap ? '🔄 اختيار كابتن بديل...' : '🛵 اختر كابتن للتعيين...'}</option>
-                ${capList.map((c) => `<option value="${c.id}">🛵 ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
-              </select>
-              <button type="button" class="ok sm" data-assign-btn="${o.id}">تعيين ✓</button>
-            </div>
-          ` : '<div class="mut">لا يوجد كباتن مسجلون في هذه المنطقة حالياً</div>'}
-        </div>
-      ` : ''}
-      <div class="sheet-action-list">
-        <button type="button" class="sheet-action-btn" data-sheet-detail="${o.id}">🔍 تفاصيل ومسار الطلب</button>
-        ${!isClosed ? `<button type="button" class="sheet-action-btn" data-redispatch="${o.id}">🔄 إعادة تدوير</button>` : ''}
-        ${hasCap ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ تحميل تعويض</button>` : ''}
-        ${canCancel ? `<button type="button" class="bad sheet-action-btn sheet-cancel-btn" data-x="${o.id}">✕ إلغاء الطلب</button>` : ''}
-      </div>
-      <div id="sheetDetail" class="sheet-detail-slot"></div>
-    `;
     if (!dlg.open) dlg.showModal();
     if (initialMode === 'assign') {
       dlg.querySelector(`[data-assign-sel="${o.id}"]`)?.focus();
@@ -438,10 +605,7 @@ authScreen('admin', (user) => {
     }
     const xEl = e.target.closest('[data-x]');
     if (xEl) {
-      if (confirm('إلغاء الطلب نهائياً؟')) {
-        const ok = await act(() => api(`/admin/orders/${xEl.dataset.x}/cancel`, 'POST'), 'تم إلغاء الطلب');
-        if (ok) { await refreshCurrentTab(); return 'done'; }
-      }
+      await openActionSheet(Number(xEl.dataset.x), 'cancel');
       return 'handled';
     }
     return false;
@@ -707,7 +871,7 @@ authScreen('admin', (user) => {
           <td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td>
           <td><b>🏪 ${esc(o.merchant?.name || '—')}</b></td>
           <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-          <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
+          <td>${orderStatusBadge(o)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
           <td>${renderOrderCaptainCell(o, capList)}</td>
           <td>${time(o.created_at)}</td>
           <td>${renderOrderRowActions(o)}</td>
@@ -1374,7 +1538,7 @@ authScreen('admin', (user) => {
         const st = $('#orderStatusFilter')?.value || '';
         const filtered = rows.filter((o) => matchOrder(o, q, st));
         $('#orderCount').textContent = `(${filtered.length} من ${rows.length})`;
-        $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td><td><b>🏪 ${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${badge(o.status)}</td><td>${renderOrderCaptainCell(o, capList)}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td>${renderOrderRowActions(o)}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
+        $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td><td><b>🏪 ${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${orderStatusBadge(o)}</td><td>${renderOrderCaptainCell(o, capList)}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td>${renderOrderRowActions(o)}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
       };
       renderOrders();
       $('#orderSearch').oninput = renderOrders;
@@ -1452,7 +1616,7 @@ authScreen('admin', (user) => {
     ordersIndex.set(o.id, o);
     const capList = liveCache.captains || [];
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
-    detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${badge(o.status)}</h3>
+    detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${orderStatusBadge(o)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
         ${!targetBox ? `<div style="margin:10px 0;padding:10px;background:var(--c-ffffff-a040);border-radius:10px">
           <b>🛵 الكابتن المسند للطلب:</b>
@@ -1528,7 +1692,7 @@ authScreen('admin', (user) => {
         <td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td>
         <td><b>🏪 ${esc(o.merchant?.name || '—')}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
+        <td>${orderStatusBadge(o)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
         <td>${renderOrderCaptainCell(o, captains)}</td>
         <td>${renderOrderRowActions(o)}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات مطابقة</td></tr>';

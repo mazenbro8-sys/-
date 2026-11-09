@@ -122,7 +122,7 @@ authScreen('merchant', (user) => {
       <tr class="${selected === o.id ? 'is-selected-row' : ''}">
         <td dir="ltr"><b>${serialNo(o)}</b></td>
         <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${badge(o.status)}${o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
+        <td>${badge(o.status)}${o.delay_until && o.delay_until > Date.now() ? `<div class="mut">⏱️ مؤجل (${Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000))} د)</div>` : o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
         <td>${capLink(o)}</td>
         <td>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:nowrap">
@@ -211,6 +211,8 @@ authScreen('merchant', (user) => {
       upsert(m.order);
       if (prev && prev.status !== m.order.status && m.order.status === 'accepted') toast(`الكابتن ${m.order.captain?.name} قبل الطلب #${m.order.id}`);
       if (m.order.status === 'expired') toast(`لم يتوفر كابتن للطلب #${m.order.id}`);
+    } else if (m.type === 'admin_notice' && m.message) {
+      toast(m.message, 7000);
     } else if (m.type === 'loc') {
       const o = orders.get(m.order_id);
       if (o) { o.captain = { ...o.captain, lat: m.lat, lng: m.lng }; o.eta_minutes = m.eta_minutes; render(); }

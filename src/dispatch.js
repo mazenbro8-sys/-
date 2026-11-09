@@ -24,7 +24,7 @@ export async function viewOrder(o, role) {
     customer_address: o.customer_address, customer_lat: o.customer_lat, customer_lng: o.customer_lng,
     product_amount: o.product_amount, delivery_fee: o.delivery_fee, notes: o.notes,
     merchant: { name: m.business_name || m.name, address: m.address, lat: m.lat, lng: m.lng, phone: role === 'captain' && !o.captain_id ? undefined : m.phone },
-    offer_expires_at: o.offer_expires_at, commission: o.commission, liability: o.liability,
+    offer_expires_at: o.offer_expires_at, delay_until: o.delay_until ?? null, commission: o.commission, liability: o.liability,
     liability_reason: o.liability_reason, close_reason: o.close_reason, closed_at: o.closed_at,
   };
   const showCustomer = role !== 'captain' || (o.captain_id && ACTIVE.concat(['delivered', 'failed']).includes(o.status));
@@ -55,9 +55,10 @@ export async function viewOrder(o, role) {
 
 export async function computeShortage(zoneId = null) {
   const hasZ = zoneId != null;
+  const now = Date.now();
   const searchingRows = hasZ
-    ? await db.all("SELECT * FROM orders WHERE status='searching' AND zone_id=? ORDER BY id ASC", zoneId)
-    : await db.all("SELECT * FROM orders WHERE status='searching' ORDER BY id ASC");
+    ? await db.all("SELECT * FROM orders WHERE status='searching' AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
+    : await db.all("SELECT * FROM orders WHERE status='searching' AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now);
   const checked = await Promise.all(
     searchingRows.map(async (o) => {
       const untriedCap = await db.get(
@@ -150,7 +151,8 @@ async function pickCaptain(order) {
 export async function dispatchOrder(orderId) {
   let offered = null;
   await tx(async () => {
-    const o = await db.get("SELECT * FROM orders WHERE id=? AND status='searching'", orderId);
+    const now = Date.now();
+    const o = await db.get("SELECT * FROM orders WHERE id=? AND status='searching' AND (delay_until IS NULL OR delay_until <= ?)", orderId, now);
     if (!o) return;
     const c = await pickCaptain(o);
     if (!c) return;
@@ -222,8 +224,10 @@ export function startDispatcher() {
       for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
         await releaseOffer(o.id, 'timeout');
       }
-      for (const o of await db.all("SELECT id, created_at FROM orders WHERE status='searching'")) {
-        if (now - o.created_at > config.searchMaxMs) await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
+      for (const o of await db.all("SELECT id, created_at, delay_until FROM orders WHERE status='searching'")) {
+        if (o.delay_until && o.delay_until > now) continue;
+        const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
+        if (now - effectiveStart > config.searchMaxMs) await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
         else await dispatchOrder(o.id);
       }
     } catch (e) { console.error('dispatcher', e); }

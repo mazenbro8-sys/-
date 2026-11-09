@@ -120,6 +120,32 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal(afterAllRej.shortage.alert, true);
   assert.ok(afterAllRej.shortage.orders.some((x) => x.id === oBusy.id));
 
+  // Rejected Order Action Panel endpoints: notify-merchant, delay, assign-captain, cancel with reason
+  const notifyRes = await call(`/admin/orders/${oBusy.id}/notify-merchant`, 'POST', { message: 'الطلب متأخر، جاري البحث عن كابتن' }, admin);
+  assert.equal(notifyRes.status, 200);
+  assert.equal(notifyRes.data.ok, true);
+
+  const delayRes = await call(`/admin/orders/${oBusy.id}/delay`, 'POST', { minutes: 15 }, admin);
+  assert.equal(delayRes.status, 200);
+  assert.equal(delayRes.data.status, 'searching');
+  assert.ok(delayRes.data.delay_until > Date.now());
+  // Delayed order must pause dispatcher & be removed from shortage alert while delay_until > now
+  const afterDelayLive = (await call('/admin/live', 'GET', null, admin)).data;
+  assert.equal(afterDelayLive.shortage.alert, false);
+  assert.ok(!afterDelayLive.shortage.orders.some((x) => x.id === oBusy.id));
+
+  // Assign captain clears delay_until and assigns order immediately
+  const assignRejRes = await call(`/admin/orders/${oBusy.id}/assign-captain`, 'POST', { captain_id: capId }, admin);
+  assert.equal(assignRejRes.status, 200);
+  assert.equal(assignRejRes.data.status, 'accepted');
+  assert.equal(assignRejRes.data.delay_until, null);
+
+  // Cancel with optional reason
+  const cancelRejRes = await call(`/admin/orders/${oBusy.id}/cancel`, 'POST', { reason: 'عدم توفر كابتن حالياً' }, admin);
+  assert.equal(cancelRejRes.status, 200);
+  assert.equal(cancelRejRes.data.ok, true);
+  assert.equal((await call(`/admin/orders/${oBusy.id}`, 'GET', null, admin)).data.status, 'cancelled');
+
   // Zone Admin RBAC & multi-tenancy isolation
   const z2 = await call('/admin/zones', 'POST', { name: 'المالكي' }, admin);
   assert.equal(z2.status, 201);

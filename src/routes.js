@@ -746,7 +746,7 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
     const newStatus = ['picked_up', 'arrived'].includes(o.status) ? o.status : 'accepted';
     await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
     await db.run(
-      'UPDATE orders SET status=?, captain_id=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
+      'UPDATE orders SET status=?, captain_id=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
       newStatus, cap.id, now, id
     );
     await db.run("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?", now, cap.id);
@@ -769,7 +769,7 @@ A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
   await tx(async () => {
     await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
     await db.run(
-      "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?",
+      "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?",
       Date.now(), id
     );
     await addEvent(id, 'admin_unassigned', req.user.id, { from_captain: oldCapId || oldOfferedId });
@@ -795,17 +795,59 @@ A.post('/orders/:id/redispatch', wrap(async (req, res) => {
   if (!['searching', 'expired'].includes(o.status)) throw bad('الطلب ليس في حالة انتظار');
   await tx(async () => {
     await db.run('DELETE FROM offers WHERE order_id=?', id);
-    await db.run("UPDATE orders SET status='searching', closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?", Date.now(), id);
+    await db.run("UPDATE orders SET status='searching', delay_until=NULL, closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?", Date.now(), id);
   });
   await dispatchOrder(id);
   await notifyOrder(id);
   res.json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', id), 'admin'));
 }));
+A.post('/orders/:id/delay', wrap(async (req, res) => {
+  const o = await getAdminOrder(req);
+  const id = o.id;
+  if (['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن تأخير طلب مغلق');
+  const minutes = int(req.body?.minutes, 'مدة التأخير', 1, 240);
+  const delayUntil = Date.now() + minutes * 60_000;
+  const oldOfferedId = o.offered_captain_id;
+  await tx(async () => {
+    await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", id);
+    await db.run(
+      "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=? WHERE id=?",
+      delayUntil, id
+    );
+    await addEvent(id, 'delayed', req.user.id, { minutes, delay_until: delayUntil });
+  });
+  await audit(req.user.id, 'order_delay', { id, minutes, delay_until: delayUntil });
+  if (oldOfferedId) sendTo(oldOfferedId, { type: 'offer_end', order_id: id, reason: 'admin_delayed' });
+  const noticeMsg = `⏱️ تنبيه من الإدارة: تم تأخير الطلب #${String(id).padStart(4, '0')} لمدة ${minutes} دقيقة لحين تأمين كابتن متاح.`;
+  sendTo(o.merchant_id, { type: 'admin_notice', order_id: id, minutes, delay_until: delayUntil, message: noticeMsg });
+  await notifyOrder(id);
+  res.json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', id), 'admin'));
+}));
+A.post('/orders/:id/notify-merchant', wrap(async (req, res) => {
+  const o = await getAdminOrder(req);
+  const id = o.id;
+  const customMsg = optStr(req.body?.message, 'رسالة التنبيه', 250);
+  const msg = customMsg || `🔔 تنبيه من الإدارة بخصوص الطلب #${String(id).padStart(4, '0')}: الطلب متأخر قليلاً، جاري البحث عن كابتن وتأمينه بأسرع وقت.`;
+  await addEvent(id, 'merchant_notified', req.user.id, { message: msg });
+  await audit(req.user.id, 'notify_merchant', { id, message: msg });
+  sendTo(o.merchant_id, { type: 'admin_notice', order_id: id, message: msg, at: Date.now() });
+  res.json({ ok: true, message: msg });
+}));
 A.post('/orders/:id/cancel', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   if (['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب');
-  await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason: 'admin_cancelled' });
-  await audit(req.user.id, 'order_cancel', { id: o.id });
+  const customReason = optStr(req.body?.reason, 'سبب الإلغاء', 200);
+  const reason = customReason || 'admin_cancelled';
+  await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason });
+  await audit(req.user.id, 'order_cancel', { id: o.id, reason });
+  if (customReason) {
+    sendTo(o.merchant_id, {
+      type: 'admin_notice',
+      order_id: o.id,
+      message: `✕ تم إلغاء الطلب #${String(o.id).padStart(4, '0')} من الإدارة — السبب: ${customReason}`,
+      at: Date.now(),
+    });
+  }
   res.json({ ok: true });
 }));
 /** Dispute resolution: captain at fault (damage / delay) → liability = product amount (or custom). */
