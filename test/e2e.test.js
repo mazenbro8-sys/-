@@ -258,9 +258,31 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.equal((await call(`/admin/users/${z1Caps[0].id}`, 'DELETE', null, zaToken)).status, 403);
   assert.equal((await call(`/admin/users/${superAdminRow.id}`, 'DELETE', null, admin)).status, 400); // self delete blocked
 
-  // Zone Admin can soft-delete a captain in their own zone & existing JWT is immediately invalidated
+  // Zone Admin WebSocket receives zone-scoped shortage counts (not global) on captain toggle & order notify
   const z2CapToken = await login('0966666669');
   assert.equal((await call('/me', 'GET', null, z2CapToken)).status, 200);
+  const zaWs = new WebSocket(`ws://localhost:${PORT}/ws`);
+  const zaMessages = [];
+  await new Promise((resolve, reject) => {
+    zaWs.addEventListener('open', () => zaWs.send(JSON.stringify({ type: 'auth', token: zaToken })));
+    zaWs.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'ready') resolve();
+      else zaMessages.push(msg);
+    });
+    zaWs.addEventListener('error', reject);
+  });
+  await call('/captain/online', 'POST', { online: true }, z2CapToken);
+  for (let i = 0; i < 20 && !zaMessages.some((x) => x.type === 'captain'); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const capWsMsg = zaMessages.find((x) => x.type === 'captain');
+  assert.ok(capWsMsg?.shortage, 'Zone admin WS must receive captain shortage payload');
+  assert.equal(capWsMsg.shortage.onlineCaptains, 1, 'onlineCaptains must be scoped to Zone 2 (1), not global (4)');
+  assert.equal(capWsMsg.shortage.freeOnlineCaptains, 1, 'freeOnlineCaptains must be scoped to Zone 2');
+  zaWs.close();
+
+  // Zone Admin can soft-delete a captain in their own zone & existing JWT is immediately invalidated
   assert.equal((await call(`/admin/users/${z2CapId}`, 'DELETE', null, zaToken)).status, 200);
   assert.equal((await call('/me', 'GET', null, z2CapToken)).status, 401);
   assert.equal((await call('/captain/state', 'GET', null, z2CapToken)).status, 401);

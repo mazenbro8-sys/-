@@ -93,7 +93,8 @@ export function disconnectUser(userId) {
   clients.delete(userId);
 }
 export function sendToAdmins(msg, zoneId = null) {
-  const fullJson = JSON.stringify(msg);
+  const { zoneShortage, ...adminMsg } = msg;
+  const fullJson = JSON.stringify(adminMsg);
   for (const set of clients.values()) {
     for (const ws of set) {
       if (ws.readyState !== 1) continue;
@@ -103,12 +104,14 @@ export function sendToAdmins(msg, zoneId = null) {
       } else if (role === 'zone_admin') {
         const zId = zoneOf.get(ws);
         if (!zId || (zoneId != null && zId !== zoneId)) continue;
-        if (msg.shortage?.orders) {
-          const zOrders = msg.shortage.orders.filter((o) => o.zone_id === zId);
+        if (zoneShortage && zoneId === zId) {
+          ws.send(JSON.stringify({ ...adminMsg, shortage: zoneShortage }));
+        } else if (adminMsg.shortage?.orders) {
+          const zOrders = adminMsg.shortage.orders.filter((o) => o.zone_id === zId);
           ws.send(JSON.stringify({
-            ...msg,
+            ...adminMsg,
             shortage: {
-              ...msg.shortage,
+              ...adminMsg.shortage,
               alert: zOrders.length > 0,
               searchingCount: zOrders.length,
               unassignedCount: zOrders.length,

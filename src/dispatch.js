@@ -110,14 +110,15 @@ export async function computeShortage(zoneId = null) {
 export async function notifyOrder(orderId) {
   const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
   if (!o) return;
-  const [mOrder, aOrder, shortage, cOrder] = await Promise.all([
+  const [mOrder, aOrder, shortage, zoneShortage, cOrder] = await Promise.all([
     viewOrder(o, 'merchant'),
     viewOrder(o, 'admin'),
     computeShortage(),
+    o.zone_id != null ? computeShortage(o.zone_id) : null,
     o.captain_id ? viewOrder(o, 'captain') : null,
   ]);
   sendTo(o.merchant_id, { type: 'order', order: mOrder });
-  sendToAdmins({ type: 'order', order: aOrder, shortage }, o.zone_id);
+  sendToAdmins({ type: 'order', order: aOrder, shortage, zoneShortage }, o.zone_id);
   if (o.captain_id) sendTo(o.captain_id, { type: 'order', order: cOrder });
 }
 

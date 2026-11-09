@@ -291,7 +291,11 @@ C.post('/online', wrap(async (req, res) => {
     if (off) await releaseOffer(off.id, 'rejected');
   }
   await db.run('UPDATE users SET online=? WHERE id=?', on ? 1 : 0, req.user.id);
-  sendToAdmins({ type: 'captain', id: req.user.id, online: on, shortage: await computeShortage() }, req.user.zone_id);
+  const [shortage, zoneShortage] = await Promise.all([
+    computeShortage(),
+    req.user.zone_id != null ? computeShortage(req.user.zone_id) : null,
+  ]);
+  sendToAdmins({ type: 'captain', id: req.user.id, online: on, shortage, zoneShortage }, req.user.zone_id);
   res.json({ online: on });
 }));
 
