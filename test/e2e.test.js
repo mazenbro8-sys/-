@@ -76,8 +76,27 @@ test('full delivery cycle with round-robin, privacy, settlement', async () => {
   assert.ok(trk.eta_minutes >= 1);
   for (const s of ['picked_up', 'arrived', 'delivered']) assert.equal((await call(`/captain/orders/${o1.id}/status`, 'POST', { status: s }, other)).status, 200);
   const day = (await call('/admin/settlements', 'GET', null, admin)).data;
+  const settledCapId = day.rows[0].captain_id;
   assert.equal(day.rows[0].commission_total, 2000);
-  assert.equal((await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: day.rows[0].captain_id }, admin)).status, 200);
+  const col1 = await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: settledCapId }, admin);
+  assert.equal(col1.status, 200);
+  assert.equal(col1.data.delta, 2000);
+  assert.equal(col1.data.total, 2000);
+  // Duplicate collection with no new orders is rejected with 400
+  assert.equal((await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: settledCapId }, admin)).status, 400);
+  // Deliver a second order on the same day for the same captain -> second collection records only the delta (2000)
+  const oDelta = (await call('/admin/orders', 'POST', { customer_address: 'المزة - فيلات غربية', captain_id: settledCapId }, admin)).data;
+  for (const s of ['picked_up', 'arrived', 'delivered']) assert.equal((await call(`/captain/orders/${oDelta.id}/status`, 'POST', { status: s }, other)).status, 200);
+  const dayAfter2 = (await call('/admin/settlements', 'GET', null, admin)).data;
+  const rowAfter2 = dayAfter2.rows.find((x) => x.captain_id === settledCapId);
+  assert.equal(rowAfter2.total, 4000);
+  assert.equal(rowAfter2.settled_total, 2000);
+  assert.equal(rowAfter2.due_total, 2000);
+  assert.equal(rowAfter2.collected_at, null);
+  const col2 = await call('/admin/settlements/collect', 'POST', { day: day.day, captain_id: settledCapId }, admin);
+  assert.equal(col2.status, 200);
+  assert.equal(col2.data.delta, 2000);
+  assert.equal(col2.data.total, 4000);
 
   // Admin: add order for a captain, unassign captain, and reassign captain
   const liveData = (await call('/admin/live', 'GET', null, admin)).data;

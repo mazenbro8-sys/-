@@ -399,18 +399,21 @@ C.get('/summary', wrap(async (req, res) => {
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='failed'", req.user.id, day),
     db.get("SELECT COALESCE(SUM(delivery_fee),0) s FROM orders WHERE captain_id=? AND day=? AND status='delivered'", req.user.id, day),
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND status='delivered'", req.user.id),
-    db.get('SELECT 1 FROM settlements WHERE captain_id=? AND day=?', req.user.id, day),
+    db.get('SELECT total, orders_count FROM settlements WHERE captain_id=? AND day=?', req.user.id, day),
   ]);
+  const totalDueToday = r.c + r.l;
+  const settledAmount = setRow?.total ?? 0;
+  const isFullySettled = Boolean(setRow && settledAmount >= totalDueToday && setRow.orders_count >= delRow.n);
   res.json({
     day,
     delivered: delRow.n,
     failed: failRow.n,
     earnings_today: earnRow.s,
     total_delivered: totRow.n,
-    settled: !!setRow,
+    settled: isFullySettled,
     commission: r.c,
     liability: r.l,
-    due: r.c + r.l,
+    due: Math.max(0, totalDueToday - settledAmount),
   });
 }));
 C.get('/history', wrap(async (req, res) => {
@@ -896,8 +899,17 @@ A.get('/settlements', wrap(async (req, res) => {
         day
       );
   const out = await Promise.all(rows.map(async (r) => {
-    const s = await db.get('SELECT collected_at FROM settlements WHERE captain_id=? AND day=?', r.captain_id, day);
-    return { ...r, total: r.commission_total + r.liability_total, collected_at: s?.collected_at ?? null };
+    const s = await db.get('SELECT orders_count, total, collected_at FROM settlements WHERE captain_id=? AND day=?', r.captain_id, day);
+    const total = r.commission_total + r.liability_total;
+    const settledTotal = s?.total ?? 0;
+    const fullyCollected = Boolean(s && settledTotal >= total && s.orders_count >= r.orders_count);
+    return {
+      ...r,
+      total,
+      settled_total: settledTotal,
+      due_total: Math.max(0, total - settledTotal),
+      collected_at: fullyCollected ? s.collected_at : null,
+    };
   }));
   res.json({ day, rows: out });
 }));
@@ -910,15 +922,41 @@ A.post('/settlements/collect', wrap(async (req, res) => {
     if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
   }
   const r = zId != null
-    ? await db.get("SELECT SUM(status='delivered') n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND zone_id=? AND status IN ('delivered','failed')", cid, day, zId)
-    : await db.get("SELECT SUM(status='delivered') n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", cid, day);
+    ? await db.get("SELECT COALESCE(SUM(status='delivered'),0) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND zone_id=? AND status IN ('delivered','failed')", cid, day, zId)
+    : await db.get("SELECT COALESCE(SUM(status='delivered'),0) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", cid, day);
   if (!r.n && !r.l) throw bad('لا توجد تسوية لهذا اليوم');
+  const existing = await db.get('SELECT orders_count, commission_total, liability_total, total FROM settlements WHERE captain_id=? AND day=?', cid, day);
+  const totalNow = r.c + r.l;
+  const deltaOrders = r.n - (existing?.orders_count ?? 0);
+  const deltaCommission = r.c - (existing?.commission_total ?? 0);
+  const deltaLiability = r.l - (existing?.liability_total ?? 0);
+  const deltaTotal = totalNow - (existing?.total ?? 0);
+  if (existing && deltaTotal <= 0 && deltaOrders <= 0) {
+    throw bad('تم تحصيل جميع مستحقات هذا الكابتن لهذا اليوم مسبقاً');
+  }
+  const now = Date.now();
   await db.run(
-    'INSERT OR IGNORE INTO settlements(captain_id,day,orders_count,commission_total,liability_total,total,collected_at,collected_by) VALUES(?,?,?,?,?,?,?,?)',
-    cid, day, r.n, r.c, r.l, r.c + r.l, Date.now(), req.user.id
+    `INSERT INTO settlements(captain_id,day,orders_count,commission_total,liability_total,total,collected_at,collected_by)
+     VALUES(?,?,?,?,?,?,?,?)
+     ON CONFLICT(captain_id,day) DO UPDATE SET
+       orders_count=excluded.orders_count,
+       commission_total=excluded.commission_total,
+       liability_total=excluded.liability_total,
+       total=excluded.total,
+       collected_at=excluded.collected_at,
+       collected_by=excluded.collected_by`,
+    cid, day, r.n, r.c, r.l, totalNow, now, req.user.id
   );
-  await audit(req.user.id, 'settlement_collect', { cid, day, total: r.c + r.l });
-  res.json({ ok: true });
+  await audit(req.user.id, 'settlement_collect', {
+    cid,
+    day,
+    delta_orders: deltaOrders,
+    delta_commission: deltaCommission,
+    delta_liability: deltaLiability,
+    delta_total: deltaTotal,
+    total: totalNow,
+  });
+  res.json({ ok: true, delta: deltaTotal, total: totalNow });
 }));
 
 A.get('/flags', wrap(async (req, res) => {
