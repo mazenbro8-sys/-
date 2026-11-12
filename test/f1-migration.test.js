@@ -103,4 +103,41 @@ test('F1: archives legacy settlements_legacy_syp & commission once and creates c
   assert.notEqual(caps[0].tag, caps[1].tag);
   const merch = await db.get("SELECT tag FROM users WHERE role='merchant' AND phone='0977000003'");
   assert.equal(merch.tag, null);
+
+  // 6. F3 wallet ledger invariant & idempotency checks
+  const { applyPointsEntry } = await import('../src/db.js');
+  const capId = caps[0].id;
+  const row0 = await db.get('SELECT balance_points FROM users WHERE id=?', capId);
+  assert.equal(row0.balance_points, 0);
+
+  const t1 = await applyPointsEntry({ captainId: capId, kind: 'topup', amount: 100, actorId: 1, note: 'شحن تجريبي', clientRef: 'ref-1' });
+  assert.equal(t1.duplicate, false);
+  assert.equal(t1.balance_points, 100);
+
+  // Duplicate client_ref must be idempotent
+  const t1Dup = await applyPointsEntry({ captainId: capId, kind: 'topup', amount: 100, actorId: 1, note: 'شحن تجريبي', clientRef: 'ref-1' });
+  assert.equal(t1Dup.duplicate, true);
+  assert.equal(t1Dup.balance_points, 100);
+
+  // Deduction on order 55
+  const d1 = await applyPointsEntry({ captainId: capId, kind: 'deduction', amount: -25, orderId: 55, note: 'تكلفة طلب' });
+  assert.equal(d1.duplicate, false);
+  assert.equal(d1.balance_points, 75);
+
+  // Duplicate deduction on same order_id 55 must be idempotent
+  const d1Dup = await applyPointsEntry({ captainId: capId, kind: 'deduction', amount: -25, orderId: 55, note: 'تكلفة طلب' });
+  assert.equal(d1Dup.duplicate, true);
+  assert.equal(d1Dup.balance_points, 75);
+
+  // Negative adjustment can bring balance below 0 when applied
+  const adj = await applyPointsEntry({ captainId: capId, kind: 'adjustment', amount: -90, orderId: 55, actorId: 1, note: 'تعويض' });
+  assert.equal(adj.balance_points, -15);
+
+  // Float amount rejected
+  await assert.rejects(() => applyPointsEntry({ captainId: capId, kind: 'topup', amount: 12.5 }));
+
+  // Invariant: users.balance_points === SUM(points_ledger.amount)
+  const sumRow = await db.get('SELECT COALESCE(SUM(amount),0) s FROM points_ledger WHERE captain_id=?', capId);
+  const balRow = await db.get('SELECT balance_points FROM users WHERE id=?', capId);
+  assert.equal(balRow.balance_points, sumRow.s);
 });

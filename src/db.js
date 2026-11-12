@@ -282,6 +282,95 @@ await runMigration('2026_11_captain_tags', async () => {
   }
 });
 
+// F3: Points wallet column on users and unified append-only points_ledger
+const userColsF3 = await db.all('PRAGMA table_info(users)');
+if (!userColsF3.some((c) => c.name === 'balance_points')) {
+  await client.execute('ALTER TABLE users ADD COLUMN balance_points INTEGER NOT NULL DEFAULT 0');
+}
+
+await runMigration('2026_11_wallet', async () => {
+  await db.run(`CREATE TABLE IF NOT EXISTS points_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captain_id INTEGER NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL CHECK (kind IN ('topup','deduction','adjustment')),
+    amount INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    order_id INTEGER,
+    actor_id INTEGER,
+    note TEXT,
+    client_ref TEXT,
+    at INTEGER NOT NULL
+  )`);
+  await db.run('CREATE INDEX IF NOT EXISTS idx_ledger_captain ON points_ledger(captain_id, at DESC)');
+  await db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_deduct_once ON points_ledger(order_id) WHERE kind='deduction' AND order_id IS NOT NULL");
+  await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_client_ref ON points_ledger(client_ref) WHERE client_ref IS NOT NULL');
+});
+
+/** Atomically append a ledger entry and update captain balance_points inside tx(). */
+export async function applyPointsEntry({
+  captainId,
+  kind,
+  amount,
+  orderId = null,
+  actorId = null,
+  note = null,
+  clientRef = null,
+}) {
+  if (!['topup', 'deduction', 'adjustment'].includes(kind)) {
+    throw new Error(`Invalid points ledger kind: ${kind}`);
+  }
+  if (!Number.isInteger(amount) || amount === 0) {
+    throw new Error('Points amount must be a non-zero integer');
+  }
+  if (kind === 'topup' && amount < 0) throw new Error('Topup amount must be positive');
+  if (kind === 'deduction' && amount > 0) throw new Error('Deduction amount must be negative');
+
+  return tx(async () => {
+    if (clientRef != null) {
+      const existingRef = await db.get('SELECT * FROM points_ledger WHERE client_ref=?', clientRef);
+      if (existingRef) {
+        const u = await db.get('SELECT balance_points FROM users WHERE id=?', existingRef.captain_id);
+        return { duplicate: true, balance_points: u?.balance_points ?? existingRef.balance_after, entry: existingRef };
+      }
+    }
+    if (kind === 'deduction' && orderId != null) {
+      const existingDed = await db.get("SELECT * FROM points_ledger WHERE order_id=? AND kind='deduction'", orderId);
+      if (existingDed) {
+        const u = await db.get('SELECT balance_points FROM users WHERE id=?', existingDed.captain_id);
+        return { duplicate: true, balance_points: u?.balance_points ?? existingDed.balance_after, entry: existingDed };
+      }
+    }
+
+    const cap = await db.get("SELECT id, balance_points FROM users WHERE id=? AND role='captain'", captainId);
+    if (!cap) throw new Error(`Captain not found for points entry: ${captainId}`);
+
+    await db.run('UPDATE users SET balance_points = balance_points + ? WHERE id=?', amount, captainId);
+    const updated = await db.get('SELECT balance_points FROM users WHERE id=?', captainId);
+    const balanceAfter = updated.balance_points;
+    const at = Date.now();
+    const res = await db.run(
+      'INSERT INTO points_ledger(captain_id,kind,amount,balance_after,order_id,actor_id,note,client_ref,at) VALUES(?,?,?,?,?,?,?,?,?)',
+      captainId, kind, amount, balanceAfter, orderId, actorId, note, clientRef, at
+    );
+    return {
+      duplicate: false,
+      balance_points: balanceAfter,
+      entry: {
+        id: Number(res.lastInsertRowid),
+        captain_id: captainId,
+        kind,
+        amount,
+        balance_after: balanceAfter,
+        order_id: orderId,
+        actor_id: actorId,
+        note,
+        client_ref: clientRef,
+        at,
+      },
+    };
+  });
+}
+
 export const getSetting = async (k, def) =>
   (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;
 export const setSetting = (k, v) =>
