@@ -169,4 +169,10 @@ test('F1 regression: 3-captain round-robin, silent redispatch, zone isolation, a
   assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'picked_up' }, capsA[offeredIdx].tok)).status, 200);
   assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'arrived' }, capsA[offeredIdx].tok)).status, 200);
   assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'delivered' }, capsA[offeredIdx].tok)).status, 200);
+
+  // F9: bypass detection & flags endpoints removed cleanly
+  assert.equal((await call('/admin/flags', 'GET', null, adm)).status, 404);
+  assert.equal((await call('/admin/flags/1/resolve', 'POST', {}, adm)).status, 404);
+  const stats = (await call('/admin/stats', 'GET', null, adm)).data;
+  assert.equal('flags' in stats, false);
 });

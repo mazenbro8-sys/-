@@ -29,7 +29,6 @@ authScreen('admin', (user) => {
     users: '🏪 الحسابات',
     orders: '📦 الطلبات',
     settle: '💰 الخزينة',
-    flags: '⚠️ التنبيهات الأمنية',
     settings: '⚙️ المناطق والإعدادات',
   };
   app.innerHTML = `<aside class="sb"><div class="logo"><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><div style="line-height:1.1"><div dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--gold);letter-spacing:1.2px;display:block;font-weight:700">DELIVERY • توصيل</small></div></div>
@@ -794,7 +793,7 @@ authScreen('admin', (user) => {
     liveMap = null; liveFitted = false;
     capMarkers.clear(); merchMarkers.clear(); orderMarkers.clear(); routeLayers = [];
     $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
-    const dockTarget = t === 'dash' ? 'live' : t === 'flags' ? 'settings' : t;
+    const dockTarget = t === 'dash' ? 'live' : t;
     $$('.admin-bottom-dock button[data-t]').forEach((b) => {
       const isAct = b.dataset.t === dockTarget;
       b.classList.toggle('active', isAct);
@@ -987,7 +986,7 @@ authScreen('admin', (user) => {
       updateShortageBanner(s.shortage);
       view().innerHTML = `
         <div class="stats telemetry-bar" id="lstats">
-          ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]].map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
+          ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending]].map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
         </div>
         <div class="card tactical-radar-card">
           <div class="row-head">
@@ -1655,19 +1654,6 @@ authScreen('admin', (user) => {
       };
     },
 
-    async flags() {
-      const rows = await api('/admin/flags');
-      view().innerHTML = `<div class="card"><h3>اشتباه الالتفاف على التطبيق</h3><div class="tablewrap"><table><tbody>
-      ${rows.map((f) => `<tr><td>${time(f.at)}</td><td>${esc(f.reason)}<div class="mut">الكابتن: ${esc(f.captain_name)} ${badge(f.captain_status)}</div></td>
-        <td>${f.resolved ? 'تمت المعالجة' : `<button type="button" class="sec sm" data-r="${f.id}">تمت المراجعة</button> <button type="button" class="bad sm" data-s="${f.captain_id}">إيقاف الكابتن</button>`}</td></tr>`).join('') || '<tr><td class="mut">لا توجد تنبيهات</td></tr>'}</tbody></table></div></div>`;
-      view().onclick = async (e) => {
-        const rEl = e.target.closest('[data-r]');
-        const sEl = e.target.closest('[data-s]');
-        if (rEl) { await act(() => api(`/admin/flags/${rEl.dataset.r}/resolve`, 'POST')); views.flags(); }
-        if (sEl && confirm('إيقاف حساب الكابتن فوراً؟')) { await act(() => api(`/admin/users/${sEl.dataset.s}`, 'PATCH', { status: 'suspended' }), 'تم الإيقاف'); views.flags(); }
-      };
-    },
-
     async settings() {
       const s = await api('/admin/stats');
       if (isZoneAdmin) {
@@ -1759,7 +1745,7 @@ authScreen('admin', (user) => {
 
     const stEl = $('#lstats');
     if (stEl) {
-      stEl.innerHTML = [['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending], ['تنبيهات', s.flags]]
+      stEl.innerHTML = [['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending]]
         .map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('');
     }
 
@@ -1923,9 +1909,8 @@ authScreen('admin', (user) => {
           setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, capInCache);
         }
       }
-    } else if (['order', 'pending_user', 'flag', 'captain'].includes(m.type)) {
+    } else if (['order', 'pending_user', 'captain'].includes(m.type)) {
       if (m.type === 'pending_user') toast('طلب تسجيل جديد بانتظار الموافقة');
-      if (m.type === 'flag') toast('⚠️ تنبيه أمني جديد');
       if (tab === 'live') { clearTimeout(refreshTimer); loadLive(); }
     }
   });

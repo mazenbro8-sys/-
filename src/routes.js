@@ -324,32 +324,10 @@ C.post('/location', wrap(async (req, res) => {
     const m = { type: 'loc', order_id: act.id, lat, lng, at: now };
     const v = await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', act.id), 'merchant');
     sendTo(act.merchant_id, { ...m, eta_minutes: v.eta_minutes });
-  } else {
-    await detectBypass(u, lat, lng, now);
   }
   sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, vis, busy: !!act }, u.zone_id);
   res.status(204).end();
 }));
-
-/** Anti-bypass: an idle captain (no order through the app) lingering at a merchant of his zone. */
-async function detectBypass(u, lat, lng, now) {
-  const near = (await db.all("SELECT id,business_name,lat,lng FROM users WHERE role='merchant' AND status='active' AND zone_id=? AND lat IS NOT NULL", u.zone_id))
-    .filter((m) => haversineKm(lat, lng, m.lat, m.lng) < 0.06);
-  for (const m of near) {
-    const [prev, recent, hasOrderRecently] = await Promise.all([
-      db.get('SELECT 1 FROM locations WHERE captain_id=? AND order_id IS NULL AND at BETWEEN ? AND ? LIMIT 1', u.id, now - 6 * 60_000, now - 90_000),
-      db.get('SELECT 1 FROM flags WHERE captain_id=? AND merchant_id=? AND at>?', u.id, m.id, now - 3 * 3600_000),
-      db.get('SELECT 1 FROM orders WHERE captain_id=? AND merchant_id=? AND closed_at>?', u.id, m.id, now - 30 * 60_000),
-    ]);
-    if (prev && !recent && !hasOrderRecently) {
-      await db.run(
-        'INSERT INTO flags(captain_id,merchant_id,reason,at) VALUES(?,?,?,?)',
-        u.id, m.id, `اشتباه التفاف: الكابتن متواجد قرب «${m.business_name}» بدون طلب عبر التطبيق`, now
-      );
-      sendToAdmins({ type: 'flag' }, u.zone_id);
-    }
-  }
-}
 
 C.post('/offers/:id/:action', wrap(async (req, res) => {
   const id = oid(req), act = req.params.action;
@@ -445,7 +423,7 @@ A.get('/stats', wrap(async (req, res) => {
   const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
   const zId = adminZone(req);
-  const [merchants, captains, online, pending, live, deliveredToday, flags, comm, shortage] = zId != null
+  const [merchants, captains, online, pending, live, deliveredToday, comm, shortage] = zId != null
     ? await Promise.all([
         one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
@@ -453,7 +431,6 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM users WHERE status='pending' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered' AND zone_id=?", day, zId),
-        one('SELECT COUNT(*) n FROM flags f JOIN users c ON c.id=f.captain_id WHERE f.resolved=0 AND c.zone_id=?', zId),
         commission(),
         computeShortage(zId),
       ])
@@ -464,11 +441,10 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM users WHERE status='pending'"),
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
-        one('SELECT COUNT(*) n FROM flags WHERE resolved=0'),
         commission(),
         computeShortage(),
       ]);
-  res.json({ merchants, captains, online, pending, live, deliveredToday, flags, commission: comm, shortage });
+  res.json({ merchants, captains, online, pending, live, deliveredToday, commission: comm, shortage });
 }));
 
 A.get('/live', wrap(async (req, res) => {
@@ -963,28 +939,6 @@ A.post('/settlements/collect', wrap(async (req, res) => {
   res.json({ ok: true, delta: deltaTotal, total: totalNow });
 }));
 
-A.get('/flags', wrap(async (req, res) => {
-  const zId = adminZone(req);
-  const rows = zId != null
-    ? await db.all(`
-        SELECT f.id,f.reason,f.at,f.resolved,f.captain_id,c.name captain_name,c.status captain_status
-        FROM flags f JOIN users c ON c.id=f.captain_id
-        WHERE c.zone_id=? ORDER BY f.resolved, f.id DESC LIMIT 200`, zId)
-    : await db.all(`
-        SELECT f.id,f.reason,f.at,f.resolved,f.captain_id,c.name captain_name,c.status captain_status
-        FROM flags f JOIN users c ON c.id=f.captain_id ORDER BY f.resolved, f.id DESC LIMIT 200`);
-  res.json(rows);
-}));
-A.post('/flags/:id/resolve', wrap(async (req, res) => {
-  const id = oid(req);
-  const zId = adminZone(req);
-  if (zId != null) {
-    const fl = await db.get('SELECT 1 FROM flags f JOIN users c ON c.id=f.captain_id WHERE f.id=? AND c.zone_id=?', id, zId);
-    if (!fl) throw new HttpError(404, 'التنبيه غير موجود');
-  }
-  await db.run('UPDATE flags SET resolved=1 WHERE id=?', id);
-  res.json({ ok: true });
-}));
 A.get('/captains/:id/track', wrap(async (req, res) => {
   const cid = int(req.params.id, 'id', 1, 2 ** 31);
   const zId = adminZone(req);
