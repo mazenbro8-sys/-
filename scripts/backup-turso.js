@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
 
 function loadEnvFile(envPath = path.resolve(process.cwd(), '.env')) {
@@ -83,19 +83,37 @@ export async function backupDatabase({ url, authToken, outPath } = {}) {
       JSON.stringify(payload, (_, v) => (typeof v === 'bigint' ? Number(v) : v), 2),
       'utf8'
     );
+    const stat = fs.statSync(destination);
+    if (!stat.isFile() || stat.size === 0) {
+      throw new Error(`Backup verification failed: file missing or empty at ${destination}`);
+    }
 
-    return { outPath: destination, counts, source: payload.source };
+    return { outPath: destination, resolvedPath: fs.realpathSync(destination), size: stat.size, counts, source: payload.source };
   } finally {
     client.close();
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+let isMain = false;
+if (process.argv[1]) {
+  try {
+    isMain = fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1]);
+  } catch {
+    isMain = false;
+  }
+}
+
 if (isMain) {
   const outPath = parseOutArg(process.argv.slice(2));
   backupDatabase({ outPath })
     .then((res) => {
-      console.log(`Backup written to: ${res.outPath} (${res.source})`);
+      const resolvedPath = res?.outPath ? fs.realpathSync(res.outPath) : null;
+      const size = resolvedPath ? fs.statSync(resolvedPath).size : 0;
+      if (!resolvedPath || size <= 0) {
+        console.error('Backup failed: no non-empty backup file was written');
+        process.exit(1);
+      }
+      console.log(`Backup written to: ${resolvedPath} (${size} bytes, ${res.source})`);
       for (const [table, count] of Object.entries(res.counts)) {
         console.log(`  - ${table}: ${count} rows`);
       }
