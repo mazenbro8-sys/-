@@ -288,6 +288,29 @@ if (!userColsF3.some((c) => c.name === 'balance_points')) {
   await client.execute('ALTER TABLE users ADD COLUMN balance_points INTEGER NOT NULL DEFAULT 0');
 }
 
+// F5 & F6: Per-captain order cost overrides, temporary exemption bounds, and order cost snapshots
+if (!userColsF3.some((c) => c.name === 'cost_override')) {
+  await client.execute('ALTER TABLE users ADD COLUMN cost_override INTEGER');
+}
+if (!userColsF3.some((c) => c.name === 'exempt_from')) {
+  await client.execute('ALTER TABLE users ADD COLUMN exempt_from INTEGER');
+}
+if (!userColsF3.some((c) => c.name === 'exempt_until')) {
+  await client.execute('ALTER TABLE users ADD COLUMN exempt_until INTEGER');
+}
+const orderColsF5 = await db.all('PRAGMA table_info(orders)');
+if (!orderColsF5.some((c) => c.name === 'cost_points')) {
+  await client.execute('ALTER TABLE orders ADD COLUMN cost_points INTEGER');
+}
+if (!orderColsF5.some((c) => c.name === 'cost_source')) {
+  await client.execute("ALTER TABLE orders ADD COLUMN cost_source TEXT CHECK (cost_source IN ('default','override','exempt_permanent','exempt_temporary'))");
+}
+
+await runMigration('2026_11_cost_rules', async () => {
+  await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('order_cost_points',?)", String(config.defaultOrderCostPoints));
+  await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('wallet_enforcement','off')");
+});
+
 await runMigration('2026_11_wallet', async () => {
   await db.run(`CREATE TABLE IF NOT EXISTS points_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -376,6 +399,8 @@ export const getSetting = async (k, def) =>
 export const setSetting = (k, v) =>
   db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
 export const commission = async () => Number(await getSetting('commission', config.defaultCommission));
+export const orderCostPoints = async () => Number(await getSetting('order_cost_points', config.defaultOrderCostPoints));
+export const walletEnforcement = async () => (await getSetting('wallet_enforcement', 'off')) === 'on';
 
 export const audit = (actor, action, data) =>
   db.run('INSERT INTO audit(actor_id,action,data,at) VALUES(?,?,?,?)', actor ?? null, action, data ? JSON.stringify(data) : null, Date.now());

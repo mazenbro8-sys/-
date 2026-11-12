@@ -130,4 +130,47 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   assert.equal(afterPatch.status, 200);
   assert.equal(afterPatch.data.name, 'كابتن كود معدل');
   assert.equal(afterPatch.data.tag, cap1.data.tag);
+
+  // F5 & F6: Global order cost, wallet enforcement toggle, per-captain overrides, temporary exemptions & RBAC
+  assert.equal((await call('/admin/settings/order-cost', 'PUT', { value: 30 }, za1)).status, 403);
+  assert.equal((await call('/admin/settings/wallet-enforcement', 'PUT', { enabled: true }, za1)).status, 403);
+  assert.equal((await call('/admin/settings/order-cost', 'PUT', { value: 12.5 }, adm)).status, 400);
+  assert.equal((await call('/admin/settings/order-cost', 'PUT', { value: -5 }, adm)).status, 400);
+
+  const ocRes = await call('/admin/settings/order-cost', 'PUT', { value: 30 }, adm);
+  assert.equal(ocRes.status, 200);
+  assert.equal(ocRes.data.order_cost_points, 30);
+
+  const statsRes = (await call('/admin/stats', 'GET', null, adm)).data;
+  assert.equal(statsRes.order_cost_points, 30);
+  assert.equal(statsRes.wallet_enforcement, 'off');
+
+  // zone_admin cannot modify cost_override or exemptions on their zone captain (nor partially update name)
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { name: 'محاولة تغيير', cost_override: 0 }, za1)).status, 403);
+  assert.equal((await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data.name, 'كابتن كود معدل');
+
+  // Super admin sets custom override -> permanent 0 -> inverted window (400) -> temporary window -> clear
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 15 }, adm)).status, 200);
+  let c1View = (await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data;
+  assert.equal(c1View.effective_cost_points, 15);
+  assert.equal(c1View.cost_source, 'override');
+
+  const now = Date.now();
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { exempt_from: now + 5000, exempt_until: now + 1000 }, adm)).status, 400);
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { exempt_from: now - 60000, exempt_until: now + 60000 }, adm)).status, 200);
+  c1View = (await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data;
+  assert.equal(c1View.effective_cost_points, 0);
+  assert.equal(c1View.cost_source, 'exempt_temporary');
+
+  // Permanent exemption when temp window is cleared
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 0, exempt_from: null, exempt_until: null }, adm)).status, 200);
+  c1View = (await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data;
+  assert.equal(c1View.effective_cost_points, 0);
+  assert.equal(c1View.cost_source, 'exempt_permanent');
+
+  // Reset override -> uses global 30
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: null }, adm)).status, 200);
+  c1View = (await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data;
+  assert.equal(c1View.effective_cost_points, 30);
+  assert.equal(c1View.cost_source, 'default');
 });

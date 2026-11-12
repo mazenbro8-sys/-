@@ -1,10 +1,10 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, commission, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
+import { db, tx, addEvent, audit, commission, orderCostPoints, walletEnforcement, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
-import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage } from './dispatch.js';
+import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
 
 export const api = express.Router();
 
@@ -416,6 +416,10 @@ export const requireAdmin = (req, res, next) =>
   });
 
 const adminZone = (req) => (req.user.role === 'zone_admin' ? req.user.zone_id : null);
+const requireSuperAdmin = (req, _res, next) => {
+  if (req.user?.role !== 'admin') return next(new HttpError(403, 'هذا الإجراء متاح للمدير العام فقط'));
+  next();
+};
 
 const A = express.Router();
 api.use('/admin', requireAdmin, A);
@@ -424,7 +428,7 @@ A.get('/stats', wrap(async (req, res) => {
   const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
   const zId = adminZone(req);
-  const [merchants, captains, online, pending, live, deliveredToday, comm, shortage] = zId != null
+  const [merchants, captains, online, pending, live, deliveredToday, comm, orderCost, enforced, shortage] = zId != null
     ? await Promise.all([
         one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
@@ -433,6 +437,8 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered' AND zone_id=?", day, zId),
         commission(),
+        orderCostPoints(),
+        walletEnforcement(),
         computeShortage(zId),
       ])
     : await Promise.all([
@@ -443,25 +449,28 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
         commission(),
+        orderCostPoints(),
+        walletEnforcement(),
         computeShortage(),
       ]);
-  res.json({ merchants, captains, online, pending, live, deliveredToday, commission: comm, shortage });
+  res.json({ merchants, captains, online, pending, live, deliveredToday, commission: comm, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', shortage });
 }));
 
 A.get('/live', wrap(async (req, res) => {
   const zId = adminZone(req);
+  const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
   const [liveRows, recentRows, capRows, merchants, shortage] = zId != null
     ? await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId),
         db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 100', zId),
-        db.all("SELECT id,name,phone,zone_id,status,online,tag,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
+        db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId),
         computeShortage(zId),
       ])
     : await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
         db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
-        db.all("SELECT id,name,phone,zone_id,status,online,tag,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
+        db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
         computeShortage(),
       ]);
@@ -471,9 +480,12 @@ A.get('/live', wrap(async (req, res) => {
     Promise.all(capRows.map(async (c) => {
       const acts = await activeOrders(c.id);
       const act = acts[0] || null;
+      const rc = resolveOrderCost(c, defaultCost);
       return {
         ...c,
         online: !!c.online,
+        effective_cost_points: rc.cost_points,
+        cost_source: rc.cost_source,
         busy: acts.length > 0,
         active_order_id: act?.id ?? null,
         active_orders: acts.map((x) => ({ id: x.id, serial_no: String(x.id).padStart(4, '0'), customer_address: x.customer_address, status: x.status })),
@@ -486,6 +498,8 @@ A.get('/live', wrap(async (req, res) => {
     captains,
     merchants,
     shortage,
+    order_cost_points: defaultCost,
+    wallet_enforcement: enforced ? 'on' : 'off',
     intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
   });
 }));
@@ -496,10 +510,11 @@ A.get('/captains/by-tag/:tag', wrap(async (req, res) => {
   if (!/^[A-Z0-9]{3,12}$/.test(tag)) throw new HttpError(400, 'كود الكابتن غير صالح');
   const zId = adminZone(req);
   const cap = zId != null
-    ? await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted' AND zone_id=?", tag, zId)
-    : await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted'", tag);
+    ? await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted' AND zone_id=?", tag, zId)
+    : await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted'", tag);
   if (!cap) throw new HttpError(404, 'لم يتم العثور على كابتن بهذا الكود');
-  res.json({ ...cap, online: !!cap.online });
+  const rc = resolveOrderCost(cap, await orderCostPoints());
+  res.json({ ...cap, online: !!cap.online, effective_cost_points: rc.cost_points, cost_source: rc.cost_source });
 }));
 
 A.get('/users', wrap(async (req, res) => {
@@ -536,13 +551,22 @@ A.get('/users', wrap(async (req, res) => {
       args.push(filterZone);
     }
   }
+  const defaultCost = await orderCostPoints();
   const rows = await db.all(
-    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,tag,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
+    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
        EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=users.id AND o.status IN ('accepted','picked_up','arrived')) busy
      FROM users WHERE ${clauses.join(' AND ')} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
     ...args
   );
-  res.json(rows.map((r) => ({ ...r, busy: !!r.busy })));
+  res.json(rows.map((r) => {
+    const rc = r.role === 'captain' ? resolveOrderCost(r, defaultCost) : null;
+    return {
+      ...r,
+      busy: !!r.busy,
+      effective_cost_points: rc?.cost_points ?? null,
+      cost_source: rc?.cost_source ?? null,
+    };
+  }));
 }));
 A.patch('/users/:id', wrap(async (req, res) => {
   const id = oid(req);
@@ -552,6 +576,28 @@ A.patch('/users/:id', wrap(async (req, res) => {
     : await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain','zone_admin','admin') AND status!='deleted'", id);
   if (!u) throw new HttpError(404, 'المستخدم غير موجود');
   const b = req.body ?? {};
+  const hasCostEdit = b.cost_override !== undefined || b.exempt_from !== undefined || b.exempt_until !== undefined;
+  let nextCostOverride = u.cost_override;
+  let nextExemptFrom = u.exempt_from;
+  let nextExemptUntil = u.exempt_until;
+  if (hasCostEdit) {
+    if (zId != null) throw new HttpError(403, 'تعديل تكلفة الطلب والإعفاءات متاح للمدير العام فقط');
+    if ((b.role ?? u.role) !== 'captain') throw bad('تخصيص تكلفة الطلب والإعفاءات متاح للكباتن فقط');
+    if (b.cost_override !== undefined) {
+      nextCostOverride = (b.cost_override === null || b.cost_override === '') ? null : int(b.cost_override, 'تكلفة الطلب المخصصة', 0, 100000);
+    }
+    const parseEpoch = (v, label) => {
+      if (v === null || v === '') return null;
+      const n = Number(v);
+      if (!Number.isSafeInteger(n) || n < 0) throw bad(`الحقل غير صالح: ${label}`);
+      return n;
+    };
+    if (b.exempt_from !== undefined) nextExemptFrom = parseEpoch(b.exempt_from, 'بداية الإعفاء');
+    if (b.exempt_until !== undefined) nextExemptUntil = parseEpoch(b.exempt_until, 'نهاية الإعفاء');
+    if (nextExemptFrom != null && nextExemptUntil != null && nextExemptFrom > nextExemptUntil) {
+      throw bad('تاريخ بداية الإعفاء يجب أن يكون قبل تاريخ نهايته');
+    }
+  }
   if (b.role != null && b.role !== u.role) {
     if (zId != null && ['admin', 'zone_admin'].includes(b.role)) {
       throw new HttpError(403, 'ليس لديك صلاحية لتعيين حساب مسؤول');
@@ -608,6 +654,9 @@ A.patch('/users/:id', wrap(async (req, res) => {
   if (b.lat != null && b.lng != null) {
     const [la, ln] = coord(b.lat, b.lng, true);
     await db.run('UPDATE users SET lat=?, lng=? WHERE id=?', la, ln, id);
+  }
+  if (hasCostEdit) {
+    await db.run('UPDATE users SET cost_override=?, exempt_from=?, exempt_until=? WHERE id=?', nextCostOverride, nextExemptFrom, nextExemptUntil, id);
   }
   await audit(req.user.id, 'user_update', { id, ...b });
   res.json({ ok: true });
@@ -968,6 +1017,24 @@ A.put('/settings/commission', wrap(async (req, res) => {
   await setSetting('commission', v);
   await audit(req.user.id, 'commission', { v });
   res.json({ commission: v });
+}));
+
+A.put('/settings/order-cost', requireSuperAdmin, wrap(async (req, res) => {
+  const v = int(req.body?.value, 'تكلفة الطلب بالنقاط', 0, 100000);
+  await setSetting('order_cost_points', v);
+  await audit(req.user.id, 'order_cost_points', { v });
+  res.json({ order_cost_points: v });
+}));
+
+A.put('/settings/wallet-enforcement', requireSuperAdmin, wrap(async (req, res) => {
+  const raw = req.body?.enabled ?? req.body?.value;
+  let val;
+  if (raw === true || raw === 'on') val = 'on';
+  else if (raw === false || raw === 'off') val = 'off';
+  else throw bad('قيمة التفعيل غير صالحة');
+  await setSetting('wallet_enforcement', val);
+  await audit(req.user.id, 'wallet_enforcement', { val });
+  res.json({ wallet_enforcement: val });
 }));
 
 // ---------- errors ----------

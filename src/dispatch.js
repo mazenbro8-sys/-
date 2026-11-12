@@ -11,6 +11,30 @@ export function haversineKm(a, b, c, d) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+/**
+ * Resolve effective point cost & source for a captain accepting/assigned an order at `now`.
+ * Precedence: active temporary exemption -> permanent override (0) -> custom positive override -> global default.
+ */
+export function resolveOrderCost(captain, defaultCost = config.defaultOrderCostPoints, now = Date.now()) {
+  const baseDefault = Number.isInteger(Number(defaultCost)) && Number(defaultCost) >= 0 ? Number(defaultCost) : config.defaultOrderCostPoints;
+  const hasFrom = captain?.exempt_from != null;
+  const hasUntil = captain?.exempt_until != null;
+  if (hasFrom || hasUntil) {
+    const fromOk = !hasFrom || now >= Number(captain.exempt_from);
+    const untilOk = !hasUntil || now <= Number(captain.exempt_until);
+    if (fromOk && untilOk) {
+      return { cost_points: 0, cost_source: 'exempt_temporary' };
+    }
+  }
+  if (captain?.cost_override === 0) {
+    return { cost_points: 0, cost_source: 'exempt_permanent' };
+  }
+  if (captain?.cost_override != null && Number.isInteger(Number(captain.cost_override)) && Number(captain.cost_override) > 0) {
+    return { cost_points: Number(captain.cost_override), cost_source: 'override' };
+  }
+  return { cost_points: baseDefault, cost_source: 'default' };
+}
+
 /** Order as seen by each role. Customer details are hidden from captains until they accept. */
 export async function viewOrder(o, role) {
   if (!o) return null;
@@ -40,6 +64,10 @@ export async function viewOrder(o, role) {
     v.eta_minutes = eta;
   } else if (role !== 'captain' && cap) {
     v.captain = { id: cap.id, name: cap.name, phone: cap.phone, at: cap.last_loc_at, last_loc_at: cap.last_loc_at, last_loc_vis: cap.last_loc_vis ?? null };
+  }
+  if (role !== 'merchant') {
+    v.cost_points = o.cost_points ?? null;
+    v.cost_source = o.cost_source ?? null;
   }
   if (role === 'admin') {
     v.captain_id = o.captain_id;

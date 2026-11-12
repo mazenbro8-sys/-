@@ -1182,6 +1182,25 @@ authScreen('admin', (user) => {
               <label>موقع المنشأة على الخريطة (اضغط للتحديد)</label>
               <div id="nmap" class="map"></div>
             </div>
+            ${!isZoneAdmin ? `
+            <div id="capCostFields" class="hide" style="margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px">
+              <div style="font-weight:700;margin-bottom:8px">⚙️ تكلفة الطلب والإعفاء للكابتن (اختياري)</div>
+              <div class="row">
+                <div>
+                  <label for="nuCostOverride">تكلفة طلب مخصصة (نقطة)</label>
+                  <div class="form-hint">فارغ = الافتراضي، 0 = إعفاء دائم، رقم موجب = تكلفة مخصصة</div>
+                  <input id="nuCostOverride" type="number" min="0" max="100000" step="1" placeholder="افتراضي">
+                </div>
+                <div>
+                  <label for="nuExemptFrom">بداية الإعفاء المؤقت</label>
+                  <input id="nuExemptFrom" type="datetime-local">
+                </div>
+                <div>
+                  <label for="nuExemptUntil">نهاية الإعفاء المؤقت</label>
+                  <input id="nuExemptUntil" type="datetime-local">
+                </div>
+              </div>
+            </div>` : ''}
             <div class="nu-form-actions">
               <button type="submit" class="big ok" id="nuSubmitBtn">إنشاء الحساب</button>
               <button type="button" class="sec" id="nuCancelBtn">إلغاء</button>
@@ -1223,12 +1242,26 @@ authScreen('admin', (user) => {
         setTimeout(() => nmap?.invalidateSize(), 60);
       };
 
+      const toDtLocal = (ms) => {
+        if (ms == null) return '';
+        const d = new Date(Number(ms));
+        if (Number.isNaN(d.getTime())) return '';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
+      const fromDtLocal = (val) => {
+        if (!val) return null;
+        const ms = new Date(val).getTime();
+        return Number.isFinite(ms) ? ms : null;
+      };
+
       const syncNuRoleFields = () => {
         const val = $('#nrole').value;
         const isMerch = val === 'merchant';
         $('#mfields').classList.toggle('hide', !isMerch);
         $('#nuBiz').required = isMerch;
         $('#nuAddr').required = isMerch;
+        if ($('#capCostFields')) $('#capCostFields').classList.toggle('hide', !(val === 'captain' && editUserId != null));
         if (!isZoneAdmin) $('#nzoneWrap').classList.toggle('hide', val === 'admin');
         if (isMerch && !$('#nu').classList.contains('hide')) ensureNuMap();
       };
@@ -1279,6 +1312,11 @@ authScreen('admin', (user) => {
         $('#nuAddr').value = u.address || '';
         $('#nuPwGroup').classList.add('hide');
         $('#nuPw').required = false;
+        if ($('#nuCostOverride')) {
+          $('#nuCostOverride').value = u.cost_override != null ? String(u.cost_override) : '';
+          $('#nuExemptFrom').value = toDtLocal(u.exempt_from);
+          $('#nuExemptUntil').value = toDtLocal(u.exempt_until);
+        }
         $('#nuSubmitBtn').textContent = '💾 حفظ التعديلات';
         nu.classList.remove('hide');
         $('#addb').setAttribute('aria-expanded', 'true');
@@ -1331,8 +1369,14 @@ authScreen('admin', (user) => {
           </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد منشآت مسجلة في هذا النطاق</td></tr>';
         } else if (role === 'captain') {
           theadHtml = `<tr><th scope="col">الاسم</th><th scope="col">الهاتف</th><th scope="col">المنطقة</th><th scope="col">الحالة</th><th scope="col">إجراءات</th></tr>`;
+          const capCostPill = (u) => {
+            if (u.cost_source === 'exempt_temporary') return '<span class="badge b-active">✨ إعفاء مؤقت (0 نقطة)</span>';
+            if (u.cost_source === 'exempt_permanent') return '<span class="badge b-active">✨ معفى دائم (0 نقطة)</span>';
+            if (u.cost_source === 'override') return `<span class="badge">${u.effective_cost_points} نقطة (مخصص)</span>`;
+            return '';
+          };
           tbodyHtml = rows.map((u) => `<tr>
-            <td><b>🛵 ${esc(u.name)}</b>${u.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(u.tag)}</code>` : ''}</td>
+            <td><b>🛵 ${esc(u.name)}</b>${u.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(u.tag)}</code>` : ''} ${capCostPill(u)}</td>
             <td dir="ltr">${esc(u.phone)}</td>
             <td>${esc(zname(u.zone_id))}</td>
             <td>
@@ -1563,6 +1607,12 @@ authScreen('admin', (user) => {
         let ok = false;
         if (editUserId != null) {
           delete f.password;
+          if (!isZoneAdmin && f.role === 'captain' && $('#nuCostOverride')) {
+            const coRaw = $('#nuCostOverride').value.trim();
+            f.cost_override = coRaw === '' ? null : Number(coRaw);
+            f.exempt_from = fromDtLocal($('#nuExemptFrom').value);
+            f.exempt_until = fromDtLocal($('#nuExemptUntil').value);
+          }
           ok = await act(() => api(`/admin/users/${editUserId}`, 'PATCH', f), 'تم تحديث بيانات الحساب');
         } else {
           if (f.zone_id === null) delete f.zone_id;
@@ -1657,12 +1707,30 @@ authScreen('admin', (user) => {
     async settings() {
       const s = await api('/admin/stats');
       if (isZoneAdmin) {
-        view().innerHTML = `<div class="grid"><div class="card commission-card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><p class="mut">العمولة المعتمدة حالياً: <b>${money(s.commission)}</b> (تُحدّد من الإدارة العامة)</p></div>
+        view().innerHTML = `<div class="grid">
+          <div class="card commission-card">
+            <h3>🪙 إعدادات النقاط والطلبات</h3>
+            <p class="mut">تكلفة الطلب الافتراضية: <b>${s.order_cost_points ?? 25} نقطة</b> (تُحدّد من الإدارة العامة)</p>
+            <p class="mut">حجب الكابتن منخفض الرصيد: <b>${s.wallet_enforcement === 'on' ? 'مفعّل' : 'متوقف'}</b></p>
+            <p class="mut" style="font-size:12px">أرشيف العمولة السابقة: ${money(s.commission)}</p>
+          </div>
           <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
         return;
       }
-      view().innerHTML = `<div class="grid"><div class="card commission-card"><h3>عمولة الكابتن لكل طلب مسلّم</h3><div class="row"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs">حفظ</button></div></div>
+      view().innerHTML = `<div class="grid">
+        <div class="card commission-card">
+          <h3>🪙 إعدادات محفظة النقاط</h3>
+          <label for="ocp">تكلفة الطلب الافتراضية (نقطة — القيمة 1 نقطة = 0.01 دينار أردني)</label>
+          <div class="row"><input id="ocp" type="number" min="0" max="100000" step="1" value="${s.order_cost_points ?? 25}"><button type="button" id="ocpSave">حفظ</button></div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer">
+            <input id="wenf" type="checkbox" style="width:auto;margin:0" ${s.wallet_enforcement === 'on' ? 'checked' : ''}>
+            <span>منع استقبال الطلبات تلقائياً عند عدم كفاية رصيد النقاط</span>
+          </label>
+          <div class="row" style="margin-top:14px;opacity:.75"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs" class="sec">حفظ العمولة</button></div>
+        </div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
+      $('#ocpSave').onclick = () => act(() => api('/admin/settings/order-cost', 'PUT', { value: Number($('#ocp').value) }), 'تم حفظ تكلفة الطلب');
+      $('#wenf').onchange = () => act(() => api('/admin/settings/wallet-enforcement', 'PUT', { enabled: $('#wenf').checked }), $('#wenf').checked ? 'تم تفعيل حجب الرصيد المنخفض' : 'تم إيقاف حجب الرصيد المنخفض');
       $('#cs').onclick = () => act(() => api('/admin/settings/commission', 'PUT', { value: Number($('#cm').value) }), 'تم الحفظ');
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
     },

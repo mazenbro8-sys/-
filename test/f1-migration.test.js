@@ -140,4 +140,16 @@ test('F1: archives legacy settlements_legacy_syp & commission once and creates c
   const sumRow = await db.get('SELECT COALESCE(SUM(amount),0) s FROM points_ledger WHERE captain_id=?', capId);
   const balRow = await db.get('SELECT balance_points FROM users WHERE id=?', capId);
   assert.equal(balRow.balance_points, sumRow.s);
+
+  // 7. F5/F6 resolveOrderCost precedence unit tests
+  const { resolveOrderCost } = await import('../src/dispatch.js');
+  const now = 1_700_000_000_000;
+  assert.deepEqual(resolveOrderCost({ cost_override: null }, 25, now), { cost_points: 25, cost_source: 'default' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 40 }, 25, now), { cost_points: 40, cost_source: 'override' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 0 }, 25, now), { cost_points: 0, cost_source: 'exempt_permanent' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 40, exempt_from: now - 1000, exempt_until: now + 1000 }, 25, now), { cost_points: 0, cost_source: 'exempt_temporary' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 40, exempt_from: null, exempt_until: now + 1000 }, 25, now), { cost_points: 0, cost_source: 'exempt_temporary' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 40, exempt_from: now - 1000, exempt_until: null }, 25, now), { cost_points: 0, cost_source: 'exempt_temporary' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 40, exempt_from: now - 5000, exempt_until: now - 1000 }, 25, now), { cost_points: 40, cost_source: 'override' });
+  assert.deepEqual(resolveOrderCost({ cost_override: 0, exempt_until: now - 1000 }, 25, now), { cost_points: 0, cost_source: 'exempt_permanent' });
 });
