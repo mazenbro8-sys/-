@@ -328,4 +328,26 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   await call(`/captain/orders/${ord5.id}/status`, 'POST', { status: 'picked_up' }, capBroke.tok);
   await call(`/captain/orders/${ord5.id}/status`, 'POST', { status: 'failed_customer', reason: 'الزبون لم يرد' }, capBroke.tok);
   assert.equal((await call('/captain/wallet', 'GET', null, capBroke.tok)).data.balance_points, 25);
+
+  // F8: manual liability points adjustment (super-admin only -> 403 for zone_admin) + points captain summary
+  assert.equal((await call('/admin/settlements', 'GET', null, adm)).status, 404);
+  assert.equal((await call('/admin/settlements/collect', 'POST', { day: '2026-11-12', captain_id: capBroke.id }, adm)).status, 404);
+  assert.equal((await call('/admin/settings/commission', 'PUT', { value: 1500 }, adm)).status, 404);
+  const richSum = (await call('/captain/summary', 'GET', null, capRich.tok)).data;
+  assert.equal(richSum.deducted_today, 50);
+  assert.equal(richSum.balance_points, -20);
+  assert.equal(richSum.commission, undefined);
+  assert.equal((await call(`/admin/orders/${ord5.id}/liability`, 'POST', { points: 10, reason: 'محاولة مشرف منطقة' }, zaEnf)).status, 403);
+  assert.equal((await call(`/admin/orders/${ord5.id}/liability`, 'POST', { reason: 'بدون نقاط' }, adm)).status, 400);
+  const liabRes = await call(`/admin/orders/${ord5.id}/liability`, 'POST', { points: 15, reason: 'تعويض تأخير طلب' }, adm);
+  assert.equal(liabRes.status, 200);
+  assert.equal(liabRes.data.balance_points, 10);
+  const brokeWallet = (await call('/captain/wallet', 'GET', null, capBroke.tok)).data;
+  assert.equal(brokeWallet.balance_points, 10);
+  assert.equal(brokeWallet.entries[0].kind, 'adjustment');
+  assert.equal(brokeWallet.entries[0].amount, -15);
+  assert.equal(brokeWallet.entries[0].note, 'تعويض تأخير طلب');
+  const admOrd5 = (await call(`/admin/orders/${ord5.id}`, 'GET', null, adm)).data;
+  assert.equal(admOrd5.liability, 15);
+  assert.equal(admOrd5.liability_reason, 'تعويض تأخير طلب');
 });

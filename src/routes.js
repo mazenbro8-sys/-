@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, commission, orderCostPoints, walletEnforcement, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
+import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
@@ -294,10 +294,9 @@ C.get('/wallet', wrap(async (req, res) => {
 }));
 
 C.get('/state', wrap(async (req, res) => {
-  const [allAct, off, comm, wallet] = await Promise.all([
+  const [allAct, off, wallet] = await Promise.all([
     activeOrders(req.user.id),
     pendingOffer(req.user.id),
-    commission(),
     captainWalletSummary(req.user),
   ]);
   const [actViews, offView] = await Promise.all([
@@ -309,7 +308,6 @@ C.get('/state', wrap(async (req, res) => {
     active: actViews[0] || null,
     activeOrders: actViews,
     offer: offView,
-    commission: comm,
     ...wallet,
     intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
   });
@@ -412,7 +410,7 @@ C.post('/orders/:id/status', wrap(async (req, res) => {
   }
   if (NEXT[o.status] !== to) throw bad('انتقال حالة غير صالح');
   if (to === 'delivered') {
-    await closeOrder(id, 'delivered', { actor: req.user.id, withCommission: true });
+    await closeOrder(id, 'delivered', { actor: req.user.id });
   } else {
     await db.run('UPDATE orders SET status=?, picked_at=COALESCE(picked_at, ?) WHERE id=?', to, to === 'picked_up' ? Date.now() : null, id);
     await addEvent(id, to, req.user.id);
@@ -423,27 +421,24 @@ C.post('/orders/:id/status', wrap(async (req, res) => {
 
 C.get('/summary', wrap(async (req, res) => {
   const day = dayOf();
-  const [r, delRow, failRow, earnRow, totRow, setRow] = await Promise.all([
-    db.get("SELECT COUNT(*) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", req.user.id, day),
+  const since = Date.now() - 48 * 3600_000;
+  const [delRow, failRow, totRow, ledgerRows, wallet] = await Promise.all([
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='delivered'", req.user.id, day),
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='failed'", req.user.id, day),
-    db.get("SELECT COALESCE(SUM(delivery_fee),0) s FROM orders WHERE captain_id=? AND day=? AND status='delivered'", req.user.id, day),
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND status='delivered'", req.user.id),
-    db.get('SELECT total, orders_count FROM settlements WHERE captain_id=? AND day=?', req.user.id, day),
+    db.all("SELECT amount, at FROM points_ledger WHERE captain_id=? AND kind='deduction' AND at>=?", req.user.id, since),
+    captainWalletSummary(req.user),
   ]);
-  const totalDueToday = r.c + r.l;
-  const settledAmount = setRow?.total ?? 0;
-  const isFullySettled = Boolean(setRow && settledAmount >= totalDueToday && setRow.orders_count >= delRow.n);
+  const deductedToday = ledgerRows.reduce((s, row) => (dayOf(row.at) === day ? s + Math.abs(row.amount) : s), 0);
   res.json({
     day,
     delivered: delRow.n,
     failed: failRow.n,
-    earnings_today: earnRow.s,
     total_delivered: totRow.n,
-    settled: isFullySettled,
-    commission: r.c,
-    liability: r.l,
-    due: Math.max(0, totalDueToday - settledAmount),
+    deducted_today: deductedToday,
+    balance_points: wallet.balance_points,
+    required_cost: wallet.effective_cost_points,
+    exempt: wallet.exempt,
   });
 }));
 C.get('/history', wrap(async (req, res) => {
@@ -475,7 +470,7 @@ A.get('/stats', wrap(async (req, res) => {
   const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
   const zId = adminZone(req);
-  const [merchants, captains, online, pending, live, deliveredToday, comm, orderCost, enforced, shortage] = zId != null
+  const [merchants, captains, online, pending, live, deliveredToday, cutoverAt, orderCost, enforced, shortage] = zId != null
     ? await Promise.all([
         one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
@@ -483,7 +478,7 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM users WHERE status='pending' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered' AND zone_id=?", day, zId),
-        commission(),
+        pointsCutoverAt(),
         orderCostPoints(),
         walletEnforcement(),
         computeShortage(zId),
@@ -495,12 +490,12 @@ A.get('/stats', wrap(async (req, res) => {
         one("SELECT COUNT(*) n FROM users WHERE status='pending'"),
         one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
         one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
-        commission(),
+        pointsCutoverAt(),
         orderCostPoints(),
         walletEnforcement(),
         computeShortage(),
       ]);
-  res.json({ merchants, captains, online, pending, live, deliveredToday, commission: comm, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', shortage });
+  res.json({ merchants, captains, online, pending, live, deliveredToday, points_cutover_at: cutoverAt, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', shortage });
 }));
 
 A.get('/live', wrap(async (req, res) => {
@@ -978,96 +973,29 @@ A.post('/orders/:id/cancel', wrap(async (req, res) => {
   }
   res.json({ ok: true });
 }));
-/** Dispute resolution: captain at fault (damage / delay) → liability = product amount (or custom). */
-A.post('/orders/:id/liability', wrap(async (req, res) => {
+/** Dispute resolution (super admin only): manual negative points adjustment on captain wallet. */
+A.post('/orders/:id/liability', requireSuperAdmin, wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   if (!o.captain_id) throw bad('الطلب بلا كابتن');
-  const amount = int(req.body?.amount ?? o.product_amount, 'المبلغ', 0, 100_000_000);
+  const pts = int(req.body?.points, 'النقاط', 1, 1_000_000);
   const reason = str(req.body?.reason, 'السبب', 3, 200);
-  await db.run('UPDATE orders SET liability=?, liability_reason=? WHERE id=?', amount, reason, o.id);
-  await addEvent(o.id, 'liability', req.user.id, { amount, reason });
-  await audit(req.user.id, 'liability', { id: o.id, amount, reason });
-  await notifyOrder(o.id);
-  res.json({ ok: true });
-}));
-
-A.get('/settlements', wrap(async (req, res) => {
-  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day)) ? req.query.day : dayOf();
-  const zId = adminZone(req);
-  const rows = zId != null
-    ? await db.all(
-        `SELECT o.captain_id, u.name, u.phone,
-           SUM(o.status='delivered') orders_count, SUM(o.commission) commission_total, SUM(o.liability) liability_total
-         FROM orders o JOIN users u ON u.id=o.captain_id
-         WHERE o.day=? AND o.status IN ('delivered','failed') AND o.zone_id=? GROUP BY o.captain_id`,
-        day, zId
-      )
-    : await db.all(
-        `SELECT o.captain_id, u.name, u.phone,
-           SUM(o.status='delivered') orders_count, SUM(o.commission) commission_total, SUM(o.liability) liability_total
-         FROM orders o JOIN users u ON u.id=o.captain_id
-         WHERE o.day=? AND o.status IN ('delivered','failed') GROUP BY o.captain_id`,
-        day
-      );
-  const out = await Promise.all(rows.map(async (r) => {
-    const s = await db.get('SELECT orders_count, total, collected_at FROM settlements WHERE captain_id=? AND day=?', r.captain_id, day);
-    const total = r.commission_total + r.liability_total;
-    const settledTotal = s?.total ?? 0;
-    const fullyCollected = Boolean(s && settledTotal >= total && s.orders_count >= r.orders_count);
-    return {
-      ...r,
-      total,
-      settled_total: settledTotal,
-      due_total: Math.max(0, total - settledTotal),
-      collected_at: fullyCollected ? s.collected_at : null,
-    };
-  }));
-  res.json({ day, rows: out });
-}));
-A.post('/settlements/collect', wrap(async (req, res) => {
-  const day = String(req.body?.day), cid = int(req.body?.captain_id, 'captain', 1, 2 ** 31);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw bad('تاريخ غير صالح');
-  const zId = adminZone(req);
-  if (zId != null) {
-    const cap = await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId);
-    if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
-  }
-  const r = zId != null
-    ? await db.get("SELECT COALESCE(SUM(status='delivered'),0) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND zone_id=? AND status IN ('delivered','failed')", cid, day, zId)
-    : await db.get("SELECT COALESCE(SUM(status='delivered'),0) n, COALESCE(SUM(commission),0) c, COALESCE(SUM(liability),0) l FROM orders WHERE captain_id=? AND day=? AND status IN ('delivered','failed')", cid, day);
-  if (!r.n && !r.l) throw bad('لا توجد تسوية لهذا اليوم');
-  const existing = await db.get('SELECT orders_count, commission_total, liability_total, total FROM settlements WHERE captain_id=? AND day=?', cid, day);
-  const totalNow = r.c + r.l;
-  const deltaOrders = r.n - (existing?.orders_count ?? 0);
-  const deltaCommission = r.c - (existing?.commission_total ?? 0);
-  const deltaLiability = r.l - (existing?.liability_total ?? 0);
-  const deltaTotal = totalNow - (existing?.total ?? 0);
-  if (existing && deltaTotal <= 0 && deltaOrders <= 0) {
-    throw bad('تم تحصيل جميع مستحقات هذا الكابتن لهذا اليوم مسبقاً');
-  }
-  const now = Date.now();
-  await db.run(
-    `INSERT INTO settlements(captain_id,day,orders_count,commission_total,liability_total,total,collected_at,collected_by)
-     VALUES(?,?,?,?,?,?,?,?)
-     ON CONFLICT(captain_id,day) DO UPDATE SET
-       orders_count=excluded.orders_count,
-       commission_total=excluded.commission_total,
-       liability_total=excluded.liability_total,
-       total=excluded.total,
-       collected_at=excluded.collected_at,
-       collected_by=excluded.collected_by`,
-    cid, day, r.n, r.c, r.l, totalNow, now, req.user.id
-  );
-  await audit(req.user.id, 'settlement_collect', {
-    cid,
-    day,
-    delta_orders: deltaOrders,
-    delta_commission: deltaCommission,
-    delta_liability: deltaLiability,
-    delta_total: deltaTotal,
-    total: totalNow,
+  const adj = await tx(async () => {
+    const res = await applyPointsEntry({
+      captainId: o.captain_id,
+      kind: 'adjustment',
+      amount: -pts,
+      orderId: o.id,
+      actorId: req.user.id,
+      note: reason,
+    });
+    await db.run('UPDATE orders SET liability=COALESCE(liability,0)+?, liability_reason=? WHERE id=?', pts, reason, o.id);
+    await addEvent(o.id, 'liability', req.user.id, { points: pts, reason, balance_after: res.balance_points });
+    await audit(req.user.id, 'order_liability', { id: o.id, points: pts, reason, ledger_id: res.entry.id, balance_after: res.balance_points });
+    return res;
   });
-  res.json({ ok: true, delta: deltaTotal, total: totalNow });
+  sendTo(o.captain_id, { type: 'balance', balance_points: adj.balance_points, delta: -pts, kind: 'adjustment', order_id: o.id, note: reason });
+  await notifyOrder(o.id);
+  res.json({ ok: true, ledger_id: adj.entry.id, balance_points: adj.balance_points, points: pts });
 }));
 
 A.get('/captains/:id/ledger', wrap(async (req, res) => {
@@ -1128,14 +1056,6 @@ A.get('/captains/:id/track', wrap(async (req, res) => {
   }
   const rows = await db.all('SELECT lat,lng,order_id,at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', cid);
   res.json(rows.reverse());
-}));
-
-A.put('/settings/commission', wrap(async (req, res) => {
-  if (req.user.role === 'zone_admin') throw new HttpError(403, 'تعديل العمولة متاح للمدير العام فقط');
-  const v = int(req.body?.value, 'العمولة', 0, 1_000_000);
-  await setSetting('commission', v);
-  await audit(req.user.id, 'commission', { v });
-  res.json({ commission: v });
 }));
 
 A.put('/settings/order-cost', requireSuperAdmin, wrap(async (req, res) => {

@@ -6,7 +6,7 @@ export const enDigits = (v) => String(v ?? '')
   .replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x06f0);
 export const esc = (v) => enDigits(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const serialNo = (o) => '#' + String(typeof o === 'object' ? (o?.serial_no || o?.id || 0) : (o || 0)).padStart(4, '0');
-export const money = (n) => enDigits(new Intl.NumberFormat('en-US').format(n || 0)) + ' ل.س';
+export const points = (n) => `${enDigits(new Intl.NumberFormat('en-US').format(Math.trunc(Number(n) || 0)))} نقطة`;
 export const time = (ms) => (ms ? enDigits(new Date(ms).toLocaleString('ar-SY-u-nu-latn', { hour12: true })) : '—');
 
 // Automatically convert any Arabic/Persian digits typed into inputs/textareas into English digits (0-9)

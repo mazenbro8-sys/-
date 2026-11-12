@@ -1,4 +1,4 @@
-import { $, $$, esc, money, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v16';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v20';
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -456,7 +456,7 @@ authScreen('admin', (user) => {
           ` : ''}
           <button type="button" class="sheet-action-btn" data-sheet-detail="${o.id}">🔍 تفاصيل ومسار الطلب</button>
           ${!isClosed ? `<button type="button" class="sheet-action-btn" data-redispatch="${o.id}">🔄 إعادة تدوير</button>` : ''}
-          ${hasCap ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ تحميل تعويض</button>` : ''}
+          ${hasCap && !isZoneAdmin ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ خصم نقاط تعويض</button>` : ''}
           ${canCancel ? `<button type="button" class="bad sheet-action-btn sheet-cancel-btn" data-sheet-subview="cancel">✕ إلغاء الطلب</button>` : ''}
         </div>
         <div id="sheetDetail" class="sheet-detail-slot"></div>`;
@@ -594,14 +594,10 @@ authScreen('admin', (user) => {
       }
       const liabBtn = ev.target.closest('[data-sheet-liability]');
       if (liabBtn) {
-        const reason = prompt('سبب التحميل (تلف / تأخير)');
-        if (reason) {
-          const ok = await act(() => api(`/admin/orders/${Number(liabBtn.dataset.sheetLiability)}/liability`, 'POST', { reason }), 'تم التحميل');
-          if (ok) {
-            await closeActionSheet();
-            await refreshCurrentTab();
-          }
-        }
+        openLiabilityModal(Number(liabBtn.dataset.sheetLiability), async () => {
+          await closeActionSheet();
+          await refreshCurrentTab();
+        });
         return;
       }
       const capLink = ev.target.closest('[data-cap]');
@@ -1824,9 +1820,9 @@ authScreen('admin', (user) => {
         view().innerHTML = `<div class="grid">
           <div class="card commission-card">
             <h3>🪙 إعدادات النقاط والطلبات</h3>
-            <p class="mut">تكلفة الطلب الافتراضية: <b>${s.order_cost_points ?? 25} نقطة</b> (تُحدّد من الإدارة العامة)</p>
+            <p class="mut">تكلفة الطلب الافتراضية: <b>${points(s.order_cost_points ?? 25)}</b> (تُحدّد من الإدارة العامة)</p>
             <p class="mut">حجب الكابتن منخفض الرصيد: <b>${s.wallet_enforcement === 'on' ? 'مفعّل' : 'متوقف'}</b></p>
-            <p class="mut" style="font-size:12px">أرشيف العمولة السابقة: ${money(s.commission)}</p>
+            ${s.points_cutover_at ? `<p class="mut" style="font-size:12px">تفعيل محفظة النقاط: ${time(s.points_cutover_at)}</p>` : ''}
           </div>
           <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
         return;
@@ -1840,15 +1836,62 @@ authScreen('admin', (user) => {
             <input id="wenf" type="checkbox" style="width:auto;margin:0" ${s.wallet_enforcement === 'on' ? 'checked' : ''}>
             <span>منع استقبال الطلبات تلقائياً عند عدم كفاية رصيد النقاط</span>
           </label>
-          <div class="row" style="margin-top:14px;opacity:.75"><input id="cm" type="number" min="0" value="${s.commission}"><button type="button" id="cs" class="sec">حفظ العمولة</button></div>
+          ${s.points_cutover_at ? `<p class="mut" style="font-size:12px;margin-top:12px">تفعيل نظام النقاط منذ: ${time(s.points_cutover_at)}</p>` : ''}
         </div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
       $('#ocpSave').onclick = () => act(() => api('/admin/settings/order-cost', 'PUT', { value: Number($('#ocp').value) }), 'تم حفظ تكلفة الطلب');
       $('#wenf').onchange = () => act(() => api('/admin/settings/wallet-enforcement', 'PUT', { enabled: $('#wenf').checked }), $('#wenf').checked ? 'تم تفعيل حجب الرصيد المنخفض' : 'تم إيقاف حجب الرصيد المنخفض');
-      $('#cs').onclick = () => act(() => api('/admin/settings/commission', 'PUT', { value: Number($('#cm').value) }), 'تم الحفظ');
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
     },
   };
+
+  function openLiabilityModal(orderId, onSaved) {
+    let dlg = $('#liabilityModal');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.id = 'liabilityModal';
+      dlg.className = 'wallet-dlg';
+      dlg.setAttribute('aria-labelledby', 'liabModalTitle');
+      document.body.appendChild(dlg);
+      dlg.addEventListener('click', (ev) => {
+        if (ev.target === dlg) dlg.close();
+      });
+    }
+    dlg.innerHTML = `
+      <div class="row-head" style="margin-bottom:10px">
+        <div>
+          <h3 id="liabModalTitle" style="margin:0">⚠️ تسوية / خصم نقاط تعويض</h3>
+          <div class="mut" style="font-size:13px">يسجل كحركة خصم يدوي سالبة في سجل الكابتن (للمدير العام فقط)</div>
+        </div>
+        <button type="button" class="sec sm" id="liabClose">✕ إغلاق</button>
+      </div>
+      <form id="liabForm">
+        <label for="liabPts">عدد النقاط المخصومة (نقطة صحيحة)</label>
+        <input id="liabPts" name="points" type="number" min="1" max="1000000" step="1" inputmode="numeric" required autofocus placeholder="مثال: 50">
+        <label for="liabReason" style="margin-top:8px">السبب الإلزامي (تلف / تأخير / تعويض)</label>
+        <input id="liabReason" name="reason" minlength="3" maxlength="200" required placeholder="اكتب السبب بوضوح">
+        <div class="row" style="margin-top:12px">
+          <button type="submit" class="bad" id="liabSubmit">تأكيد خصم النقاط</button>
+          <button type="button" class="sec" id="liabCancel">إلغاء</button>
+        </div>
+      </form>`;
+    if (!dlg.open) dlg.showModal();
+    $('#liabClose').onclick = () => dlg.close();
+    $('#liabCancel').onclick = () => dlg.close();
+    $('#liabForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const btn = $('#liabSubmit');
+      const pts = Number($('#liabPts').value);
+      const reason = $('#liabReason').value.trim();
+      btn.disabled = true;
+      const res = await act(() => api(`/admin/orders/${orderId}/liability`, 'POST', { points: pts, reason }), 'تم خصم نقاط التسوية');
+      btn.disabled = false;
+      if (res) {
+        dlg.close();
+        if (onSaved) await onSaved(res);
+      }
+    };
+  }
 
   async function detail(id, targetBox = null) {
     const detBox = targetBox || $('#detail');
@@ -1870,10 +1913,10 @@ authScreen('admin', (user) => {
           <b>🛵 الكابتن المسند للطلب:</b>
           <div style="margin-top:6px">${renderOrderCaptainCell(o, capList)}</div>
         </div>` : `<p><b>🛵 الكابتن:</b> ${esc(o.captain?.name || 'غير معيّن')}</p>`}
-        <p>العمولة: ${money(o.commission)}${o.liability ? ` — تعويض الكابتن: ${money(o.liability)} ${esc(o.liability_reason || '')}` : ''}</p>
+        <p>تكلفة الطلب: <b>${points(o.cost_points ?? 0)}</b>${o.cost_source === 'exempt' ? ' <span class="badge" style="background:var(--accent)">معفى</span>' : o.cost_source === 'captain_override' ? ' <span class="mut">(سعر خاص)</span>' : ''}${o.liability ? ` — تسوية نقاط إدارية: <b class="clr-bad">-${points(o.liability)}</b> (${esc(o.liability_reason || '')})` : ''}${o.cost_points == null && o.commission > 0 ? ` <span class="mut">(أرشيف ل.س: ${enDigits(o.commission)})</span>` : ''}</p>
         ${hasMap ? '<div id="dmap" class="map" style="height:260px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
-        ${!targetBox ? `<div class="row">${o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">تحميل الكابتن ثمن المنتج (تلف/تأخير)</button>` : ''}
+        ${!targetBox ? `<div class="row">${!isZoneAdmin && o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">⚠️ تعديل / خصم نقاط (تعويض)</button>` : ''}
         ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button type="button" class="sec" id="ca">إلغاء الطلب نهائياً</button>' : ''}</div>` : ''}</div>`;
     if (hasMap) {
       const dmap = makeMap('dmap', DAMASCUS, 13);
@@ -1901,9 +1944,11 @@ authScreen('admin', (user) => {
       }
       setTimeout(() => dmap.invalidateSize(), 120);
     }
-    $('#lb', detBox)?.addEventListener('click', async () => {
-      const reason = prompt('سبب التحميل (تلف / تأخير)');
-      if (reason) { await act(() => api(`/admin/orders/${id}/liability`, 'POST', { reason }), 'تم التحميل'); detail(id, targetBox); }
+    $('#lb', detBox)?.addEventListener('click', () => {
+      openLiabilityModal(id, async () => {
+        await detail(id, targetBox);
+        await refreshCurrentTab();
+      });
     });
     $('#ca', detBox)?.addEventListener('click', async () => {
       if (confirm('إلغاء الطلب نهائياً؟')) {

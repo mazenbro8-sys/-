@@ -398,9 +398,12 @@ export const getSetting = async (k, def) =>
   (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;
 export const setSetting = (k, v) =>
   db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
-export const commission = async () => Number(await getSetting('commission', config.defaultCommission));
 export const orderCostPoints = async () => Number(await getSetting('order_cost_points', config.defaultOrderCostPoints));
 export const walletEnforcement = async () => (await getSetting('wallet_enforcement', 'off')) === 'on';
+export const pointsCutoverAt = async () => {
+  const v = await getSetting('points_cutover_at', null);
+  return v ? Number(v) : null;
+};
 
 export const audit = (actor, action, data) =>
   db.run('INSERT INTO audit(actor_id,action,data,at) VALUES(?,?,?,?)', actor ?? null, action, data ? JSON.stringify(data) : null, Date.now());

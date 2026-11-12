@@ -1,4 +1,4 @@
-import { db, tx, addEvent, commission, orderCostPoints, walletEnforcement, applyPointsEntry } from './db.js';
+import { db, tx, addEvent, orderCostPoints, walletEnforcement, applyPointsEntry } from './db.js';
 import { config, dayOf } from './config.js';
 import { sendTo, sendToAdmins, isConnected } from './realtime.js';
 
@@ -255,8 +255,7 @@ export async function releaseOffer(orderId, outcome) {
   }
 }
 
-export async function closeOrder(orderId, status, { actor, reason, withCommission = false, liability = 0, liabilityReason = null } = {}) {
-  const comm = withCommission ? await commission() : 0;
+export async function closeOrder(orderId, status, { actor, reason, liability = 0, liabilityReason = null } = {}) {
   let cancelledOfferedId = null;
   let deductionRes = null;
   let orderZoneId = null;
@@ -270,7 +269,7 @@ export async function closeOrder(orderId, status, { actor, reason, withCommissio
       now,
       dayOf(now),
       reason ?? null,
-      comm,
+      0,
       liability,
       liabilityReason,
       orderId

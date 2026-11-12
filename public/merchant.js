@@ -1,4 +1,4 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=panther2026v13';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=panther2026v20';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);

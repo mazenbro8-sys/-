@@ -1,9 +1,9 @@
 import {
-  $, $$, esc, money, time, badge, api, act, toast, connectWs, authScreen,
+  $, $$, esc, points, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone, lStore
-} from './shared.js?v=panther2026v13';
+} from './shared.js?v=panther2026v20';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -59,15 +59,7 @@ authScreen('captain', (user) => {
           <div class="bento-label">طلبات اليوم المسلّمة</div>
           <div class="bento-value" id="stDelivered">0</div>
           <div class="bento-sub" id="stTotalAll">إجمالي الكلي: 0 طلب</div>
-        </div>
-        <div class="card fin-hide">
-          <div class="mut">أرباح التوصيل اليوم</div>
-          <div class="stat" id="stEarnings">0 ل.س</div>
-        </div>
-        <div class="card fin-hide">
-          <div class="mut">مستحقات المنصة اليوم</div>
-          <div class="stat" id="stDue">0 ل.س</div>
-          <div class="mut" id="stDueSub">عمولة 0 ل.س</div>
+          <div class="bento-sub" id="stDeductedToday">خصم اليوم: 0 نقطة</div>
         </div>
         <div class="card bento-stat-card bento-accent" id="homeActCard" style="cursor:pointer">
           <div class="bento-watermark">🛵</div>
@@ -414,11 +406,7 @@ authScreen('captain', (user) => {
     const s = await api('/captain/summary');
     $('#stDelivered').textContent = s.delivered ?? 0;
     $('#stTotalAll').textContent = `إجمالي الكلي: ${s.total_delivered ?? s.delivered ?? 0} طلب`;
-    $('#stEarnings').textContent = money(s.earnings_today ?? 0);
-    $('#stDue').textContent = money(s.due ?? 0);
-    $('#stDueSub').innerHTML = s.settled
-      ? '<span class="clr-ok-soft">تمت التسوية اليوم ✓</span>'
-      : `عمولة ${money(s.commission)}${s.liability ? ` + تعويضات ${money(s.liability)}` : ''}`;
+    $('#stDeductedToday').textContent = `خصم اليوم: ${points(s.deducted_today ?? 0)}`;
 
     allHistory = await api('/captain/history');
     renderHistory();
@@ -491,7 +479,7 @@ authScreen('captain', (user) => {
   <p style="background:var(--brand-primary-soft);padding:12px 14px;border-radius:12px;border:1px solid var(--border-brand-soft);margin:10px 0">
     <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}
   </p>
-  <p class="mut fin-hide">عمولة المنصة: <b>${money(st.commission)}</b></p>
+  <p class="mut">تكلفة الطلب عند التسليم: <b>${st.exempt ? 'معفى (0 نقطة)' : points(st.effective_cost_points ?? 0)}</b></p>
   <div id="cd" style="text-align:center;font-size:18px;font-weight:900;color:var(--status-warn-text);padding:8px">
     ⏱️ الوقت المتبقي: <span id="cdVal">--</span> ثانية
   </div>
@@ -528,7 +516,7 @@ authScreen('captain', (user) => {
   const NEXT = {
     accepted: ['picked_up', '📦 استلمت الطلب من المنشأة'],
     picked_up: ['arrived', '📍 وصلت عند الزبون'],
-    arrived: ['delivered', '✅ تم التسليم واستلام المبلغ'],
+    arrived: ['delivered', '✅ تم التسليم'],
   };
 
   function renderActive() {
@@ -606,14 +594,6 @@ authScreen('captain', (user) => {
           </div>` : ''}
         </div>
 
-        <!-- Financial Box -->
-        ${(o.product_amount || o.delivery_fee) ? `<div class="fin-hide" style="padding:12px;border-radius:12px;background:var(--c-f59e0b-a100);border:1px solid var(--c-f59e0b-a260);margin-bottom:10px">
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mut">💵 ادفع للمنشأة ثمن الطلب:</span><b>${money(o.product_amount)}</b></div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mut">🛵 أجرة التوصيل:</span><b>${money(o.delivery_fee)}</b></div>
-          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--c-f59e0b-a200);padding-top:6px;font-size:15.5px"><span style="color:var(--gold);font-weight:800">💰 استلم من الزبون الإجمالي:</span><b class="clr-ok-soft">${money(o.product_amount + o.delivery_fee)}</b></div>
-        </div>` : ''}
-
-
         <div id="amap" class="map" style="height:330px"></div>
 
         <div class="cap-quick-actions">
@@ -648,12 +628,12 @@ authScreen('captain', (user) => {
     }
 
     $('#nx').onclick = async () => {
-      if (n[0] === 'delivered' && !confirm('تأكيد إتمام التسليم واستلام المبلغ من الزبون؟')) return;
+      if (n[0] === 'delivered' && !confirm('تأكيد إتمام تسليم الطلب؟')) return;
       await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: n[0] }), n[0] === 'delivered' ? '🎉 تم تسليم الطلب بنجاح!' : 'تم تحديث حالة الطلب');
       await refresh();
     };
     $('#fl')?.addEventListener('click', async () => {
-      if (!confirm('الإبلاغ عن فشل التسليم؟ ستخسر أجرة التوصيل.')) return;
+      if (!confirm('الإبلاغ عن تعذر تسليم الطلب؟')) return;
       await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: 'failed_customer' }), 'تم الإبلاغ عن تعذر التسليم');
       await refresh();
     });
@@ -687,7 +667,7 @@ authScreen('captain', (user) => {
           <div class="mut" style="font-size:12.5px">📍 ${esc(o.customer_address || '—')}</div>
         </div>
         <div style="text-align:left">
-          ${o.delivery_fee ? `<div class="clr-ok-soft" style="font-weight:800">${money(o.delivery_fee)}</div>` : ''}
+          ${o.status === 'delivered' && o.cost_points > 0 ? `<div class="clr-bad" style="font-weight:800">-${points(o.cost_points)}</div>` : o.status === 'delivered' && o.cost_points === 0 ? `<div class="clr-ok-soft" style="font-weight:700">معفى</div>` : ''}
           <div class="mut" style="font-size:11.5px">${time(o.closed_at)}</div>
         </div>
       </div>
