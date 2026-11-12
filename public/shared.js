@@ -10,17 +10,19 @@ export const points = (n) => `${enDigits(new Intl.NumberFormat('en-US').format(M
 export const time = (ms) => (ms ? enDigits(new Date(ms).toLocaleString('ar-SY-u-nu-latn', { hour12: true })) : '—');
 
 // Automatically convert any Arabic/Persian digits typed into inputs/textareas into English digits (0-9)
-document.addEventListener('input', (e) => {
-  const el = e.target;
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && typeof el.value === 'string') {
-    const conv = enDigits(el.value);
-    if (conv !== el.value) {
-      const pos = el.selectionStart;
-      el.value = conv;
-      try { if (pos != null) el.setSelectionRange(pos, pos); } catch {}
+if (typeof document !== 'undefined') {
+  document.addEventListener('input', (e) => {
+    const el = e.target;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && typeof el.value === 'string') {
+      const conv = enDigits(el.value);
+      if (conv !== el.value) {
+        const pos = el.selectionStart;
+        el.value = conv;
+        try { if (pos != null) el.setSelectionRange(pos, pos); } catch {}
+      }
     }
-  }
-}, true);
+  }, true);
+}
 
 export const STATUS = {
   searching: 'جاري البحث عن كابتن', offered: 'بانتظار قبول كابتن', accepted: 'الكابتن في الطريق للمنشأة',
@@ -36,7 +38,9 @@ export function toast(msg, ms = 3500) {
   t.textContent = msg; t.style.display = 'block';
   clearTimeout(t._t); t._t = setTimeout(() => (t.style.display = 'none'), ms);
 }
-document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
+}
 
 const makeSafeStore = (kind) => {
   const mem = new Map();
@@ -51,7 +55,8 @@ const makeSafeStore = (kind) => {
 export const sStore = makeSafeStore('sessionStorage');
 export const lStore = makeSafeStore('localStorage');
 
-const ROLE_KEY = location.pathname.includes('admin') ? 'admin' : location.pathname.includes('merchant') ? 'merchant' : location.pathname.includes('captain') ? 'captain' : 'app';
+const pathname = typeof location !== 'undefined' ? (location.pathname || '') : '';
+const ROLE_KEY = pathname.includes('admin') ? 'admin' : pathname.includes('merchant') ? 'merchant' : pathname.includes('captain') ? 'captain' : 'app';
 // Remove the old unscoped sessionStorage key if it exists
 sStore.removeItem('token');
 let token = sStore.getItem('token_' + ROLE_KEY) || lStore.getItem('panther_token_' + ROLE_KEY);
@@ -146,21 +151,24 @@ if ('serviceWorker' in navigator && !isNativeApk()) {
 
 let deferredPrompt = null;
 export const isStandalone = () =>
-  isNativeApk() ||
-  window.matchMedia?.('(display-mode: standalone)').matches ||
-  window.navigator.standalone === true;
+  typeof window !== 'undefined' &&
+  (isNativeApk() ||
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    window.navigator?.standalone === true);
 
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  $$('[data-install-app]').forEach((b) => b.classList.remove('hide'));
-});
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    $$('[data-install-app]').forEach((b) => b.classList.remove('hide'));
+  });
 
-window.addEventListener('appinstalled', () => {
-  deferredPrompt = null;
-  toast('✅ تم تثبيت تطبيق PANTHER على هاتفك بنجاح!');
-  $('#appInstallCard')?.classList.add('hide');
-});
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    toast('✅ تم تثبيت تطبيق PANTHER على هاتفك بنجاح!');
+    $('#appInstallCard')?.classList.add('hide');
+  });
+}
 
 export const APP_META = {
   merchant: {
@@ -267,26 +275,28 @@ export function renderInstallBanner(role = ROLE_KEY) {
   </div>`;
 }
 
-document.addEventListener('click', async (e) => {
-  const instBtn = e.target.closest('[data-install-app]');
-  if (instBtn) {
-    e.preventDefault();
-    promptInstallApp(instBtn.dataset.installApp || ROLE_KEY);
-    return;
-  }
-  const copyBtn = e.target.closest('[data-copy-app]');
-  if (copyBtn) {
-    e.preventDefault();
-    const url = (getServerUrl() || location.origin) + copyBtn.dataset.copyApp;
-    try { await navigator.clipboard.writeText(url); toast('✅ تم نسخ رابط تحميل التطبيق'); } catch { prompt('انسخ رابط التطبيق:', url); }
-    return;
-  }
-  const srvBtn = e.target.closest('[data-server-cfg]');
-  if (srvBtn) {
-    e.preventDefault();
-    openServerConfigModal();
-  }
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', async (e) => {
+    const instBtn = e.target.closest('[data-install-app]');
+    if (instBtn) {
+      e.preventDefault();
+      promptInstallApp(instBtn.dataset.installApp || ROLE_KEY);
+      return;
+    }
+    const copyBtn = e.target.closest('[data-copy-app]');
+    if (copyBtn) {
+      e.preventDefault();
+      const url = (getServerUrl() || location.origin) + copyBtn.dataset.copyApp;
+      try { await navigator.clipboard.writeText(url); toast('✅ تم نسخ رابط تحميل التطبيق'); } catch { prompt('انسخ رابط التطبيق:', url); }
+      return;
+    }
+    const srvBtn = e.target.closest('[data-server-cfg]');
+    if (srvBtn) {
+      e.preventDefault();
+      openServerConfigModal();
+    }
+  });
+}
 
 export async function api(path, method = 'GET', body) {
   const base = getServerUrl();
@@ -359,7 +369,7 @@ const MAP_STYLES = {
 };
 
 /* --- map CSS (injected once) --- */
-if (!document.getElementById('_mapCSS')) {
+if (typeof document !== 'undefined' && !document.getElementById('_mapCSS')) {
   const style = document.createElement('style');
   style.id = '_mapCSS';
   style.textContent = `
@@ -707,87 +717,105 @@ export function captainModal(cap) {
   }
 }
 
-// ---------- Soft Captain Notification Audio Synthesis (Web Audio API) ----------
-export const CAPTAIN_TONES = ['soft_bell', 'marimba', 'chime', 'pulse', 'classic', 'rapid', 'high'];
+// ---------- Shared Web Audio Alarm Sound Library (Captain & Admin) ----------
+export const ALARM_SOUNDS = [
+  { id: 'classic', label: 'كلاسيكي', repeatMs: 1850 },
+  { id: 'rapid', label: 'سريع', repeatMs: 1350 },
+  { id: 'high', label: 'عالي', repeatMs: 1700 },
+  { id: 'double_pulse', label: 'نبضة مزدوجة', repeatMs: 1950 },
+  { id: 'calm', label: 'هادئ', repeatMs: 2400 },
+];
+export const CAPTAIN_TONES = ALARM_SOUNDS.map((s) => s.id);
+
+const LEGACY_TONE_MAP = {
+  classic: 'classic',
+  rapid: 'rapid',
+  high: 'high',
+  pulse: 'double_pulse',
+  double_pulse: 'double_pulse',
+  calm: 'calm',
+  soft_bell: 'calm',
+  marimba: 'calm',
+  chime: 'calm',
+};
+
+const ALARM_PATTERNS = {
+  classic: {
+    repeatMs: 1850,
+    steps: [
+      { type: 'triangle', freq: 784, offsetSec: 0, durSec: 0.34, peak: 0.27, attackSec: 0.015 },
+      { type: 'triangle', freq: 587.33, offsetSec: 0.36, durSec: 0.40, peak: 0.25, attackSec: 0.015 },
+    ],
+  },
+  rapid: {
+    repeatMs: 1350,
+    steps: [
+      { type: 'triangle', freq: 880, offsetSec: 0, durSec: 0.12, peak: 0.26, attackSec: 0.008 },
+      { type: 'triangle', freq: 1174.66, offsetSec: 0.15, durSec: 0.12, peak: 0.26, attackSec: 0.008 },
+      { type: 'triangle', freq: 880, offsetSec: 0.30, durSec: 0.12, peak: 0.26, attackSec: 0.008 },
+      { type: 'triangle', freq: 1174.66, offsetSec: 0.45, durSec: 0.14, peak: 0.26, attackSec: 0.008 },
+    ],
+  },
+  high: {
+    repeatMs: 1700,
+    steps: [
+      { type: 'sine', freq: 1174.66, offsetSec: 0, durSec: 0.20, peak: 0.24, attackSec: 0.01 },
+      { type: 'sine', freq: 1567.98, offsetSec: 0.17, durSec: 0.22, peak: 0.24, attackSec: 0.01 },
+      { type: 'sine', freq: 1975.53, offsetSec: 0.34, durSec: 0.32, peak: 0.22, attackSec: 0.01 },
+    ],
+  },
+  double_pulse: {
+    repeatMs: 1950,
+    steps: [
+      { type: 'triangle', freq: 523.25, offsetSec: 0, durSec: 0.14, peak: 0.26, attackSec: 0.01 },
+      { type: 'triangle', freq: 659.25, offsetSec: 0.15, durSec: 0.16, peak: 0.26, attackSec: 0.01 },
+      { type: 'triangle', freq: 523.25, offsetSec: 0.56, durSec: 0.14, peak: 0.26, attackSec: 0.01 },
+      { type: 'triangle', freq: 659.25, offsetSec: 0.71, durSec: 0.20, peak: 0.26, attackSec: 0.01 },
+    ],
+  },
+  calm: {
+    repeatMs: 2400,
+    steps: [
+      { type: 'sine', freq: 392, offsetSec: 0, durSec: 0.42, peak: 0.21, attackSec: 0.045 },
+      { type: 'sine', freq: 493.88, offsetSec: 0.28, durSec: 0.48, peak: 0.21, attackSec: 0.045 },
+      { type: 'sine', freq: 587.33, offsetSec: 0.58, durSec: 0.58, peak: 0.20, attackSec: 0.05 },
+    ],
+  },
+};
 
 export function normalizeCaptainTone(tone) {
-  return CAPTAIN_TONES.includes(tone) ? tone : 'soft_bell';
+  return LEGACY_TONE_MAP[tone] || 'calm';
 }
 
-/**
- * Plays a pleasant, non-harsh synthesized notification phrase (gain <= 0.28, sine/triangle only).
- * Returns { stop, repeatMs } so repeating alarms can cancel active oscillators cleanly.
- */
-export function playCaptainTone(actx, rawTone = 'soft_bell') {
-  const tone = normalizeCaptainTone(rawTone);
+export function normalizeAdminTone(tone) {
+  if (tone == null || tone === '' || tone === 'default') return 'default';
+  return LEGACY_TONE_MAP[tone] || 'default';
+}
+
+function playOscillatorSteps(actx, steps, repeatMs, { maxGain = 0.28, hardSquare = false } = {}) {
   const now = actx.currentTime;
   const nodes = [];
 
-  const note = (type, freq, offsetSec, durSec, peak = 0.25, attackSec = 0.012) => {
+  for (const s of steps) {
     const o = actx.createOscillator();
     const g = actx.createGain();
-    const t0 = now + offsetSec;
-    const tAtk = t0 + Math.min(attackSec, durSec * 0.4);
-    const tEnd = t0 + durSec;
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(Math.min(peak, 0.28), tAtk);
-    g.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    const t0 = now + s.offsetSec;
+    const tEnd = t0 + s.durSec;
+    o.type = s.type;
+    o.frequency.setValueAtTime(s.freq, t0);
+    if (hardSquare) {
+      g.gain.setValueAtTime(s.peak, t0);
+    } else {
+      const tAtk = t0 + Math.min(s.attackSec || 0.012, s.durSec * 0.4);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(Math.min(s.peak, maxGain), tAtk);
+      g.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
     o.connect(g);
     g.connect(actx.destination);
     o.start(t0);
-    o.stop(tEnd + 0.015);
+    o.stop(hardSquare ? tEnd : tEnd + 0.015);
     nodes.push({ o, g });
-  };
-
-  let repeatMs = 2000;
-  switch (tone) {
-    case 'soft_bell':
-      // Gentle two-tone doorbell chime (880Hz -> 1046.5Hz)
-      note('sine', 880, 0, 0.46, 0.26, 0.014);
-      note('sine', 1046.5, 0.24, 0.60, 0.25, 0.014);
-      repeatMs = 2000;
-      break;
-    case 'marimba':
-      // Warm wooden xylophone sound (440Hz -> 523.25Hz -> 659.25Hz)
-      note('triangle', 440, 0, 0.52, 0.28, 0.008);
-      note('triangle', 523.25, 0.17, 0.60, 0.27, 0.008);
-      note('triangle', 659.25, 0.34, 0.68, 0.23, 0.008);
-      repeatMs = 2100;
-      break;
-    case 'chime':
-      // Soft glass / electronic chime (1200Hz -> 1600Hz, fast clean decay)
-      note('sine', 1200, 0, 0.30, 0.22, 0.008);
-      note('sine', 1600, 0.14, 0.38, 0.20, 0.008);
-      repeatMs = 1900;
-      break;
-    case 'pulse':
-      // Subtle low-frequency double pulse (220Hz, slow attack/release, zero harsh highs)
-      note('sine', 220, 0, 0.48, 0.28, 0.09);
-      note('sine', 220, 0.56, 0.52, 0.24, 0.09);
-      repeatMs = 2200;
-      break;
-    case 'rapid':
-      // Backward-compatible softened double alert
-      note('triangle', 880, 0, 0.20, 0.26, 0.01);
-      note('triangle', 659.25, 0.22, 0.22, 0.25, 0.01);
-      note('triangle', 880, 0.46, 0.24, 0.26, 0.01);
-      repeatMs = 1600;
-      break;
-    case 'high':
-      // Backward-compatible softened clear chime
-      note('sine', 1046.5, 0, 0.28, 0.24, 0.012);
-      note('sine', 1318.5, 0.26, 0.36, 0.22, 0.012);
-      repeatMs = 1750;
-      break;
-    case 'classic':
-    default:
-      // Backward-compatible classic two-tone (softened triangle instead of harsh square)
-      note('triangle', 784, 0, 0.34, 0.27, 0.015);
-      note('triangle', 587.33, 0.36, 0.40, 0.25, 0.015);
-      repeatMs = 1850;
-      break;
   }
 
   return {
@@ -800,4 +828,34 @@ export function playCaptainTone(actx, rawTone = 'soft_bell') {
       nodes.length = 0;
     },
   };
+}
+
+/**
+ * Plays one cycle of a synthesized Web Audio alarm sound (< 3s per cycle).
+ * Returns { stop, repeatMs } so repeating alarms can cancel active oscillators cleanly.
+ */
+export function playCaptainTone(actx, rawTone = 'calm') {
+  const tone = normalizeCaptainTone(rawTone);
+  const spec = ALARM_PATTERNS[tone] || ALARM_PATTERNS.calm;
+  return playOscillatorSteps(actx, spec.steps, spec.repeatMs);
+}
+
+/**
+ * Plays an admin alarm sound cycle: preserves legacy 1050Hz/700Hz siren for 'default'
+ * or plays the chosen sound from the shared 5-sound library.
+ */
+export function playAdminTone(actx, rawTone = 'default') {
+  const tone = normalizeAdminTone(rawTone);
+  if (tone === 'default') {
+    return playOscillatorSteps(
+      actx,
+      [
+        { type: 'square', freq: 1050, offsetSec: 0, durSec: 0.35, peak: 0.85 },
+        { type: 'square', freq: 700, offsetSec: 0.35, durSec: 0.35, peak: 0.85 },
+      ],
+      700,
+      { maxGain: 0.9, hardSquare: true }
+    );
+  }
+  return playCaptainTone(actx, tone);
 }

@@ -2,8 +2,8 @@ import {
   $, $$, esc, points, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone, lStore
-} from './shared.js?v=panther2026v24';
+  setToken, openServerConfigModal, ALARM_SOUNDS, normalizeCaptainTone, playCaptainTone, lStore
+} from './shared.js?v=panther2026v25';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -33,10 +33,8 @@ authScreen('captain', (user) => {
   app.classList.remove('hide');
   app.innerHTML = `
     ${renderInstallBanner('captain')}
-    <!-- Global Incoming Offer Alert (always visible across all tabs) -->
-    <div id="offer"></div>
 
-    <!-- TAB 1: HOME (Hero Radar Status + Bento Stats + Live Radar Map) -->
+    <!-- TAB 1: HOME (Status First -> Offer / Active Order -> Brief Today Stats -> Collapsible Map) -->
     <section id="tab-home" class="cap-tab">
       <div class="card captain-hero-card" id="heroStatusCard">
         <div class="hero-status-top">
@@ -52,6 +50,18 @@ authScreen('captain', (user) => {
         <button type="button" id="tog" class="ok hero-tog-btn">🚀 ابدأ العمل الآن</button>
       </div>
 
+      <div id="capLowBalBanner" class="wallet-banner-warn hide">
+        <span>⚠️ رصيد النقاط لا يكفي لتكلفة الطلب التالي — لن تصلك عروض جديدة حتى شحن المحفظة لدى الإدارة.</span>
+        <button type="button" id="goWalletFromWarnBtn" class="sec sm">💰 المحفظة</button>
+      </div>
+
+      <!-- Incoming Offer Alert (directly below status when present) -->
+      <div id="offer"></div>
+
+      <!-- Active Order Quick Summary (directly below status/offer when an order is active) -->
+      <div id="homeActiveOrderBox"></div>
+
+      <!-- Compact Today Stats -->
       <div class="stats4">
         <div class="card bento-stat-card bento-primary">
           <div class="bento-label">طلبات اليوم المسلّمة</div>
@@ -59,15 +69,34 @@ authScreen('captain', (user) => {
           <div class="bento-sub" id="stTotalAll">إجمالي الكلي: 0 طلب</div>
           <div class="bento-sub" id="stDeductedToday">خصم اليوم: 0 نقطة</div>
         </div>
-        <div class="card bento-stat-card bento-accent" id="homeActCard" style="cursor:pointer">
+        <div class="card bento-stat-card bento-accent" id="homeActCard" role="button" tabindex="0">
           <div class="bento-label">الطلبات النشطة حالياً</div>
           <div class="bento-value" id="stActiveCount">0</div>
           <div class="bento-action-link">إدارة الطلبات النشطة ⬅️</div>
         </div>
       </div>
 
-      <div id="capLowBalBanner" class="wallet-banner-warn hide">⚠️ رصيد النقاط لا يكفي لتكلفة الطلب التالي — لن تصلك عروض جديدة حتى شحن المحفظة لدى الإدارة.</div>
+      <!-- Subtle Collapsible Live Location Radar -->
+      <details class="card bento-map-card" id="idleMapCard">
+        <summary class="map-disclosure-summary">
+          <span class="map-summary-label">📡 رادار الموقع الحي</span>
+          <span class="coord-pill" id="coordTxt" dir="ltr">33.5138, 36.2765</span>
+        </summary>
+        <div class="map-disclosure-body">
+          <div class="mut" style="font-size:12px;margin-bottom:8px">تتبع موقعك الميداني المباشر</div>
+          <div id="imap" class="map" style="height:220px"></div>
+        </div>
+      </details>
+    </section>
 
+    <!-- TAB 2: ACTIVE ORDERS (Dedicated exclusively to active orders) -->
+    <section id="tab-active" class="cap-tab hide">
+      <div id="active"></div>
+    </section>
+
+    <!-- TAB 3: WALLET (Points Balance, Order Cost & Ledger) -->
+    <section id="tab-wallet" class="cap-tab hide">
+      <div id="capWalletLowBal" class="wallet-banner-warn hide">⚠️ رصيد النقاط لا يكفي لتكلفة الطلب التالي — تواصل مع الإدارة لشحن رصيدك لاستقبال العروض.</div>
       <div class="card" id="capWalletCard">
         <div class="row-head">
           <div>
@@ -88,22 +117,6 @@ authScreen('captain', (user) => {
           </table>
         </div>
       </div>
-
-      <div class="card bento-map-card" id="idleMapCard">
-        <div class="row-head">
-          <div>
-            <h3 style="margin:0">📡 رادار الموقع الحي</h3>
-            <div class="mut" style="font-size:12px">تتبع موقعك الميداني المباشر</div>
-          </div>
-          <span class="coord-pill" id="coordTxt" dir="ltr">33.5138, 36.2765</span>
-        </div>
-        <div id="imap" class="map" style="height:340px"></div>
-      </div>
-    </section>
-
-    <!-- TAB 2: ACTIVE ORDERS (Dedicated exclusively to active orders) -->
-    <section id="tab-active" class="cap-tab hide">
-      <div id="active"></div>
     </section>
 
     <!-- TAB 3: COMPLETED / HISTORY ORDERS (Dedicated to past orders with filters) -->
@@ -157,15 +170,12 @@ authScreen('captain', (user) => {
             <div class="setting-title">نغمة التنبيه الصوتية</div>
             <div class="setting-sub">اختر نمط صوت التنبيه عند وصول الطلب</div>
           </div>
-          <select id="toneSelect" style="width:auto;min-width:170px;padding:7px 10px">
-            <option value="soft_bell">جرس ناعم (موصى به)</option>
-            <option value="marimba">ماريمبا (دافئ)</option>
-            <option value="chime">رنين خفيف</option>
-            <option value="pulse">نبض هادئ</option>
-            <option value="classic">تنبيه كلاسيكي</option>
-            <option value="rapid">تنبيه سريع مزدوج</option>
-            <option value="high">رنين واضح</option>
-          </select>
+          <div class="tone-picker-row">
+            <select id="toneSelect" aria-label="نغمة التنبيه الصوتية" style="width:auto;min-width:170px">
+              ${ALARM_SOUNDS.map((s) => `<option value="${s.id}">${s.label}</option>`).join('')}
+            </select>
+            <button type="button" id="toneTestBtn" class="sec sm">🔊 تجربة الصوت</button>
+          </div>
         </div>
       </div>
 
@@ -245,7 +255,7 @@ authScreen('captain', (user) => {
   let allHistory = [], histFilter = 'all', histQuery = '';
   let pos = null, watchId = null, lastSent = 0;
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
-  let routeLayer = null, lastRouteTime = 0, selectedActiveId = null;
+  let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
 
   let vibEnabled = lStore.getItem('panther_vibrate') !== '0';
   let alarmTone = normalizeCaptainTone(lStore.getItem('panther_tone'));
@@ -272,6 +282,7 @@ authScreen('captain', (user) => {
     try { window.PantherNative?.setTone?.(alarmTone); } catch {}
     testSound();
   };
+  $('#toneTestBtn').onclick = () => testSound();
   $('#navAppSelect').onchange = (e) => {
     navApp = e.target.value;
     lStore.setItem('panther_nav_app', navApp);
@@ -284,8 +295,14 @@ authScreen('captain', (user) => {
     currentTab = tabName;
     $$('.cap-tab').forEach((sec) => sec.classList.toggle('hide', sec.id !== `tab-${tabName}`));
     $$('#bottomNav button[data-tab]').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabName));
-    if (tabName === 'home') setTimeout(() => idleMap?.invalidateSize(), 60);
+    if (tabName === 'home' && $('#idleMapCard')?.open) {
+      setTimeout(() => {
+        idleMap?.invalidateSize();
+        if (pos) idleMap?.setView([pos.lat, pos.lng], 15);
+      }, 60);
+    }
     if (tabName === 'active') setTimeout(() => map?.invalidateSize(), 60);
+    if (tabName === 'wallet') loadCaptainWallet();
     if (tabName === 'settings') {
       $('#srvCurrentLbl').textContent = getServerUrl() || location.origin;
     }
@@ -295,6 +312,21 @@ authScreen('captain', (user) => {
     btn.onclick = () => switchTab(btn.dataset.tab);
   });
   $('#homeActCard').onclick = () => switchTab('active');
+  $('#homeActCard').onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      switchTab('active');
+    }
+  };
+  $('#goWalletFromWarnBtn')?.addEventListener('click', () => switchTab('wallet'));
+  $('#idleMapCard')?.addEventListener('toggle', () => {
+    if ($('#idleMapCard')?.open) {
+      setTimeout(() => {
+        idleMap?.invalidateSize();
+        if (pos) idleMap?.setView([pos.lat, pos.lng], 15);
+      }, 60);
+    }
+  });
 
   // ---------- Idle Map ----------
   const initCenter = user.lat != null && user.lng != null ? [user.lat, user.lng] : DAMASCUS;
@@ -403,6 +435,12 @@ authScreen('captain', (user) => {
     await loadCaptainWallet();
   }
 
+  function syncLowBalWarn(isLow) {
+    const low = Boolean(isLow);
+    $('#capLowBalBanner')?.classList.toggle('hide', !low);
+    $('#capWalletLowBal')?.classList.toggle('hide', !low);
+  }
+
   async function loadCaptainWallet() {
     try {
       const w = await api('/captain/wallet');
@@ -410,7 +448,7 @@ authScreen('captain', (user) => {
       $('#capBalVal').textContent = `${w.balance_points ?? 0} نقطة`;
       $('#capCostVal').textContent = `${w.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = `${w.available_points ?? 0} نقطة`;
-      $('#capLowBalBanner')?.classList.toggle('hide', !w.low_balance);
+      syncLowBalWarn(w.low_balance);
       $('#capLedgerRows').innerHTML = (w.entries || []).map((e) => `<tr>
         <td>${kindLbl(e.kind)}</td>
         <td dir="ltr"><b style="color:${e.amount >= 0 ? 'var(--ok)' : 'var(--bad)'}">${e.amount > 0 ? `+${e.amount}` : e.amount}</b></td>
@@ -419,6 +457,34 @@ authScreen('captain', (user) => {
         <td>${time(e.at)}</td>
       </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد حركات مالية بعد</td></tr>';
     } catch {}
+  }
+
+  const HOME_STAGE_LABEL = {
+    accepted: 'المرحلة الحالية: التوجه للمنشأة للاستلام',
+    picked_up: 'المرحلة الحالية: تم الاستلام — التوجه للزبون',
+    arrived: 'المرحلة الحالية: عند موقع الزبون — بانتظار تأكيد التسليم',
+  };
+
+  function renderHomeActiveSummary(allAct) {
+    const box = $('#homeActiveOrderBox');
+    if (!box) return;
+    if (!allAct.length) {
+      box.innerHTML = '';
+      return;
+    }
+    const o = allAct.find((x) => x.id === selectedActiveId) || allAct[0];
+    const stageTxt = HOME_STAGE_LABEL[o.status] || 'طلب قيد التنفيذ';
+    box.innerHTML = `<div class="card home-active-card">
+      <div class="row-head">
+        <h3>🛵 ${allAct.length > 1 ? `طلباتك النشطة (${allAct.length})` : 'طلبك النشط الآن'} — <span dir="ltr">${serialNo(o)}</span></h3>
+        ${badge(o.status)}
+      </div>
+      <div class="home-active-stage">${stageTxt}</div>
+      <div style="margin-top:8px"><b>🏪 ${esc(o.merchant?.name || '—')}</b></div>
+      <div class="home-active-addr">📍 ${esc(o.customer_address || '—')}</div>
+      <button type="button" class="ok big" id="homeOpenActiveBtn">🛵 متابعة الطلب النشط</button>
+    </div>`;
+    $('#homeOpenActiveBtn').onclick = () => switchTab('active');
   }
 
   function renderAll() {
@@ -440,7 +506,7 @@ authScreen('captain', (user) => {
       $('#capBalVal').textContent = `${st.balance_points} نقطة`;
       $('#capCostVal').textContent = `${st.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = `${st.available_points ?? st.balance_points} نقطة`;
-      $('#capLowBalBanner')?.classList.toggle('hide', !st.low_balance);
+      syncLowBalWarn(st.low_balance);
     }
     const navBadge = $('#navActBadge');
     if (navBadge) {
@@ -449,6 +515,7 @@ authScreen('captain', (user) => {
     }
 
     renderOffer();
+    renderHomeActiveSummary(allAct);
     renderActive();
     st.online ? startGps() : stopGps();
   }
@@ -456,7 +523,11 @@ authScreen('captain', (user) => {
   function renderOffer() {
     clearInterval(cd);
     const o = st.offer, box = $('#offer');
-    if (!o) { box.innerHTML = ''; stopAlarm(); return; }
+    if (!o) { box.innerHTML = ''; lastAutoShownOfferId = null; stopAlarm(); return; }
+    if (o.id !== lastAutoShownOfferId) {
+      lastAutoShownOfferId = o.id;
+      if (currentTab !== 'home') switchTab('home');
+    }
     notifyOffer(o);
     startAlarm();
     box.innerHTML = `<div class="card offer">

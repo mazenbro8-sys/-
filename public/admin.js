@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v24';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore } from './shared.js?v=panther2026v25';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 
 const toDtLocal = (ms) => {
@@ -80,17 +80,23 @@ authScreen('admin', (user) => {
 
   // ---------- Admin Audio Alarm (Siren when orders > available captains) ----------
   let actx = null, alarmTimer = null, alarmGain = null, alarmOsc = null;
+  let activeAlarmPhrase = null, activePreviewPhrase = null;
+  let adminTone = normalizeAdminTone(lStore.getItem('panther_admin_tone'));
   let mutedShortageKey = '';
   const unlockAudio = () => { try { actx ??= new AudioContext(); if (actx.state === 'suspended') actx.resume(); } catch {} };
   ['pointerdown', 'touchstart', 'keydown'].forEach((ev) => document.addEventListener(ev, unlockAudio, { passive: true }));
+  function stopAdminPreview() {
+    try { activePreviewPhrase?.stop?.(); } catch {}
+    activePreviewPhrase = null;
+  }
   function testAdminSound() {
     unlockAudio();
     if (!actx) return;
-    const o = actx.createOscillator(), g = actx.createGain();
-    o.type = 'square'; g.gain.value = 0.85; o.connect(g); g.connect(actx.destination);
-    o.frequency.setValueAtTime(1050, actx.currentTime);
-    o.frequency.setValueAtTime(700, actx.currentTime + 0.35);
-    o.start(); o.stop(actx.currentTime + 0.7);
+    stopAdminPreview();
+    adminTone = normalizeAdminTone(lStore.getItem('panther_admin_tone'));
+    try {
+      activePreviewPhrase = playAdminTone(actx, adminTone);
+    } catch {}
   }
   const updateAdminSndBtn = () => {
     const ok = actx && actx.state === 'running', b = $('#adminSndBtn');
@@ -111,6 +117,23 @@ authScreen('admin', (user) => {
     if (alarmTimer) return;
     unlockAudio();
     if (!actx) return;
+    stopAdminPreview();
+    adminTone = normalizeAdminTone(lStore.getItem('panther_admin_tone'));
+    if (adminTone !== 'default') {
+      try {
+        const playLoopPhrase = () => {
+          if (!actx) return null;
+          try { activeAlarmPhrase?.stop?.(); } catch {}
+          activeAlarmPhrase = playAdminTone(actx, adminTone);
+          navigator.vibrate?.([220, 120, 220]);
+          return activeAlarmPhrase;
+        };
+        const first = playLoopPhrase();
+        const repeatMs = Math.max(800, Number(first?.repeatMs) || 1850);
+        alarmTimer = setInterval(playLoopPhrase, repeatMs);
+      } catch {}
+      return;
+    }
     try {
       alarmOsc = actx.createOscillator(); alarmGain = actx.createGain();
       alarmOsc.type = 'square'; alarmGain.gain.value = 0.9;
@@ -127,6 +150,9 @@ authScreen('admin', (user) => {
   }
   function stopAdminAlarm() {
     clearInterval(alarmTimer); alarmTimer = null;
+    try { activeAlarmPhrase?.stop?.(); } catch {}
+    activeAlarmPhrase = null;
+    stopAdminPreview();
     try { alarmOsc?.stop(); alarmOsc?.disconnect(); alarmGain?.disconnect(); } catch {}
     alarmOsc = alarmGain = null; navigator.vibrate?.(0);
   }
@@ -2266,6 +2292,44 @@ authScreen('admin', (user) => {
     },
 
     async settings() {
+      const mountAdminSoundSettings = (gridEl) => {
+        if (!gridEl) return;
+        adminTone = normalizeAdminTone(lStore.getItem('panther_admin_tone'));
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <h3>🔊 تنبيهات الصوت</h3>
+          <label for="adminToneSelect">نغمة تنبيه لوحة الإدارة (المحفوظة على هذا الجهاز)</label>
+          <div class="tone-picker-row">
+            <select id="adminToneSelect" aria-label="نغمة تنبيه لوحة الإدارة">
+              <option value="default">النغمة الافتراضية (الإنذار الحالي)</option>
+              ${ALARM_SOUNDS.map((sound) => `<option value="${sound.id}">${sound.label}</option>`).join('')}
+            </select>
+            <button type="button" id="adminToneTestBtn" class="ok sm">🔊 تجربة الصوت</button>
+          </div>
+          <p class="mut" style="font-size:12px;margin-top:10px">تُحفظ النغمة محلياً على هذا الجهاز وتُستخدم عند تنبيه نقص الكباتن أو اختبار الصوت.</p>`;
+        gridEl.appendChild(card);
+        const sel = card.querySelector('#adminToneSelect');
+        if (sel) {
+          sel.value = adminTone;
+          sel.onchange = (e) => {
+            adminTone = normalizeAdminTone(e.target.value);
+            lStore.setItem('panther_admin_tone', adminTone);
+            if (alarmTimer) {
+              stopAdminAlarm();
+              startAdminAlarm();
+            }
+            toast('✅ تم حفظ نغمة تنبيه الإدارة');
+          };
+        }
+        const testBtn = card.querySelector('#adminToneTestBtn');
+        if (testBtn) {
+          testBtn.onclick = () => {
+            testAdminSound();
+            setTimeout(updateAdminSndBtn, 250);
+          };
+        }
+      };
       const s = await api('/admin/stats');
       const pgLabels = {
         grace: 'فترة سماح (فحص 100 م عند توفر GPS)',
@@ -2282,6 +2346,7 @@ authScreen('admin', (user) => {
             ${s.points_cutover_at ? `<p class="mut" style="font-size:12px">تفعيل محفظة النقاط: ${time(s.points_cutover_at)}</p>` : ''}
           </div>
           <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
+        mountAdminSoundSettings(view().querySelector('.grid'));
         return;
       }
       view().innerHTML = `<div class="grid">
@@ -2302,6 +2367,7 @@ authScreen('admin', (user) => {
           ${s.points_cutover_at ? `<p class="mut" style="font-size:12px;margin-top:12px">تفعيل نظام النقاط منذ: ${time(s.points_cutover_at)}</p>` : ''}
         </div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
+      mountAdminSoundSettings(view().querySelector('.grid'));
       $('#ocpSave').onclick = () => act(() => api('/admin/settings/order-cost', 'PUT', { value: Number($('#ocp').value) }), 'تم حفظ تكلفة الطلب');
       $('#wenf').onchange = () => act(() => api('/admin/settings/wallet-enforcement', 'PUT', { enabled: $('#wenf').checked }), $('#wenf').checked ? 'تم تفعيل حجب الرصيد المنخفض' : 'تم إيقاف حجب الرصيد المنخفض');
       $('#pgps').onchange = () => act(() => api('/admin/settings/pickup-gps', 'PUT', { value: $('#pgps').value }), 'تم تحديث إعداد التحقق من الموقع');

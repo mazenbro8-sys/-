@@ -1573,11 +1573,9 @@ input[type="search"]:focus-visible {
 }
 
 #offer {
-  position: sticky;
-  top: var(--space-2);
-  inset-block-start: var(--space-2);
-  z-index: var(--z-sticky);
-  margin-block-end: var(--space-4);
+  position: relative;
+  z-index: 2;
+  margin-block-end: var(--space-0);
 }
 
 #offer .card {
@@ -1702,4 +1700,224 @@ dialog::backdrop {
   color: var(--status-bad-text);
   margin-bottom: 12px;
   font-size: 14px;
+}
+
+.tone-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+}
+
+#toneSelect {
+  min-height: var(--touch-min);
+  min-width: min(170px, 100%);
+  max-width: 100%;
+  flex: 1 1 170px;
+  padding: 10px 12px;
+}
+
+#toneTestBtn {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  width: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 10px 14px;
+}
+
+#toneSelect:focus-visible,
+#toneTestBtn:focus-visible {
+  outline: var(--focus-ring-w) solid var(--border-focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* ===== Captain Home Reorganization & Wallet Tab ===== */
+.captain-hero-card {
+  padding: 14px 16px !important;
+}
+.hero-status-top {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.hero-radar-indicator {
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+}
+#offer .offer {
+  padding: 14px 16px !important;
+}
+#offer .offer > .row-head {
+  margin-block-end: 6px;
+}
+#offer .offer p {
+  margin: 6px 0 !important;
+}
+#offer #cd {
+  display: block;
+  margin-block: 2px;
+  padding: 2px 4px !important;
+  font-size: 17px !important;
+}
+#offer .row {
+  margin-top: 8px !important;
+  margin-block-start: 8px;
+}
+
+#homeActiveOrderBox:empty {
+  display: none;
+}
+
+.home-active-card {
+  margin-block-end: var(--space-0);
+  border-color: var(--status-ok-border) !important;
+}
+
+.home-active-stage {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--status-ok-text);
+}
+
+.home-active-addr {
+  margin-block-start: var(--space-1);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: var(--border-w-thin) solid var(--border-neutral);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+}
+
+#homeOpenActiveBtn {
+  width: 100%;
+  min-height: var(--touch-jumbo);
+  margin-block-start: var(--space-3);
+}
+
+#capLowBalBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-block-end: var(--space-0);
+}
+
+#capLowBalBanner.hide {
+  display: none;
+}
+
+#goWalletFromWarnBtn {
+  min-height: var(--touch-min);
+  width: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+#tab-home .stats4 {
+  margin-block-end: var(--space-0);
+}
+
+#tab-home .bento-stat-card {
+  min-height: 96px !important;
+  padding: 14px 12px !important;
+}
+
+#idleMapCard.bento-map-card {
+  padding: 12px 16px !important;
+}
+
+.map-disclosure-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--touch-min);
+  cursor: pointer;
+  font-weight: var(--weight-extrabold);
+  color: var(--text-primary);
+}
+
+.map-disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.map-disclosure-summary:focus-visible {
+  outline: var(--focus-ring-w) solid var(--border-focus);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-xs);
+}
+
+.map-summary-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.map-summary-label::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--brand-primary);
+  border-bottom: 2px solid var(--brand-primary);
+  transform: rotate(135deg);
+  flex-shrink: 0;
+}
+
+#idleMapCard[open] > .map-disclosure-summary .map-summary-label::before {
+  transform: rotate(45deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .map-summary-label::before {
+    transition: transform var(--dur-fast) var(--ease-standard);
+  }
+}
+
+.map-disclosure-body {
+  margin-block-start: var(--space-3);
+}
+
+.tablewrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+#tab-wallet #capWalletCard {
+  margin-block-end: var(--space-0);
+}
+
+@media (max-width: 600px) {
+  #bottomNav.bottom-nav,
+  .bottom-nav {
+    gap: 2px;
+    padding: 6px;
+  }
+
+  #bottomNav button {
+    min-width: var(--touch-min);
+    padding: 6px 2px;
+    font-size: 11px;
+    white-space: nowrap;
+    gap: 2px;
+  }
+
+  #bottomNav button .nav-ico {
+    font-size: 18px;
+  }
+
+  #navActBadge,
+  .nav-badge {
+    inset-block-start: 2px;
+    inset-inline-start: auto;
+    left: 6px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 10.5px;
+  }
 }

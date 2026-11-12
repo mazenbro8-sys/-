@@ -2184,6 +2184,41 @@ dialog.live-transfer-dialog::backdrop {
   }
 }
 
+.tone-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-2);
+  max-width: 100%;
+}
+
+.tone-picker-row > select {
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+
+.tone-picker-row > button {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
+#adminToneSelect,
+#adminToneTestBtn {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+}
+
+#adminToneSelect:focus-visible,
+#adminToneTestBtn:focus-visible {
+  outline: var(--focus-ring-w) solid var(--border-focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sc[data-go]:active,
   .admin-bottom-dock button[data-t].active .dock-ico,

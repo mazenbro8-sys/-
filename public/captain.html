@@ -13,27 +13,31 @@
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <title>PANTHER: تطبيق الكابتن</title>
 <meta name="description" content="تطبيق PANTHER للكباتن: استلام الطلبات والملاحة وإدارة التوصيلات.">
-<link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="design-tokens.css?v=panther2026v24">
-  <link rel="stylesheet" href="app.css?v=panther2026v24">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="design-tokens.css?v=panther2026v26">
+  <link rel="stylesheet" href="app.css?v=panther2026v26">
 <script src="vendor/leaflet/leaflet.js"></script>
-<script type="module" src="captain.js?v=panther2026v24"></script></head>
+<script type="module" src="captain.js?v=panther2026v26"></script></head>
 <body>
 <div id="bottomNav" class="bottom-nav hide">
   <button type="button" data-tab="home" class="active">
-    <span class="nav-ico">🏠</span>
+    <span class="nav-ico" aria-hidden="true">🏠</span>
     <span>الرئيسية</span>
   </button>
   <button type="button" data-tab="active">
-    <span class="nav-ico">🛵</span>
+    <span class="nav-ico" aria-hidden="true">🛵</span>
     <span>النشطة</span>
     <span id="navActBadge" class="nav-badge hide">0</span>
   </button>
+  <button type="button" data-tab="wallet">
+    <span class="nav-ico" aria-hidden="true">💰</span>
+    <span>المحفظة</span>
+  </button>
   <button type="button" data-tab="history">
-    <span class="nav-ico">📋</span>
+    <span class="nav-ico" aria-hidden="true">📋</span>
     <span>المكتملة</span>
   </button>
   <button type="button" data-tab="settings">
-    <span class="nav-ico">⚙️</span>
+    <span class="nav-ico" aria-hidden="true">⚙️</span>
     <span>الإعدادات</span>
   </button>
 </div>
