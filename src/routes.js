@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, commission, orderCostPoints, walletEnforcement, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
+import { db, tx, addEvent, audit, commission, orderCostPoints, walletEnforcement, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
@@ -264,11 +264,41 @@ const activeOrder = (cid) => db.get("SELECT * FROM orders WHERE captain_id=? AND
 const activeOrders = (cid) => db.all("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id ASC", cid);
 const pendingOffer = (cid) => db.get("SELECT * FROM orders WHERE offered_captain_id=? AND status='offered' LIMIT 1", cid);
 
+async function captainWalletSummary(u) {
+  const [defaultCost, enforced, reservedRow] = await Promise.all([
+    orderCostPoints(),
+    walletEnforcement(),
+    db.get("SELECT COALESCE(SUM(cost_points),0) s FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') AND cost_points > 0", u.id),
+  ]);
+  const rc = resolveOrderCost(u, defaultCost);
+  const bal = Number(u.balance_points ?? 0);
+  const reserved = Number(reservedRow?.s ?? 0);
+  const avail = bal - reserved;
+  return {
+    balance_points: bal,
+    reserved_points: reserved,
+    available_points: avail,
+    required_cost: rc.cost_points,
+    cost_source: rc.cost_source,
+    wallet_enforcement: enforced ? 'on' : 'off',
+    low_balance: enforced && avail < rc.cost_points,
+  };
+}
+
+C.get('/wallet', wrap(async (req, res) => {
+  const [summary, entries] = await Promise.all([
+    captainWalletSummary(req.user),
+    db.all('SELECT id,kind,amount,balance_after,order_id,note,at FROM points_ledger WHERE captain_id=? ORDER BY at DESC, id DESC LIMIT 20', req.user.id),
+  ]);
+  res.json({ tag: req.user.tag ?? null, ...summary, entries });
+}));
+
 C.get('/state', wrap(async (req, res) => {
-  const [allAct, off, comm] = await Promise.all([
+  const [allAct, off, comm, wallet] = await Promise.all([
     activeOrders(req.user.id),
     pendingOffer(req.user.id),
     commission(),
+    captainWalletSummary(req.user),
   ]);
   const [actViews, offView] = await Promise.all([
     Promise.all(allAct.map((x) => viewOrder(x, 'captain'))),
@@ -280,6 +310,7 @@ C.get('/state', wrap(async (req, res) => {
     activeOrders: actViews,
     offer: offView,
     commission: comm,
+    ...wallet,
     intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
   });
 }));
@@ -998,6 +1029,55 @@ A.post('/settlements/collect', wrap(async (req, res) => {
     total: totalNow,
   });
   res.json({ ok: true, delta: deltaTotal, total: totalNow });
+}));
+
+A.get('/captains/:id/ledger', wrap(async (req, res) => {
+  const cid = int(req.params.id, 'id', 1, 2 ** 31);
+  const zId = adminZone(req);
+  const cap = zId != null
+    ? await db.get("SELECT id,name,phone,tag,zone_id,status,balance_points,cost_override,exempt_from,exempt_until FROM users WHERE id=? AND role='captain' AND zone_id=? AND status!='deleted'", cid, zId)
+    : await db.get("SELECT id,name,phone,tag,zone_id,status,balance_points,cost_override,exempt_from,exempt_until FROM users WHERE id=? AND role='captain' AND status!='deleted'", cid);
+  if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50) || 50));
+  const offset = Math.max(0, Number(req.query.offset || 0) || 0);
+  const [rc, entries] = await Promise.all([
+    resolveOrderCost(cap, await orderCostPoints()),
+    db.all(
+      `SELECT l.id,l.kind,l.amount,l.balance_after,l.order_id,l.actor_id,l.note,l.at,a.name actor_name
+       FROM points_ledger l LEFT JOIN users a ON a.id=l.actor_id
+       WHERE l.captain_id=? ORDER BY l.at DESC, l.id DESC LIMIT ? OFFSET ?`,
+      cid, limit, offset
+    ),
+  ]);
+  res.json({ captain: { ...cap, effective_cost_points: rc.cost_points, cost_source: rc.cost_source }, entries });
+}));
+
+A.post('/captains/:id/topup', wrap(async (req, res) => {
+  const cid = int(req.params.id, 'id', 1, 2 ** 31);
+  const zId = adminZone(req);
+  const cap = zId != null
+    ? await db.get("SELECT id,zone_id FROM users WHERE id=? AND role='captain' AND zone_id=? AND status!='deleted'", cid, zId)
+    : await db.get("SELECT id,zone_id FROM users WHERE id=? AND role='captain' AND status!='deleted'", cid);
+  if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  const pts = int(req.body?.points, 'عدد النقاط', 1, 10_000_000);
+  const rawNote = req.body?.note != null ? String(req.body.note).trim() : '';
+  const note = rawNote ? str(rawNote, 'الملاحظة', 1, 200) : 'شحن رصيد يدوي';
+  const rawRef = req.body?.client_ref != null ? String(req.body.client_ref).trim() : '';
+  const clientRef = rawRef ? str(rawRef, 'مرجع العملية', 1, 80) : null;
+  const r = await applyPointsEntry({
+    captainId: cid,
+    kind: 'topup',
+    amount: pts,
+    actorId: req.user.id,
+    note,
+    clientRef,
+  });
+  if (!r.duplicate) {
+    await audit(req.user.id, 'captain_topup', { captain_id: cid, points: pts, balance_after: r.balance_points, note, client_ref: clientRef });
+    sendTo(cid, { type: 'balance', balance_points: r.balance_points, entry: r.entry });
+    sendToAdmins({ type: 'balance', captain_id: cid, balance_points: r.balance_points }, cap.zone_id);
+  }
+  res.json({ ok: true, duplicate: r.duplicate, balance_points: r.balance_points, entry: r.entry });
 }));
 
 A.get('/captains/:id/track', wrap(async (req, res) => {

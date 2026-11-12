@@ -77,6 +77,29 @@ authScreen('captain', (user) => {
         </div>
       </div>
 
+      <div id="capLowBalBanner" class="wallet-banner-warn hide">⚠️ رصيد النقاط لا يكفي لتكلفة الطلب التالي — لن تصلك عروض جديدة حتى شحن المحفظة لدى الإدارة.</div>
+
+      <div class="card" id="capWalletCard">
+        <div class="row-head">
+          <div>
+            <h3 style="margin:0">💰 محفظة النقاط</h3>
+            <div class="mut" style="font-size:12px">1 نقطة = 0.01 دينار أردني</div>
+          </div>
+          <button type="button" class="sec sm" id="capWalletRefBtn">🔄 تحديث</button>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin:10px 0">
+          <div>الرصيد الحالي: <b id="capBalVal">0 نقطة</b></div>
+          <div>تكلفة الطلب: <b id="capCostVal">25 نقطة</b></div>
+          <div>المتاح: <b id="capAvailVal">0 نقطة</b></div>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>العملية</th><th>النقاط</th><th>الرصيد</th><th>التفاصيل</th><th>الوقت</th></tr></thead>
+            <tbody id="capLedgerRows"><tr><td colspan="5" class="mut">جاري التحميل...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card bento-map-card" id="idleMapCard">
         <div class="row-head">
           <div>
@@ -399,6 +422,25 @@ authScreen('captain', (user) => {
 
     allHistory = await api('/captain/history');
     renderHistory();
+    await loadCaptainWallet();
+  }
+
+  async function loadCaptainWallet() {
+    try {
+      const w = await api('/captain/wallet');
+      const kindLbl = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
+      $('#capBalVal').textContent = `${w.balance_points ?? 0} نقطة`;
+      $('#capCostVal').textContent = `${w.required_cost ?? 25} نقطة`;
+      $('#capAvailVal').textContent = `${w.available_points ?? 0} نقطة`;
+      $('#capLowBalBanner')?.classList.toggle('hide', !w.low_balance);
+      $('#capLedgerRows').innerHTML = (w.entries || []).map((e) => `<tr>
+        <td>${kindLbl(e.kind)}</td>
+        <td dir="ltr"><b style="color:${e.amount >= 0 ? 'var(--ok)' : 'var(--bad)'}">${e.amount > 0 ? `+${e.amount}` : e.amount}</b></td>
+        <td>${e.balance_after}</td>
+        <td>${esc(e.note || (e.order_id ? `طلب #${String(e.order_id).padStart(4, '0')}` : '—'))}</td>
+        <td>${time(e.at)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد حركات مالية بعد</td></tr>';
+    } catch {}
   }
 
   function renderAll() {
@@ -416,6 +458,12 @@ authScreen('captain', (user) => {
     }
 
     $('#stActiveCount').textContent = allAct.length;
+    if (st.balance_points !== undefined) {
+      $('#capBalVal').textContent = `${st.balance_points} نقطة`;
+      $('#capCostVal').textContent = `${st.required_cost ?? 25} نقطة`;
+      $('#capAvailVal').textContent = `${st.available_points ?? st.balance_points} نقطة`;
+      $('#capLowBalBanner')?.classList.toggle('hide', !st.low_balance);
+    }
     const navBadge = $('#navActBadge');
     if (navBadge) {
       navBadge.textContent = allAct.length;
@@ -778,9 +826,13 @@ authScreen('captain', (user) => {
     const r = await act(() => api('/captain/online', 'POST', { online: !st.online }));
     if (r) { lastSent = 0; await refresh(); }
   };
+  $('#capWalletRefBtn').onclick = () => loadCaptainWallet();
 
   connectWs((m) => {
-    if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {
+    if (m.type === 'balance') {
+      toast('💳 تم تحديث رصيد محفظتك');
+      refresh();
+    } else if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {
       if (m.type === 'order') testSound();
       refresh();
     }

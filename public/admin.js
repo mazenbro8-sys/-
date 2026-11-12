@@ -28,7 +28,7 @@ authScreen('admin', (user) => {
     live: '📡 غرفة العمليات',
     users: '🏪 الحسابات',
     orders: '📦 الطلبات',
-    settle: '💰 الخزينة',
+    wallet: '💰 المحفظة',
     settings: '⚙️ المناطق والإعدادات',
   };
   app.innerHTML = `<aside class="sb"><div class="logo"><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><div style="line-height:1.1"><div dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--gold);letter-spacing:1.2px;display:block;font-weight:700">DELIVERY • توصيل</small></div></div>
@@ -55,7 +55,7 @@ authScreen('admin', (user) => {
       <button type="button" data-t="live"><span class="dock-ico">📡</span><span class="dock-lbl">العمليات</span></button>
       <button type="button" data-t="orders"><span class="dock-ico">📦</span><span class="dock-lbl">الطلبات</span></button>
       <button type="button" data-t="users"><span class="dock-ico">🏪</span><span class="dock-lbl">الحسابات</span></button>
-      <button type="button" data-t="settle"><span class="dock-ico">💰</span><span class="dock-lbl">الخزينة</span></button>
+      <button type="button" data-t="wallet"><span class="dock-ico">💰</span><span class="dock-lbl">المحفظة</span></button>
       <button type="button" data-t="settings"><span class="dock-ico">⚙️</span><span class="dock-lbl">المزيد</span></button>
     </nav>`;
   $('#lo2').onclick = () => $('#lo').click();
@@ -1686,21 +1686,129 @@ authScreen('admin', (user) => {
       };
     },
 
-    async settle() {
-      const day = view().dataset.day || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Damascus' });
-      const r = await api(`/admin/settlements?day=${day}`);
-      const total = r.rows.reduce((a, x) => a + x.total, 0);
-      view().innerHTML = `<div class="card"><div class="row"><input type="date" id="sd" value="${r.day}"><b>إجمالي المستحق: ${money(total)}</b></div>
-        <div class="tablewrap"><table><thead><tr><th>الكابتن</th><th>الهاتف</th><th>طلبات مسلّمة</th><th>العمولة</th><th>تعويضات</th><th>الإجمالي</th><th></th></tr></thead><tbody>
-      ${r.rows.map((x) => `<tr><td><b>${esc(x.name)}</b></td><td dir="ltr">${esc(x.phone)}</td><td>${x.orders_count}</td><td>${money(x.commission_total)}</td><td>${money(x.liability_total)}</td><td><b>${money(x.total)}</b></td>
-        <td>${x.collected_at ? `<span class="badge b-active">تم التحصيل ${time(x.collected_at)}</span>` : `<button type="button" class="ok sm" data-c="${x.captain_id}">تم التحصيل</button>`}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد بيانات لهذا اليوم</td></tr>'}</tbody></table></div></div>`;
-      $('#sd').onchange = (e) => { view().dataset.day = e.target.value; views.settle(); };
-      view().onclick = async (e) => {
-        const cEl = e.target.closest('[data-c]');
-        if (cEl && confirm('تأكيد تحصيل المبلغ كاش من الكابتن؟')) {
-          await act(() => api('/admin/settlements/collect', 'POST', { day: r.day, captain_id: Number(cEl.dataset.c) }), 'تم التحصيل');
-          views.settle();
+    async wallet() {
+      const caps = await api('/admin/users?role=captain');
+      const kindLabel = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
+      view().innerHTML = `
+        <div class="card">
+          <h3>💰 محفظة النقاط وشحن الكباتن</h3>
+          <search>
+            <form id="wTagForm" class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
+              <div style="flex:1;min-width:200px">
+                <label for="wTagQuery">بحث بكود الكابتن (مثال: K7Q3M أو #K7Q3M)</label>
+                <input id="wTagQuery" name="tag" required placeholder="#K7Q3M" autocorrect="off" autocapitalize="none" spellcheck="false" autocomplete="off">
+              </div>
+              <button type="submit" class="ok">🔍 فتح المحفظة</button>
+            </form>
+          </search>
+        </div>
+        <div class="card">
+          <div class="row-head">
+            <h3 style="margin:0">قائمة الكباتن والأرصدة (${caps.length})</h3>
+            <span class="mut" style="font-size:12px">1 نقطة = 0.01 دينار أردني (أرقام صحيحة فقط)</span>
+          </div>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th>الكابتن</th><th>الكود</th><th>الهاتف</th><th>المنطقة</th><th>الرصيد</th><th>تكلفة الطلب</th><th>إجراء</th></tr></thead>
+              <tbody>
+                ${caps.map((u) => `<tr>
+                  <td><b>🛵 ${esc(u.name)}</b></td>
+                  <td dir="ltr">${u.tag ? `<code class="cap-tag-pill">#${esc(u.tag)}</code>` : '—'}</td>
+                  <td dir="ltr">${esc(u.phone)}</td>
+                  <td>${esc(zname(u.zone_id))}</td>
+                  <td><b style="color:${(u.balance_points ?? 0) < (u.effective_cost_points ?? 25) ? 'var(--bad)' : 'var(--ok)'}">${u.balance_points ?? 0} نقطة</b></td>
+                  <td>${u.effective_cost_points ?? 25} نقطة</td>
+                  <td><button type="button" class="ok sm" data-wcap="${u.id}">⚡ شحن / السجل</button></td>
+                </tr>`).join('') || '<tr><td colspan="7" class="mut">لا يوجد كباتن</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <dialog id="walletModal" class="wallet-dlg" aria-labelledby="walletModalTitle"></dialog>`;
+
+      const dlg = $('#walletModal');
+      const openCaptainWalletModal = async (cid) => {
+        const data = await api(`/admin/captains/${cid}/ledger?limit=25`);
+        const c = data.captain;
+        let clientRef = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        dlg.innerHTML = `
+          <div class="row-head" style="margin-bottom:10px">
+            <div>
+              <h3 id="walletModalTitle" style="margin:0">💳 محفظة ${esc(c.name)} ${c.tag ? `<code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''}</h3>
+              <div class="mut" style="font-size:13px">الرصيد الحالي: <b>${c.balance_points ?? 0} نقطة</b> — تكلفة الطلب: <b>${c.effective_cost_points} نقطة</b></div>
+            </div>
+            <button type="button" class="sec sm" id="wmClose">✕ إغلاق</button>
+          </div>
+          <form id="wmTopupForm">
+            <label for="wmPts">إضافة رصيد يدوي (نقاط صحيحة)</label>
+            <input id="wmPts" name="points" type="number" min="1" max="10000000" step="1" inputmode="numeric" required autofocus placeholder="مثال: 500">
+            <div class="wallet-presets">
+              <button type="button" class="sec sm" data-addpts="100">+100</button>
+              <button type="button" class="sec sm" data-addpts="250">+250</button>
+              <button type="button" class="sec sm" data-addpts="500">+500</button>
+              <button type="button" class="sec sm" data-addpts="1000">+1000</button>
+            </div>
+            <label for="wmNote">ملاحظة / رقم الحوالة (اختياري)</label>
+            <input id="wmNote" name="note" maxlength="200" placeholder="حوالة بنكية / تسليم يدوي">
+            <div style="margin-top:12px">
+              <button type="submit" class="big ok" id="wmSubmit">تأكيد شحن النقاط</button>
+            </div>
+          </form>
+          <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+          <h4 style="margin:0 0 8px">📜 آخر الحركات المالية</h4>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th>النوع</th><th>النقاط</th><th>الرصيد بعد</th><th>البيان</th><th>الوقت</th></tr></thead>
+              <tbody>
+                ${(data.entries || []).map((e) => `<tr>
+                  <td>${kindLabel(e.kind)}</td>
+                  <td dir="ltr"><b style="color:${e.amount >= 0 ? 'var(--ok)' : 'var(--bad)'}">${e.amount > 0 ? `+${e.amount}` : e.amount}</b></td>
+                  <td>${e.balance_after}</td>
+                  <td>${esc(e.note || (e.order_id ? `طلب #${String(e.order_id).padStart(4, '0')}` : '—'))}</td>
+                  <td>${time(e.at)}</td>
+                </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد حركات مسجلة</td></tr>'}
+              </tbody>
+            </table>
+          </div>`;
+        if (!dlg.open) dlg.showModal();
+        $('#wmClose').onclick = () => dlg.close();
+        dlg.querySelectorAll('[data-addpts]').forEach((b) => {
+          b.onclick = () => { $('#wmPts').value = b.dataset.addpts; };
+        });
+        $('#wmTopupForm').onsubmit = async (ev) => {
+          ev.preventDefault();
+          const btn = $('#wmSubmit');
+          const pts = Number($('#wmPts').value);
+          if (!Number.isInteger(pts) || pts < 1) return toast('أدخل عدد نقاط صحيحاً موجباً');
+          btn.disabled = true;
+          const res = await act(() => api(`/admin/captains/${c.id}/topup`, 'POST', {
+            points: pts,
+            note: $('#wmNote').value.trim(),
+            client_ref: clientRef,
+          }), 'تم شحن النقاط بنجاح');
+          btn.disabled = false;
+          if (res) {
+            await openCaptainWalletModal(c.id);
+            if (tab === 'wallet') views.wallet();
+          }
+        };
+      };
+
+      $('#wTagForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const raw = $('#wTagQuery').value.trim().replace(/^#+/, '').toUpperCase();
+        if (!raw) return;
+        try {
+          const cap = await api(`/admin/captains/by-tag/${encodeURIComponent(raw)}`);
+          await openCaptainWalletModal(cap.id);
+        } catch (err) {
+          toast(err.message || 'الكابتن غير موجود');
         }
+      };
+
+      view().onclick = (e) => {
+        const wBtn = e.target.closest('[data-wcap]');
+        if (wBtn) openCaptainWalletModal(Number(wBtn.dataset.wcap));
       };
     },
 
@@ -1977,6 +2085,8 @@ authScreen('admin', (user) => {
           setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, capInCache);
         }
       }
+    } else if (m.type === 'balance') {
+      if (tab === 'wallet') views.wallet();
     } else if (['order', 'pending_user', 'captain'].includes(m.type)) {
       if (m.type === 'pending_user') toast('طلب تسجيل جديد بانتظار الموافقة');
       if (tab === 'live') { clearTimeout(refreshTimer); loadLive(); }

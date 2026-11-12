@@ -173,4 +173,43 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   c1View = (await call(`/admin/captains/by-tag/${cap1.data.tag}`, 'GET', null, adm)).data;
   assert.equal(c1View.effective_cost_points, 30);
   assert.equal(c1View.cost_source, 'default');
+
+  // F4: Manual top-up, client_ref idempotency, zone_admin cross-zone isolation, ledger & captain wallet API
+  assert.equal((await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: 0 }, adm)).status, 400);
+  assert.equal((await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: -10 }, adm)).status, 400);
+  assert.equal((await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: 10.5 }, adm)).status, 400);
+
+  const tu1 = await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: 100, note: 'حوالة أولى', client_ref: 'e2e-ref-1' }, adm);
+  assert.equal(tu1.status, 200);
+  assert.equal(tu1.data.duplicate, false);
+  assert.equal(tu1.data.balance_points, 100);
+
+  const tu1Dup = await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: 100, note: 'حوالة أولى', client_ref: 'e2e-ref-1' }, adm);
+  assert.equal(tu1Dup.status, 200);
+  assert.equal(tu1Dup.data.duplicate, true);
+  assert.equal(tu1Dup.data.balance_points, 100);
+
+  // zone_admin can top up z1 captain, blocked (404) from z2 captain
+  const tuZa = await call(`/admin/captains/${cap1.data.id}/topup`, 'POST', { points: 50, note: 'شحن منطقة 1' }, za1);
+  assert.equal(tuZa.status, 200);
+  assert.equal(tuZa.data.balance_points, 150);
+  assert.equal((await call(`/admin/captains/${cap2.data.id}/topup`, 'POST', { points: 50 }, za1)).status, 404);
+  assert.equal((await call(`/admin/captains/${cap2.data.id}/ledger`, 'GET', null, za1)).status, 404);
+
+  const admLedger = await call(`/admin/captains/${cap1.data.id}/ledger`, 'GET', null, adm);
+  assert.equal(admLedger.status, 200);
+  assert.equal(admLedger.data.captain.balance_points, 150);
+  assert.equal(admLedger.data.entries.length, 2);
+
+  const capWallet = await call('/captain/wallet', 'GET', null, cap1Login.data.token);
+  assert.equal(capWallet.status, 200);
+  assert.equal(capWallet.data.balance_points, 150);
+  assert.equal(capWallet.data.required_cost, 30);
+  assert.equal(capWallet.data.entries.length, 2);
+
+  const capState = await call('/captain/state', 'GET', null, cap1Login.data.token);
+  assert.equal(capState.status, 200);
+  assert.equal(capState.data.balance_points, 150);
+  assert.equal(capState.data.required_cost, 30);
+  assert.equal(capState.data.low_balance, false);
 });

@@ -1981,3 +1981,37 @@ body:has(.bottom-nav) #toast {
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
   vertical-align: middle;
 }
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: rgba(8, 12, 20, 0.65);
+}
+.wallet-dlg {
+  width: min(560px, calc(100vw - 24px));
+  max-height: 90dvh;
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 16px;
+  background: var(--surface, #131b2b);
+  color: var(--text, #eef2f7);
+  padding: 18px;
+}
+.wallet-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.wallet-banner-warn {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--bad, #ef4444);
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--text, #eef2f7);
+  margin-bottom: 12px;
+  font-size: 14px;
+}
