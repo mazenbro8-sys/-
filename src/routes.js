@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, commission, setSetting } from './db.js';
+import { db, tx, addEvent, audit, commission, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage } from './dispatch.js';
@@ -43,7 +43,7 @@ const phone = (v) => {
 };
 const oid = (req) => int(req.params.id, 'id', 1, 2 ** 31);
 
-const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phone, zone_id: u.zone_id, status: u.status, business_name: u.business_name, address: u.address, lat: u.lat, lng: u.lng, online: !!u.online });
+const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phone, zone_id: u.zone_id, status: u.status, business_name: u.business_name, address: u.address, lat: u.lat, lng: u.lng, online: !!u.online, tag: u.tag ?? null });
 
 const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'محاولات كثيرة، حاول لاحقاً' } });
 const registerLimiter = rateLimit({ windowMs: 60 * 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'طلبات تسجيل كثيرة، حاول لاحقاً' } });
@@ -141,12 +141,13 @@ const createAccount = wrap(async (req, res) => {
     [lat, lng] = coord(b.lat, b.lng);
   }
   if (await db.get('SELECT 1 FROM users WHERE phone=?', p)) throw new HttpError(409, 'رقم الهاتف مسجل مسبقاً');
-  await db.run(
-    'INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-    role, p, name, bcrypt.hashSync(pass, 12), zone, 'active', business, address, lat, lng, Date.now()
+  const tag = role === 'captain' ? await generateUniqueCaptainTag() : null;
+  const r = await db.run(
+    'INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,tag,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+    role, p, name, bcrypt.hashSync(pass, 12), zone, 'active', business, address, lat, lng, tag, Date.now()
   );
-  await audit(req.user.id, 'create_user', { role, phone: p, zone_id: zone });
-  res.status(201).json({ ok: true, message: 'تم إنشاء الحساب' });
+  await audit(req.user.id, 'create_user', { role, phone: p, zone_id: zone, ...(tag ? { tag } : {}) });
+  res.status(201).json({ ok: true, id: Number(r.lastInsertRowid), ...(tag ? { tag } : {}), message: 'تم إنشاء الحساب' });
 });
 
 const DUMMY_HASH = bcrypt.hashSync('dummy-password-1', 12);
@@ -453,14 +454,14 @@ A.get('/live', wrap(async (req, res) => {
     ? await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId),
         db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 100', zId),
-        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
+        db.all("SELECT id,name,phone,zone_id,status,online,tag,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId),
         computeShortage(zId),
       ])
     : await Promise.all([
         db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
         db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
-        db.all("SELECT id,name,phone,zone_id,status,online,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
+        db.all("SELECT id,name,phone,zone_id,status,online,tag,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
         db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
         computeShortage(),
       ]);
@@ -490,6 +491,17 @@ A.get('/live', wrap(async (req, res) => {
 }));
 
 A.post('/users', createAccount);
+A.get('/captains/by-tag/:tag', wrap(async (req, res) => {
+  const tag = normalizeTag(req.params.tag);
+  if (!/^[A-Z0-9]{3,12}$/.test(tag)) throw new HttpError(400, 'كود الكابتن غير صالح');
+  const zId = adminZone(req);
+  const cap = zId != null
+    ? await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted' AND zone_id=?", tag, zId)
+    : await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted'", tag);
+  if (!cap) throw new HttpError(404, 'لم يتم العثور على كابتن بهذا الكود');
+  res.json({ ...cap, online: !!cap.online });
+}));
+
 A.get('/users', wrap(async (req, res) => {
   const zId = adminZone(req);
   const includeDeleted = String(req.query.include_deleted) === 'true';
@@ -525,7 +537,7 @@ A.get('/users', wrap(async (req, res) => {
     }
   }
   const rows = await db.all(
-    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
+    `SELECT id,role,phone,name,business_name,address,zone_id,status,online,tag,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
        EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=users.id AND o.status IN ('accepted','picked_up','arrived')) busy
      FROM users WHERE ${clauses.join(' AND ')} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
     ...args

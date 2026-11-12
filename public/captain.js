@@ -18,7 +18,7 @@ authScreen('captain', (user) => {
       <img src="logo.jpg" alt="PANTHER" class="brand-logo-sm">
       <div class="hdr-brand-stack">
         <span class="brand-title-sm" dir="ltr">PANTHER</span>
-        <span class="hdr-role-tag">الكابتن ${esc(user.name)}</span>
+        <span class="hdr-role-tag">الكابتن ${esc(user.name)}${user.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(user.tag)}</code>` : ''}</span>
       </div>
     </h1>
     <div style="display:flex;gap:8px;align-items:center">
@@ -113,6 +113,16 @@ authScreen('captain', (user) => {
 
     <!-- TAB 4: SETTINGS & PROFILE (Audio, Server, Map/GPS, Password, Logout) -->
     <section id="tab-settings" class="cap-tab hide">
+      <div class="card">
+        <div class="cap-sec-title">🪪 بطاقة الكابتن</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-title">${esc(user.name)}</div>
+            <div class="setting-sub">كود التعريف الثابت (للشحن والمحفظة)</div>
+          </div>
+          <code dir="ltr" class="cap-tag-pill" style="font-size:15px">${user.tag ? `#${esc(user.tag)}` : '—'}</code>
+        </div>
+      </div>
       <!-- Sound & Notification Settings -->
       <div class="card">
         <h3>🔊 إعدادات الصوت والتنبيهات</h3>

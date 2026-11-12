@@ -178,7 +178,7 @@ authScreen('admin', (user) => {
   function renderCaptainPopupHtml(c) {
     const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? '🟢 أونلاين متاح' : '⚪ أوفلاين';
     return `<div class="cap-map-popup">
-      <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b> <span class="mut">(${esc(stTxt)})</span></div>
+      <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''} <span class="mut">(${esc(stTxt)})</span></div>
       ${renderCaptainLocDiag(c)}
     </div>`;
   }
@@ -1332,7 +1332,7 @@ authScreen('admin', (user) => {
         } else if (role === 'captain') {
           theadHtml = `<tr><th scope="col">الاسم</th><th scope="col">الهاتف</th><th scope="col">المنطقة</th><th scope="col">الحالة</th><th scope="col">إجراءات</th></tr>`;
           tbodyHtml = rows.map((u) => `<tr>
-            <td><b>🛵 ${esc(u.name)}</b></td>
+            <td><b>🛵 ${esc(u.name)}</b>${u.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(u.tag)}</code>` : ''}</td>
             <td dir="ltr">${esc(u.phone)}</td>
             <td>${esc(zname(u.zone_id))}</td>
             <td>
@@ -1377,7 +1377,7 @@ authScreen('admin', (user) => {
           <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
           <div class="sheet-header">
             <div class="sheet-title-group">
-              <h3 id="ushTitle">${esc(displayTitle)}</h3>
+              <h3 id="ushTitle">${esc(displayTitle)}${u.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(u.tag)}</code>` : ''}</h3>
               ${badge(u.status)}
             </div>
             <button type="button" class="ghost sm sheet-close-btn" data-uact="close" aria-label="إغلاق">✕</button>
@@ -1773,7 +1773,7 @@ authScreen('admin', (user) => {
     if (lSearch) lSearch.oninput = renderLiveOrders;
 
     $('#lcaps').innerHTML = captains.map((c) => `<tr>
-      <td><a href="#" class="cap-chip" data-cap="${c.id}">🛵 ${esc(c.name)}</a></td>
+      <td><a href="#" class="cap-chip" data-cap="${c.id}">🛵 ${esc(c.name)}</a>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''}</td>
       <td dir="ltr">${esc(c.phone)}</td>
       <td>${capStatusTag(c)}${renderCaptainLocDiag(c)}</td>
       <td>

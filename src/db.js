@@ -218,6 +218,31 @@ if (usersVisMeta?.sql && !usersVisMeta.sql.includes('last_loc_vis')) {
   await client.execute('ALTER TABLE users ADD COLUMN last_loc_vis TEXT');
 }
 
+// F2: Immutable captain hashtag code column (`tag`, uppercase 5-char unambiguous code without leading '#')
+const userColsF2 = await db.all('PRAGMA table_info(users)');
+if (!userColsF2.some((c) => c.name === 'tag')) {
+  await client.execute('ALTER TABLE users ADD COLUMN tag TEXT');
+}
+await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tag ON users(tag) WHERE tag IS NOT NULL');
+
+const TAG_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+/** Normalize a captain hashtag lookup string: strip leading '#' and uppercase. */
+export const normalizeTag = (raw) => String(raw ?? '').trim().replace(/^#+/, '').toUpperCase();
+
+/** Generate a unique 5-char unambiguous uppercase captain tag (no 0/O/1/I/L). */
+export async function generateUniqueCaptainTag() {
+  for (let attempt = 0; attempt < 32; attempt++) {
+    let code = '';
+    for (let i = 0; i < 5; i++) {
+      code += TAG_ALPHABET[crypto.randomInt(0, TAG_ALPHABET.length)];
+    }
+    const taken = await db.get('SELECT 1 FROM users WHERE tag=?', code);
+    if (!taken) return code;
+  }
+  throw new Error('Failed to generate unique captain tag');
+}
+
 await client.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
   id TEXT PRIMARY KEY,
   applied_at INTEGER NOT NULL
@@ -246,6 +271,15 @@ await runMigration('2026_11_archive_syp', async () => {
     await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('legacy_commission_syp',?)", String(commRow.value));
   }
   await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('points_cutover_at',?)", String(now));
+});
+
+// F2: Backfill existing captains (including soft-deleted) with immutable unique hashtag codes
+await runMigration('2026_11_captain_tags', async () => {
+  const captains = await db.all("SELECT id FROM users WHERE role='captain' AND (tag IS NULL OR tag='')");
+  for (const c of captains) {
+    const tag = await generateUniqueCaptainTag();
+    await db.run('UPDATE users SET tag=? WHERE id=?', tag, c.id);
+  }
 });
 
 export const getSetting = async (k, def) =>

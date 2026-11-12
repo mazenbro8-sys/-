@@ -69,8 +69,38 @@ test('F1: archives legacy settlements_legacy_syp & commission once and creates c
   const res = await backupDatabase({ url: `file:${dbPath}`, outPath: backupPath });
   assert.equal(res.source, 'sqlite');
   assert.equal(res.counts.settlements_legacy_syp, 1);
-  assert.equal(res.counts.schema_migrations, 1);
+  assert.ok(res.counts.schema_migrations >= 2);
   const parsed = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
   assert.equal(parsed.tables.settlements_legacy_syp.rows[0].currency, 'SYP');
   assert.ok(parsed.schema.some((s) => s.type === 'table' && s.name === 'settlements_legacy_syp'));
+
+  // 5. F2 backfill check: seed legacy captains (including deleted) without tags, clear migration marker, re-boot db.js
+  await db.run(
+    "INSERT INTO users(role,phone,name,pass_hash,zone_id,status,created_at) VALUES('captain','0977000001','كابتن قديم 1','hash',1,'active',?)",
+    Date.now()
+  );
+  await db.run(
+    "INSERT INTO users(role,phone,name,pass_hash,zone_id,status,created_at) VALUES('captain','0977000002','كابتن محذوف','hash',1,'deleted',?)",
+    Date.now()
+  );
+  await db.run(
+    "INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,created_at) VALUES('merchant','0977000003','تاجر','hash',1,'active','مطعم','عنوان',33.5,36.2,?)",
+    Date.now()
+  );
+  await db.run("DELETE FROM schema_migrations WHERE id='2026_11_captain_tags'");
+
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, ['-e', "import('./src/db.js').then(()=>process.exit(0))"], {
+    cwd: process.cwd(),
+    env: { ...process.env, DB_FILE: dbPath },
+  });
+
+  const caps = await db.all("SELECT id,status,tag FROM users WHERE role='captain'");
+  assert.equal(caps.length, 2);
+  for (const c of caps) {
+    assert.match(c.tag, /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{5}$/, `invalid tag ${c.tag} for ${c.status}`);
+  }
+  assert.notEqual(caps[0].tag, caps[1].tag);
+  const merch = await db.get("SELECT tag FROM users WHERE role='merchant' AND phone='0977000003'");
+  assert.equal(merch.tag, null);
 });
