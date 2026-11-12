@@ -455,6 +455,7 @@ authScreen('admin', (user) => {
             <button type="button" class="sheet-action-btn" data-sheet-subview="notify">🔔 إرسال تنبيه للمنشأة</button>
           ` : ''}
           <button type="button" class="sheet-action-btn" data-sheet-detail="${o.id}">🔍 تفاصيل ومسار الطلب</button>
+          ${o.status === 'accepted' ? `<button type="button" class="sheet-action-btn" data-force-pickup="${o.id}">⚡ تأكيد استلام (تجاوز GPS)</button>` : ''}
           ${!isClosed ? `<button type="button" class="sheet-action-btn" data-redispatch="${o.id}">🔄 إعادة تدوير</button>` : ''}
           ${hasCap && !isZoneAdmin ? `<button type="button" class="sheet-action-btn sheet-warn-btn" data-sheet-liability="${o.id}">⚠️ خصم نقاط تعويض</button>` : ''}
           ${canCancel ? `<button type="button" class="bad sheet-action-btn sheet-cancel-btn" data-sheet-subview="cancel">✕ إلغاء الطلب</button>` : ''}
@@ -644,6 +645,14 @@ authScreen('admin', (user) => {
     if (redispBtn) {
       const oid = Number(redispBtn.dataset.redispatch);
       const ok = await act(() => api(`/admin/orders/${oid}/redispatch`, 'POST'), 'تمت إعادة عرض الطلب ليلف على الكباتن من جديد');
+      if (ok) { await refreshCurrentTab(); return 'done'; }
+      return 'handled';
+    }
+    const fpBtn = e.target.closest('[data-force-pickup]');
+    if (fpBtn) {
+      if (!confirm('تأكيد استلام الطلب إدارياً وتجاوز فحص GPS؟')) return 'handled';
+      const oid = Number(fpBtn.dataset.forcePickup);
+      const ok = await act(() => api(`/admin/orders/${oid}/force-pickup`, 'POST', {}), 'تم تأكيد استلام الطلب إدارياً');
       if (ok) { await refreshCurrentTab(); return 'done'; }
       return 'handled';
     }
@@ -1816,12 +1825,18 @@ authScreen('admin', (user) => {
 
     async settings() {
       const s = await api('/admin/stats');
+      const pgLabels = {
+        grace: 'فترة سماح (فحص 100 م عند توفر GPS)',
+        on: 'إلزامي (GPS مطلوب + نطاق 100 م)',
+        off: 'متوقف',
+      };
       if (isZoneAdmin) {
         view().innerHTML = `<div class="grid">
           <div class="card commission-card">
             <h3>🪙 إعدادات النقاط والطلبات</h3>
             <p class="mut">تكلفة الطلب الافتراضية: <b>${points(s.order_cost_points ?? 25)}</b> (تُحدّد من الإدارة العامة)</p>
             <p class="mut">حجب الكابتن منخفض الرصيد: <b>${s.wallet_enforcement === 'on' ? 'مفعّل' : 'متوقف'}</b></p>
+            <p class="mut">التحقق من موقع الاستلام (100 م): <b>${esc(pgLabels[s.pickup_gps_required || 'grace'] || 'فترة سماح')}</b></p>
             ${s.points_cutover_at ? `<p class="mut" style="font-size:12px">تفعيل محفظة النقاط: ${time(s.points_cutover_at)}</p>` : ''}
           </div>
           <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
@@ -1836,11 +1851,18 @@ authScreen('admin', (user) => {
             <input id="wenf" type="checkbox" style="width:auto;margin:0" ${s.wallet_enforcement === 'on' ? 'checked' : ''}>
             <span>منع استقبال الطلبات تلقائياً عند عدم كفاية رصيد النقاط</span>
           </label>
+          <label for="pgps" style="display:block;margin-top:14px">التحقق من موقع الكابتن عند الاستلام (نطاق 100 م حول المنشأة)</label>
+          <select id="pgps">
+            <option value="grace" ${(s.pickup_gps_required || 'grace') === 'grace' ? 'selected' : ''}>فترة سماح (فحص 100 م إن توفر GPS والسماح بدونه)</option>
+            <option value="on" ${s.pickup_gps_required === 'on' ? 'selected' : ''}>إلزامي بالكامل (يرفض الاستلام بدون GPS أو خارج 100 م)</option>
+            <option value="off" ${s.pickup_gps_required === 'off' ? 'selected' : ''}>متوقف (تجاوز فحص المسافة)</option>
+          </select>
           ${s.points_cutover_at ? `<p class="mut" style="font-size:12px;margin-top:12px">تفعيل نظام النقاط منذ: ${time(s.points_cutover_at)}</p>` : ''}
         </div>
         <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
       $('#ocpSave').onclick = () => act(() => api('/admin/settings/order-cost', 'PUT', { value: Number($('#ocp').value) }), 'تم حفظ تكلفة الطلب');
       $('#wenf').onchange = () => act(() => api('/admin/settings/wallet-enforcement', 'PUT', { enabled: $('#wenf').checked }), $('#wenf').checked ? 'تم تفعيل حجب الرصيد المنخفض' : 'تم إيقاف حجب الرصيد المنخفض');
+      $('#pgps').onchange = () => act(() => api('/admin/settings/pickup-gps', 'PUT', { value: $('#pgps').value }), 'تم تحديث إعداد التحقق من الموقع');
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
     },
   };
@@ -1916,7 +1938,7 @@ authScreen('admin', (user) => {
         <p>تكلفة الطلب: <b>${points(o.cost_points ?? 0)}</b>${o.cost_source === 'exempt' ? ' <span class="badge" style="background:var(--accent)">معفى</span>' : o.cost_source === 'captain_override' ? ' <span class="mut">(سعر خاص)</span>' : ''}${o.liability ? ` — تسوية نقاط إدارية: <b class="clr-bad">-${points(o.liability)}</b> (${esc(o.liability_reason || '')})` : ''}${o.cost_points == null && o.commission > 0 ? ` <span class="mut">(أرشيف ل.س: ${enDigits(o.commission)})</span>` : ''}</p>
         ${hasMap ? '<div id="dmap" class="map" style="height:260px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
-        ${!targetBox ? `<div class="row">${!isZoneAdmin && o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">⚠️ تعديل / خصم نقاط (تعويض)</button>` : ''}
+        ${!targetBox ? `<div class="row">${o.status === 'accepted' ? `<button type="button" class="ok" id="fpBtn">⚡ تأكيد استلام (تجاوز GPS)</button>` : ''}${!isZoneAdmin && o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">⚠️ تعديل / خصم نقاط (تعويض)</button>` : ''}
         ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button type="button" class="sec" id="ca">إلغاء الطلب نهائياً</button>' : ''}</div>` : ''}</div>`;
     if (hasMap) {
       const dmap = makeMap('dmap', DAMASCUS, 13);
@@ -1944,6 +1966,11 @@ authScreen('admin', (user) => {
       }
       setTimeout(() => dmap.invalidateSize(), 120);
     }
+    $('#fpBtn', detBox)?.addEventListener('click', async () => {
+      if (!confirm('تأكيد استلام الطلب إدارياً وتجاوز فحص GPS؟')) return;
+      const ok = await act(() => api(`/admin/orders/${id}/force-pickup`, 'POST', {}), 'تم تأكيد استلام الطلب إدارياً');
+      if (ok) { await detail(id, targetBox); await refreshCurrentTab(); }
+    });
     $('#lb', detBox)?.addEventListener('click', () => {
       openLiabilityModal(id, async () => {
         await detail(id, targetBox);

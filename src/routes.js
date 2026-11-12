@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
+import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
@@ -412,8 +412,40 @@ C.post('/orders/:id/status', wrap(async (req, res) => {
   if (to === 'delivered') {
     await closeOrder(id, 'delivered', { actor: req.user.id });
   } else {
+    let pickupEventData = null;
+    if (to === 'picked_up') {
+      const mode = await pickupGpsRequired();
+      const [gpsLat, gpsLng] = coord(req.body?.lat, req.body?.lng, false);
+      let accNum = null;
+      if (req.body?.accuracy != null && req.body?.accuracy !== '') {
+        accNum = Number(typeof req.body.accuracy === 'string' ? toEnDigits(req.body.accuracy) : req.body.accuracy);
+        if (!Number.isFinite(accNum) || accNum < 0 || accNum > 5000) throw bad('دقة الموقع غير صالحة');
+      }
+      if (mode !== 'off') {
+        if (gpsLat == null || gpsLng == null) {
+          if (mode === 'on') {
+            await addEvent(id, 'pickup_gps_missing_rejected', req.user.id);
+            throw bad('يرجى تفعيل الموقع (GPS) لتأكيد استلام الطلب من المنشأة');
+          }
+          await addEvent(id, 'pickup_gps_missing', req.user.id);
+        } else {
+          const m = await db.get('SELECT lat, lng FROM users WHERE id=?', o.merchant_id);
+          if (m?.lat == null || m?.lng == null) {
+            await addEvent(id, 'pickup_no_merchant_coords', req.user.id);
+          } else {
+            const distM = Math.round(haversineKm(gpsLat, gpsLng, m.lat, m.lng) * 1000);
+            const cappedAcc = Math.min(accNum || 0, 50);
+            if (distM - cappedAcc > config.pickupRadiusM) {
+              await addEvent(id, 'pickup_too_far', req.user.id, { dist_m: distM, accuracy_m: accNum, radius_m: config.pickupRadiusM });
+              throw bad(`أنت على بعد ${distM} م من المنشأة، يجب الاقتراب ضمن ${config.pickupRadiusM} م لتأكيد الاستلام`);
+            }
+            pickupEventData = { dist_m: distM, accuracy_m: accNum };
+          }
+        }
+      }
+    }
     await db.run('UPDATE orders SET status=?, picked_at=COALESCE(picked_at, ?) WHERE id=?', to, to === 'picked_up' ? Date.now() : null, id);
-    await addEvent(id, to, req.user.id);
+    await addEvent(id, to, req.user.id, pickupEventData);
     await notifyOrder(id);
   }
   res.json({ ok: true });
@@ -470,7 +502,7 @@ A.get('/stats', wrap(async (req, res) => {
   const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
   const zId = adminZone(req);
-  const [merchants, captains, online, pending, live, deliveredToday, cutoverAt, orderCost, enforced, shortage] = zId != null
+  const [merchants, captains, online, pending, live, deliveredToday, cutoverAt, orderCost, enforced, pickupGps, shortage] = zId != null
     ? await Promise.all([
         one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
         one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
@@ -481,6 +513,7 @@ A.get('/stats', wrap(async (req, res) => {
         pointsCutoverAt(),
         orderCostPoints(),
         walletEnforcement(),
+        pickupGpsRequired(),
         computeShortage(zId),
       ])
     : await Promise.all([
@@ -493,9 +526,10 @@ A.get('/stats', wrap(async (req, res) => {
         pointsCutoverAt(),
         orderCostPoints(),
         walletEnforcement(),
+        pickupGpsRequired(),
         computeShortage(),
       ]);
-  res.json({ merchants, captains, online, pending, live, deliveredToday, points_cutover_at: cutoverAt, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', shortage });
+  res.json({ merchants, captains, online, pending, live, deliveredToday, points_cutover_at: cutoverAt, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', pickup_gps_required: pickupGps, shortage });
 }));
 
 A.get('/live', wrap(async (req, res) => {
@@ -973,6 +1007,23 @@ A.post('/orders/:id/cancel', wrap(async (req, res) => {
   }
   res.json({ ok: true });
 }));
+/** Admin override (zone-scoped): force pickup when captain GPS fails inside 100m check. */
+A.post('/orders/:id/force-pickup', wrap(async (req, res) => {
+  const o = await getAdminOrder(req);
+  if (o.status !== 'accepted') throw bad('يمكن تأكيد الاستلام القسري للطلبات المقبولة فقط');
+  const reason = optStr(req.body?.reason, 'السبب', 200) || 'تجاوز GPS من الإدارة';
+  await db.run(
+    "UPDATE orders SET status='picked_up', picked_at=COALESCE(picked_at, ?) WHERE id=? AND status='accepted'",
+    Date.now(),
+    o.id
+  );
+  await addEvent(o.id, 'admin_force_pickup', req.user.id, { reason });
+  await audit(req.user.id, 'admin_force_pickup', { id: o.id, reason });
+  await notifyOrder(o.id);
+  const updated = await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', o.id), 'admin');
+  res.json({ ok: true, ...updated });
+}));
+
 /** Dispute resolution (super admin only): manual negative points adjustment on captain wallet. */
 A.post('/orders/:id/liability', requireSuperAdmin, wrap(async (req, res) => {
   const o = await getAdminOrder(req);
@@ -1074,6 +1125,14 @@ A.put('/settings/wallet-enforcement', requireSuperAdmin, wrap(async (req, res) =
   await setSetting('wallet_enforcement', val);
   await audit(req.user.id, 'wallet_enforcement', { val });
   res.json({ wallet_enforcement: val });
+}));
+
+A.put('/settings/pickup-gps', requireSuperAdmin, wrap(async (req, res) => {
+  const val = String(req.body?.value ?? req.body?.mode ?? '');
+  if (!['grace', 'on', 'off'].includes(val)) throw bad('قيمة التحقق غير صالحة');
+  await setSetting('pickup_gps_required', val);
+  await audit(req.user.id, 'pickup_gps_required', { val });
+  res.json({ pickup_gps_required: val });
 }));
 
 // ---------- errors ----------

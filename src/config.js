@@ -38,6 +38,7 @@ export const config = {
   idleLocIntervalMs: 60_000,
   defaultCommission: 2000,
   defaultOrderCostPoints: 25,
+  pickupRadiusM: 100,
   etaSpeedKmh: 22,
   tz: 'Asia/Damascus',
 };

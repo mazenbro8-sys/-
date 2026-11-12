@@ -196,13 +196,6 @@ authScreen('captain', (user) => {
             <option value="dark">🌙 الوضع الليلي</option>
           </select>
         </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title">وضع المحاكاة (GPS تجريبي)</div>
-            <div class="setting-sub">توليد موقع وهمي متحرك لتجربة النظام بدون حركة فعلية</div>
-          </div>
-          <input type="checkbox" id="simc" class="accent-warn" style="width:22px;height:22px">
-        </div>
       </div>
 
       <!-- Server & Connection Settings -->
@@ -253,7 +246,7 @@ authScreen('captain', (user) => {
   let currentTab = 'home';
   let st = { online: false, active: null, activeOrders: [], offer: null, intervals: { active: 10000, idle: 60000 } };
   let allHistory = [], histFilter = 'all', histQuery = '';
-  let sim = false, simTimer = null, pos = null, watchId = null, lastSent = 0;
+  let pos = null, watchId = null, lastSent = 0;
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null;
 
@@ -628,8 +621,21 @@ authScreen('captain', (user) => {
     }
 
     $('#nx').onclick = async () => {
+      const btn = $('#nx');
       if (n[0] === 'delivered' && !confirm('تأكيد إتمام تسليم الطلب؟')) return;
-      await act(() => api(`/captain/orders/${o.id}/status`, 'POST', { status: n[0] }), n[0] === 'delivered' ? '🎉 تم تسليم الطلب بنجاح!' : 'تم تحديث حالة الطلب');
+      let payload = { status: n[0] };
+      if (n[0] === 'picked_up') {
+        btn.disabled = true;
+        btn.textContent = '⏳ جاري التحقق من الموقع...';
+        try {
+          const gps = await getFreshGps();
+          if (gps) payload = { status: n[0], lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy };
+        } finally {
+          btn.disabled = false;
+          btn.textContent = n[1];
+        }
+      }
+      await act(() => api(`/captain/orders/${o.id}/status`, 'POST', payload), n[0] === 'delivered' ? '🎉 تم تسليم الطلب بنجاح!' : 'تم تحديث حالة الطلب');
       await refresh();
     };
     $('#fl')?.addEventListener('click', async () => {
@@ -735,8 +741,27 @@ authScreen('captain', (user) => {
     }
   }
 
+  function getFreshGps() {
+    if (!navigator.geolocation) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (p) => {
+          const coords = {
+            lat: p.coords.latitude,
+            lng: p.coords.longitude,
+            accuracy: Number.isFinite(p.coords.accuracy) ? p.coords.accuracy : undefined,
+          };
+          pos = { lat: coords.lat, lng: coords.lng };
+          showMe();
+          resolve(coords);
+        },
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    });
+  }
+
   function startGps() {
-    if (sim) return startSim();
     if (watchId != null) return;
     if (!navigator.geolocation) { $('#gps').textContent = 'الجهاز لا يدعم تحديد الموقع GPS'; return; }
     watchId = navigator.geolocation.watchPosition(
@@ -754,30 +779,7 @@ authScreen('captain', (user) => {
     navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {});
   }
 
-  function startSim() {
-    if (simTimer) return;
-    const baseLat = st.active?.merchant?.lat ?? user.lat ?? DAMASCUS[0];
-    const baseLng = st.active?.merchant?.lng ?? user.lng ?? DAMASCUS[1];
-    pos ??= { lat: baseLat + (Math.random() - 0.5) * 0.008, lng: baseLng + (Math.random() - 0.5) * 0.008 };
-    $('#gps').textContent = '🧪 وضع محاكاة GPS التجريبي مفعّل';
-    showMe();
-    maybeSend();
-    simTimer = setInterval(() => {
-      const o = st.active;
-      const d = o && (o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng });
-      if (d && d.lat != null) {
-        const dx = d.lat - pos.lat, dy = d.lng - pos.lng, n = Math.hypot(dx, dy), step = 0.0004;
-        pos = n < step ? { lat: d.lat, lng: d.lng } : { lat: pos.lat + (dx / n) * step, lng: pos.lng + (dy / n) * step };
-      } else {
-        pos = { lat: pos.lat + (Math.random() - 0.5) * 0.0004, lng: pos.lng + (Math.random() - 0.5) * 0.0004 };
-      }
-      showMe();
-      maybeSend();
-    }, 2000);
-  }
-
   function stopGps() {
-    clearInterval(simTimer); simTimer = null;
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     wake?.release().catch(() => {}); wake = null;
     $('#gps').textContent = 'اضغط «ابدأ العمل» لاستقبال الطلبات وتفعيل التتبع';
@@ -793,14 +795,6 @@ authScreen('captain', (user) => {
     api('/captain/location', 'POST', { ...pos, vis }).catch(() => {});
   }
   setInterval(maybeSend, 3000);
-
-  $('#simc').onchange = (e) => {
-    sim = e.target.checked;
-    stopGps();
-    pos = null;
-    if (st.online) startGps();
-    toast(sim ? '🧪 تم تفعيل محاكاة الـ GPS' : '📍 تم العودة للـ GPS الحقيقي');
-  };
 
   $('#tog').onclick = async () => {
     const r = await act(() => api('/captain/online', 'POST', { online: !st.online }));

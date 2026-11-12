@@ -311,6 +311,10 @@ await runMigration('2026_11_cost_rules', async () => {
   await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('wallet_enforcement','off')");
 });
 
+await runMigration('2026_11_pickup_gps', async () => {
+  await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('pickup_gps_required','grace')");
+});
+
 await runMigration('2026_11_wallet', async () => {
   await db.run(`CREATE TABLE IF NOT EXISTS points_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -400,6 +404,7 @@ export const setSetting = (k, v) =>
   db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
 export const orderCostPoints = async () => Number(await getSetting('order_cost_points', config.defaultOrderCostPoints));
 export const walletEnforcement = async () => (await getSetting('wallet_enforcement', 'off')) === 'on';
+export const pickupGpsRequired = async () => getSetting('pickup_gps_required', 'grace');
 export const pointsCutoverAt = async () => {
   const v = await getSetting('points_cutover_at', null);
   return v ? Number(v) : null;

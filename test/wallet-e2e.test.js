@@ -350,4 +350,112 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   const admOrd5 = (await call(`/admin/orders/${ord5.id}`, 'GET', null, adm)).data;
   assert.equal(admOrd5.liability, 15);
   assert.equal(admOrd5.liability_reason, 'تعويض تأخير طلب');
+
+  // F10: 100m pickup geofence, accuracy tolerance cap (50m), missing merchant coords, grace/on/off modes, & admin force-pickup
+  const merchGeo = await call('/admin/users', 'POST', {
+    role: 'merchant',
+    phone: '0972000101',
+    name: 'مطعم الموقع المحدد',
+    business_name: 'مطعم الموقع المحدد',
+    address: 'دمشق المزة',
+    lat: 33.5138,
+    lng: 36.2765,
+    password: 'Passw0rdX',
+    zone_id: zEnf.id,
+  }, adm);
+  assert.equal(merchGeo.status, 201);
+  const merchNoGeo = await call('/admin/users', 'POST', {
+    role: 'merchant',
+    phone: '0972000102',
+    name: 'مطعم بدون إحداثيات',
+    business_name: 'مطعم بدون إحداثيات',
+    address: 'دمشق بدون gps',
+    password: 'Passw0rdX',
+    zone_id: zEnf.id,
+  }, adm);
+  assert.equal(merchNoGeo.status, 201);
+
+  assert.equal((await call('/admin/stats', 'GET', null, adm)).data.pickup_gps_required, 'grace');
+  assert.equal((await call('/admin/settings/pickup-gps', 'PUT', { value: 'on' }, zaEnf)).status, 403);
+  assert.equal((await call('/admin/settings/pickup-gps', 'PUT', { value: 'bad' }, adm)).status, 400);
+
+  const f10Ord1 = (await call('/admin/orders', 'POST', {
+    merchant_id: merchGeo.data.id,
+    captain_id: capBroke.id,
+    customer_address: 'اختبار مسافة الاستلام',
+  }, adm)).data;
+  // ~222m away with 10m accuracy -> rejected 400 + pickup_too_far logged
+  const tooFar = await call(`/captain/orders/${f10Ord1.id}/status`, 'POST', {
+    status: 'picked_up',
+    lat: 33.5158,
+    lng: 36.2765,
+    accuracy: 10,
+  }, capBroke.tok);
+  assert.equal(tooFar.status, 400);
+  // ~160m away with accuracy 200 (capped at 50m -> 110m > 100m) -> STILL rejected 400!
+  const capTest = await call(`/captain/orders/${f10Ord1.id}/status`, 'POST', {
+    status: 'picked_up',
+    lat: 33.5138 + 160 / 111194.9,
+    lng: 36.2765,
+    accuracy: 200,
+  }, capBroke.tok);
+  assert.equal(capTest.status, 400);
+  const f10DetAfterReject = (await call(`/admin/orders/${f10Ord1.id}`, 'GET', null, adm)).data;
+  assert.ok(f10DetAfterReject.events.some((e) => e.type === 'pickup_too_far'));
+
+  // ~130m away with 45m accuracy -> 130 - 45 = 85 <= 100 -> allowed 200!
+  const withinAcc = await call(`/captain/orders/${f10Ord1.id}/status`, 'POST', {
+    status: 'picked_up',
+    lat: 33.5138 + 130 / 111194.9,
+    lng: 36.2765,
+    accuracy: 45,
+  }, capBroke.tok);
+  assert.equal(withinAcc.status, 200);
+  assert.equal((await call(`/captain/orders/${f10Ord1.id}/status`, 'POST', { status: 'failed_customer' }, capBroke.tok)).status, 200);
+
+  // Switch pickup_gps_required = 'on' -> missing GPS rejected 400; grace -> allowed + pickup_gps_missing logged
+  assert.equal((await call('/admin/settings/pickup-gps', 'PUT', { value: 'on' }, adm)).status, 200);
+  const f10Ord2 = (await call('/admin/orders', 'POST', {
+    merchant_id: merchGeo.data.id,
+    captain_id: capBroke.id,
+    customer_address: 'اختبار بدون GPS',
+  }, adm)).data;
+  assert.equal((await call(`/captain/orders/${f10Ord2.id}/status`, 'POST', { status: 'picked_up' }, capBroke.tok)).status, 400);
+  assert.equal((await call('/admin/settings/pickup-gps', 'PUT', { value: 'grace' }, adm)).status, 200);
+  assert.equal((await call(`/captain/orders/${f10Ord2.id}/status`, 'POST', { status: 'picked_up' }, capBroke.tok)).status, 200);
+  const f10Ord2Det = (await call(`/admin/orders/${f10Ord2.id}`, 'GET', null, adm)).data;
+  assert.ok(f10Ord2Det.events.some((e) => e.type === 'pickup_gps_missing'));
+  assert.equal((await call(`/captain/orders/${f10Ord2.id}/status`, 'POST', { status: 'failed_customer' }, capBroke.tok)).status, 200);
+
+  // Missing merchant coords -> allowed even with far captain coords, logged as pickup_no_merchant_coords
+  const f10Ord3 = (await call('/admin/orders', 'POST', {
+    merchant_id: merchNoGeo.data.id,
+    captain_id: capBroke.id,
+    customer_address: 'منشأة بلا إحداثيات',
+  }, adm)).data;
+  assert.equal((await call(`/captain/orders/${f10Ord3.id}/status`, 'POST', {
+    status: 'picked_up',
+    lat: 33.59,
+    lng: 36.35,
+    accuracy: 15,
+  }, capBroke.tok)).status, 200);
+  const f10Ord3Det = (await call(`/admin/orders/${f10Ord3.id}`, 'GET', null, adm)).data;
+  assert.ok(f10Ord3Det.events.some((e) => e.type === 'pickup_no_merchant_coords'));
+  assert.equal((await call(`/captain/orders/${f10Ord3.id}/status`, 'POST', { status: 'failed_customer' }, capBroke.tok)).status, 200);
+
+  // Admin force-pickup: cross-zone zone_admin gets 404, same-zone zone_admin succeeds + logs admin_force_pickup
+  const f10Ord4 = (await call('/admin/orders', 'POST', {
+    merchant_id: merchGeo.data.id,
+    captain_id: capBroke.id,
+    customer_address: 'تجاوز إداري للاستلام',
+  }, adm)).data;
+  assert.equal((await call(`/admin/orders/${f10Ord4.id}/force-pickup`, 'POST', {}, za1)).status, 404);
+  const fpOk = await call(`/admin/orders/${f10Ord4.id}/force-pickup`, 'POST', { reason: 'عطل مؤقت في GPS الكابتن' }, zaEnf);
+  assert.equal(fpOk.status, 200);
+  assert.equal(fpOk.data.status, 'picked_up');
+  // Second force-pickup on already picked_up order rejected 400
+  assert.equal((await call(`/admin/orders/${f10Ord4.id}/force-pickup`, 'POST', {}, adm)).status, 400);
+  const f10Ord4Det = (await call(`/admin/orders/${f10Ord4.id}`, 'GET', null, adm)).data;
+  assert.ok(f10Ord4Det.events.some((e) => e.type === 'admin_force_pickup'));
+  assert.equal((await call(`/captain/orders/${f10Ord4.id}/status`, 'POST', { status: 'failed_customer' }, capBroke.tok)).status, 200);
 });
