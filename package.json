@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
     "migrate:turso": "node scripts/migrate-to-turso.js",
-    "test": "node --test test/e2e.test.js",
+    "backup:turso": "node scripts/backup-turso.js",
+    "test": "node --test test/*.test.js",
     "prepare:apk": "node scripts/prepare-apk.js",
     "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/compile-apk.ps1"
   },

@@ -218,6 +218,36 @@ if (usersVisMeta?.sql && !usersVisMeta.sql.includes('last_loc_vis')) {
   await client.execute('ALTER TABLE users ADD COLUMN last_loc_vis TEXT');
 }
 
+await client.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+)`);
+
+/** Run a named one-time migration idempotently inside a database write transaction. */
+export async function runMigration(id, fn) {
+  return tx(async () => {
+    const already = await db.get('SELECT 1 FROM schema_migrations WHERE id=?', id);
+    if (already) return false;
+    await fn();
+    await db.run('INSERT INTO schema_migrations(id, applied_at) VALUES (?,?)', id, Date.now());
+    return true;
+  });
+}
+
+// F1: Archive legacy SYP settlements and commission before introducing points wallet
+await runMigration('2026_11_archive_syp', async () => {
+  const now = Date.now();
+  await db.run(
+    "CREATE TABLE IF NOT EXISTS settlements_legacy_syp AS SELECT *, CAST('SYP' AS TEXT) AS currency, CAST(0 AS INTEGER) AS archived_at FROM settlements WHERE 0"
+  );
+  await db.run("INSERT INTO settlements_legacy_syp SELECT *, 'SYP', ? FROM settlements", now);
+  const commRow = await db.get("SELECT value FROM settings WHERE key='commission'");
+  if (commRow?.value != null) {
+    await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('legacy_commission_syp',?)", String(commRow.value));
+  }
+  await db.run("INSERT OR IGNORE INTO settings(key,value) VALUES('points_cutover_at',?)", String(now));
+});
+
 export const getSetting = async (k, def) =>
   (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;
 export const setSetting = (k, v) =>
