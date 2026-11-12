@@ -370,14 +370,30 @@ C.post('/offers/:id/:action', wrap(async (req, res) => {
   if (o.offer_expires_at < Date.now()) { await releaseOffer(id, 'timeout'); throw new HttpError(409, 'انتهت مهلة العرض'); }
   await tx(async () => {
     const now = Date.now();
+    const [freshCap, defaultCost, enforced] = await Promise.all([
+      db.get('SELECT * FROM users WHERE id=?', req.user.id),
+      orderCostPoints(),
+      walletEnforcement(),
+    ]);
+    const rc = resolveOrderCost(freshCap, defaultCost, now);
+    if (enforced && rc.cost_points > 0) {
+      const resRow = await db.get(
+        "SELECT COALESCE(SUM(cost_points),0) s FROM orders WHERE captain_id=? AND id!=? AND status IN ('accepted','picked_up','arrived') AND cost_points > 0",
+        req.user.id, id
+      );
+      const avail = Number(freshCap.balance_points ?? 0) - Number(resRow?.s ?? 0);
+      if (avail < rc.cost_points) {
+        throw new HttpError(409, 'رصيد النقاط لا يكفي لقبول هذا الطلب');
+      }
+    }
     const r = await db.run(
-      "UPDATE orders SET status='accepted', captain_id=?, accepted_at=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=? AND status='offered' AND offered_captain_id=?",
-      req.user.id, now, id, req.user.id
+      "UPDATE orders SET status='accepted', captain_id=?, cost_points=?, cost_source=?, accepted_at=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=? AND status='offered' AND offered_captain_id=?",
+      req.user.id, rc.cost_points, rc.cost_source, now, id, req.user.id
     );
     if (!r.changes) throw new HttpError(409, 'العرض لم يعد متاحاً');
     await db.run("UPDATE offers SET outcome='accepted' WHERE order_id=? AND captain_id=? AND outcome='pending'", id, req.user.id);
     await db.run('UPDATE users SET last_assigned_at=? WHERE id=?', now, req.user.id);
-    await addEvent(id, 'accepted', req.user.id);
+    await addEvent(id, 'accepted', req.user.id, { cost_points: rc.cost_points, cost_source: rc.cost_source });
   });
   await notifyOrder(id);
   res.json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', id), 'captain'));
@@ -789,23 +805,36 @@ A.post('/orders', wrap(async (req, res) => {
     if (!cap) throw bad('الكابتن غير موجود');
   }
   const now = Date.now();
+  let costSnap = { cost_points: null, cost_source: null };
+  let warning = null;
+  if (cap) {
+    costSnap = resolveOrderCost(cap, await orderCostPoints(), now);
+    if (costSnap.cost_points > 0) {
+      const resRow = await db.get("SELECT COALESCE(SUM(cost_points),0) s FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') AND cost_points > 0", cap.id);
+      const avail = Number(cap.balance_points ?? 0) - Number(resRow?.s ?? 0);
+      if (avail < costSnap.cost_points) {
+        warning = `تنبيه: رصيد الكابتن المتاح (${avail} نقطة) أقل من تكلفة الطلب (${costSnap.cost_points} نقطة)`;
+      }
+    }
+  }
   const orderId = await tx(async () => {
     const st = cap ? 'accepted' : 'searching';
     const r = await db.run(
-      'INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,status,captain_id,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?)',
-      m.id, zId ?? (m.zone_id || 1), '—', '', address, st, cap ? cap.id : null, cap ? now : null, now
+      'INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,status,captain_id,cost_points,cost_source,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?,?,?)',
+      m.id, zId ?? (m.zone_id || 1), '—', '', address, st, cap ? cap.id : null, costSnap.cost_points, costSnap.cost_source, cap ? now : null, now
     );
     await addEvent(r.lastInsertRowid, 'created', req.user.id);
     if (cap) {
       await db.run("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?", now, cap.id);
-      await addEvent(r.lastInsertRowid, 'admin_assigned', req.user.id, { captain_id: cap.id });
+      await addEvent(r.lastInsertRowid, 'admin_assigned', req.user.id, { captain_id: cap.id, cost_points: costSnap.cost_points, cost_source: costSnap.cost_source });
     }
     return Number(r.lastInsertRowid);
   });
   await audit(req.user.id, 'admin_create_order', { id: orderId, merchant_id: m.id, captain_id: cap?.id ?? null });
   if (!cap) await dispatchOrder(orderId);
   await notifyOrder(orderId);
-  res.status(201).json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', orderId), 'admin'));
+  const view = await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', orderId), 'admin');
+  res.status(201).json(warning ? { ...view, warning } : view);
 }));
 
 const getAdminOrder = async (req) => {
@@ -831,22 +860,32 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
   const oldCapId = o.captain_id;
   const oldOfferedId = o.offered_captain_id;
   const now = Date.now();
+  const costSnap = resolveOrderCost(cap, await orderCostPoints(), now);
+  let warning = null;
+  if (costSnap.cost_points > 0) {
+    const resRow = await db.get("SELECT COALESCE(SUM(cost_points),0) s FROM orders WHERE captain_id=? AND id!=? AND status IN ('accepted','picked_up','arrived') AND cost_points > 0", cap.id, id);
+    const avail = Number(cap.balance_points ?? 0) - Number(resRow?.s ?? 0);
+    if (avail < costSnap.cost_points) {
+      warning = `تنبيه: رصيد الكابتن المتاح (${avail} نقطة) أقل من تكلفة الطلب (${costSnap.cost_points} نقطة)`;
+    }
+  }
   await tx(async () => {
     const newStatus = ['picked_up', 'arrived'].includes(o.status) ? o.status : 'accepted';
     await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
-      'UPDATE orders SET status=?, captain_id=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
-      newStatus, cap.id, now, id
+      'UPDATE orders SET status=?, captain_id=?, cost_points=?, cost_source=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
+      newStatus, cap.id, costSnap.cost_points, costSnap.cost_source, now, id
     );
     await db.run("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?", now, cap.id);
-    await addEvent(id, 'admin_assigned', req.user.id, { captain_id: cap.id, from_captain: oldCapId });
+    await addEvent(id, 'admin_assigned', req.user.id, { captain_id: cap.id, from_captain: oldCapId, cost_points: costSnap.cost_points, cost_source: costSnap.cost_source });
   });
   await audit(req.user.id, 'assign_captain', { order_id: id, captain_id: cap.id });
   const freshOrder = await db.get('SELECT * FROM orders WHERE id=?', id);
   if (oldOfferedId && oldOfferedId !== cap.id) sendTo(oldOfferedId, { type: 'offer_end', order_id: id, reason: 'admin_reassigned' });
   if (oldCapId && oldCapId !== cap.id) sendTo(oldCapId, { type: 'order', order: await viewOrder(freshOrder, 'captain') });
   await notifyOrder(id);
-  res.json(await viewOrder(freshOrder, 'admin'));
+  const view = await viewOrder(freshOrder, 'admin');
+  res.json(warning ? { ...view, warning } : view);
 }));
 A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
@@ -858,7 +897,7 @@ A.post('/orders/:id/unassign-captain', wrap(async (req, res) => {
   await tx(async () => {
     await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
-      "UPDATE orders SET status='searching', captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?",
+      "UPDATE orders SET status='searching', captain_id=NULL, cost_points=NULL, cost_source=NULL, offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, accepted_at=NULL, picked_at=NULL, created_at=? WHERE id=?",
       Date.now(), id
     );
     await addEvent(id, 'admin_unassigned', req.user.id, { from_captain: oldCapId || oldOfferedId });
@@ -884,7 +923,7 @@ A.post('/orders/:id/redispatch', wrap(async (req, res) => {
   if (!['searching', 'expired'].includes(o.status)) throw bad('الطلب ليس في حالة انتظار');
   await tx(async () => {
     await db.run('DELETE FROM offers WHERE order_id=?', id);
-    await db.run("UPDATE orders SET status='searching', delay_until=NULL, closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?", Date.now(), id);
+    await db.run("UPDATE orders SET status='searching', cost_points=NULL, cost_source=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL, created_at=? WHERE id=?", Date.now(), id);
   });
   await dispatchOrder(id);
   await notifyOrder(id);

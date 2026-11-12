@@ -659,7 +659,11 @@ authScreen('admin', (user) => {
       const capId = Number(sel?.value || 0);
       if (!capId) { toast('يرجى اختيار الكابتن أولاً من القائمة'); return 'handled'; }
       const ok = await act(() => api(`/admin/orders/${oid}/assign-captain`, 'POST', { captain_id: capId }), 'تم تعيين الكابتن للطلب بنجاح');
-      if (ok) { await refreshCurrentTab(); return 'done'; }
+      if (ok) {
+        if (ok.warning) setTimeout(() => toast(ok.warning), 180);
+        await refreshCurrentTab();
+        return 'done';
+      }
       return 'handled';
     }
     const unassignBtn = e.target.closest('[data-unassign]');
@@ -732,7 +736,8 @@ authScreen('admin', (user) => {
       const qa = e.target.closest('[data-quick-assign]');
       if (qa && defaultCapId) {
         const oid = Number(qa.dataset.quickAssign);
-        await act(() => api(`/admin/orders/${oid}/assign-captain`, 'POST', { captain_id: defaultCapId }), 'تم إسناد الطلب للكابتن');
+        const r = await act(() => api(`/admin/orders/${oid}/assign-captain`, 'POST', { captain_id: defaultCapId }), 'تم إسناد الطلب للكابتن');
+        if (r?.warning) setTimeout(() => toast(r.warning), 180);
         close();
         await refreshCurrentTab();
       }
@@ -748,6 +753,7 @@ authScreen('admin', (user) => {
       };
       const res = await act(() => api('/admin/orders', 'POST', payload), payload.captain_id ? 'تم إنشاء الطلب وإسناده للكابتن مباشرة' : 'تم إنشاء الطلب وجاري البحث عن كابتن');
       if (res) {
+        if (res.warning) setTimeout(() => toast(res.warning), 180);
         close();
         await refreshCurrentTab();
       }

@@ -212,4 +212,120 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   assert.equal(capState.data.balance_points, 150);
   assert.equal(capState.data.required_cost, 30);
   assert.equal(capState.data.low_balance, false);
+
+  // F7: Deduction on delivery, dispatch blocking with wallet_enforcement='on', Pass 2 reservation, shortage, accept 409, admin low-bal warning
+  assert.equal((await call('/admin/settings/order-cost', 'PUT', { value: 25 }, adm)).status, 200);
+  assert.equal((await call('/admin/settings/wallet-enforcement', 'PUT', { enabled: true }, adm)).status, 200);
+
+  const zEnf = (await call('/admin/zones', 'POST', { name: 'منطقة-التحصيل-F7' }, adm)).data;
+  const zaEnfRes = await call('/admin/users', 'POST', {
+    name: 'مسؤول F7', phone: '0973000090', password: 'Passw0rdX', role: 'zone_admin', zone_id: zEnf.id,
+  }, adm);
+  assert.equal(zaEnfRes.status, 201);
+  const zaEnf = (await call('/auth/login', 'POST', { phone: '0973000090', password: 'Passw0rdX' })).data.token;
+
+  const merchEnf = await call('/admin/users', 'POST', {
+    name: 'صاحب مطعم F7', business_name: 'مطعم المحفظة', phone: '0973000001',
+    password: 'Passw0rdX', role: 'merchant', zone_id: zEnf.id, address: 'شارع النقاط', lat: 33.515, lng: 36.275,
+  }, adm);
+  assert.equal(merchEnf.status, 201);
+  const mEnfTok = (await call('/auth/login', 'POST', { phone: '0973000001', password: 'Passw0rdX' })).data.token;
+
+  const mkCap = async (name, phoneNum) => {
+    const cr = await call('/admin/users', 'POST', {
+      name, phone: phoneNum, password: 'Passw0rdX', role: 'captain', zone_id: zEnf.id,
+    }, adm);
+    assert.equal(cr.status, 201);
+    const tok = (await call('/auth/login', 'POST', { phone: phoneNum, password: 'Passw0rdX' })).data.token;
+    return { id: cr.data.id, tok };
+  };
+  const capRich = await mkCap('كابتن غني', '0973000011');
+  const capBroke = await mkCap('كابتن صفر', '0973000012');
+  const capExempt = await mkCap('كابتن معفى', '0973000013');
+
+  await call(`/admin/captains/${capRich.id}/topup`, 'POST', { points: 30, note: 'شحن 30 نقطة' }, adm);
+  await call(`/admin/users/${capExempt.id}`, 'PATCH', { cost_override: 0 }, adm);
+
+  // All 3 captains can go online even with 0 balance (Q7)
+  assert.equal((await call('/captain/online', 'POST', { online: true }, capBroke.tok)).status, 200);
+  const brokeSt = (await call('/captain/state', 'GET', null, capBroke.tok)).data;
+  assert.equal(brokeSt.low_balance, true);
+
+  assert.equal((await call('/captain/online', 'POST', { online: true }, capRich.tok)).status, 200);
+  assert.equal((await call('/captain/online', 'POST', { online: true }, capExempt.tok)).status, 200);
+  const exemptSt = (await call('/captain/state', 'GET', null, capExempt.tok)).data;
+  assert.equal(exemptSt.low_balance, false);
+  assert.equal(exemptSt.required_cost, 0);
+
+  // Turn capExempt offline briefly so only capBroke (0 pts) & capRich (30 pts) are online -> Order 1 goes strictly to capRich!
+  await call('/captain/online', 'POST', { online: false }, capExempt.tok);
+  const ord1 = (await call('/merchant/orders', 'POST', { customer_address: 'شارع النقاط ١ بناء ٥' }, mEnfTok)).data;
+  assert.equal((await call('/captain/state', 'GET', null, capBroke.tok)).data.offer, null);
+  assert.equal((await call('/captain/state', 'GET', null, capRich.tok)).data.offer?.id, ord1.id);
+  assert.equal((await call(`/captain/offers/${ord1.id}/accept`, 'POST', {}, capRich.tok)).status, 200);
+
+  // Now capRich holds 1 open 25-pt order (available = 30 - 25 = 5 < 25) -> low_balance === true!
+  const richMid = (await call('/captain/state', 'GET', null, capRich.tok)).data;
+  assert.equal(richMid.reserved_points, 25);
+  assert.equal(richMid.available_points, 5);
+  assert.equal(richMid.low_balance, true);
+
+  // Bring capExempt (0 balance, exempt) back online -> Order 2 skips capBroke AND skips Pass 2 capRich (reservation) -> goes to capExempt!
+  await call('/captain/online', 'POST', { online: true }, capExempt.tok);
+  const ord2 = (await call('/merchant/orders', 'POST', { customer_address: 'شارع النقاط ٢ بناء ٨' }, mEnfTok)).data;
+  assert.equal((await call('/captain/state', 'GET', null, capExempt.tok)).data.offer?.id, ord2.id);
+  assert.equal((await call(`/captain/offers/${ord2.id}/accept`, 'POST', {}, capExempt.tok)).status, 200);
+
+  // Deliver exempt ord2 -> stays 0, freeing capExempt so capExempt can go offline cleanly
+  assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'picked_up' }, capExempt.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'arrived' }, capExempt.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${ord2.id}/status`, 'POST', { status: 'delivered' }, capExempt.tok)).status, 200);
+  assert.equal((await call('/captain/wallet', 'GET', null, capExempt.tok)).data.balance_points, 0);
+
+  // Turn capExempt offline -> only capBroke (0 pts) free and capRich busy/reserved (5 avail pts < 25) -> Order 3 triggers shortage immediately!
+  assert.equal((await call('/captain/online', 'POST', { online: false }, capExempt.tok)).status, 200);
+  const ord3 = (await call('/merchant/orders', 'POST', { customer_address: 'شارع النقاط ٣ العجز' }, mEnfTok)).data;
+  assert.equal((await call('/captain/state', 'GET', null, capBroke.tok)).data.offer, null);
+  const zaLive = (await call('/admin/live', 'GET', null, zaEnf)).data;
+  assert.equal(zaLive.shortage.alert, true);
+  assert.equal(zaLive.shortage.onlineCaptains, 0);
+  await call(`/merchant/orders/${ord3.id}/cancel`, 'POST', {}, mEnfTok);
+
+  // Accept-time race check: top up capBroke with 25, receive Offer 4, raise global cost to 40 before accept -> 409!
+  await call(`/admin/captains/${capBroke.id}/topup`, 'POST', { points: 25 }, adm);
+  const ord4 = (await call('/merchant/orders', 'POST', { customer_address: 'شارع النقاط ٤ السباق' }, mEnfTok)).data;
+  assert.equal((await call('/captain/state', 'GET', null, capBroke.tok)).data.offer?.id, ord4.id);
+  await call('/admin/settings/order-cost', 'PUT', { value: 40 }, adm);
+  const acceptFail = await call(`/captain/offers/${ord4.id}/accept`, 'POST', {}, capBroke.tok);
+  assert.equal(acceptFail.status, 409);
+  await call('/admin/settings/order-cost', 'PUT', { value: 25 }, adm);
+  await call(`/merchant/orders/${ord4.id}/cancel`, 'POST', {}, mEnfTok);
+
+  // Deliver ord1 (capRich: 30 - 25 = 5) & verify zero deduction on ord2 (capExempt: cost 0) & failed order (capBroke keeps 25)
+  assert.equal((await call(`/captain/orders/${ord1.id}/status`, 'POST', { status: 'picked_up' }, capRich.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${ord1.id}/status`, 'POST', { status: 'arrived' }, capRich.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${ord1.id}/status`, 'POST', { status: 'delivered' }, capRich.tok)).status, 200);
+  assert.equal((await call('/captain/wallet', 'GET', null, capRich.tok)).data.balance_points, 5);
+
+  // Admin direct assignment to low-balance capRich (5 pts < 25 cost) -> succeeds WITH warning, delivery brings balance to -20!
+  const admAssignOrd = await call('/admin/orders', 'POST', {
+    merchant_id: merchEnf.data.id,
+    captain_id: capRich.id,
+    customer_address: 'تعيين إداري رصيد سالب',
+  }, adm);
+  assert.equal(admAssignOrd.status, 201);
+  assert.ok(admAssignOrd.data.warning, 'Admin direct assign to low-balance captain must return warning');
+  assert.equal(admAssignOrd.data.cost_points, 25);
+  assert.equal((await call(`/captain/orders/${admAssignOrd.data.id}/status`, 'POST', { status: 'picked_up' }, capRich.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${admAssignOrd.data.id}/status`, 'POST', { status: 'arrived' }, capRich.tok)).status, 200);
+  assert.equal((await call(`/captain/orders/${admAssignOrd.data.id}/status`, 'POST', { status: 'delivered' }, capRich.tok)).status, 200);
+  assert.equal((await call('/captain/wallet', 'GET', null, capRich.tok)).data.balance_points, -20);
+
+  // Failed order on capBroke does NOT deduct points (keeps 25)
+  const ord5 = (await call('/merchant/orders', 'POST', { customer_address: 'طلب فاشل بدون خصم' }, mEnfTok)).data;
+  assert.equal((await call('/captain/state', 'GET', null, capBroke.tok)).data.offer?.id, ord5.id);
+  assert.equal((await call(`/captain/offers/${ord5.id}/accept`, 'POST', {}, capBroke.tok)).status, 200);
+  await call(`/captain/orders/${ord5.id}/status`, 'POST', { status: 'picked_up' }, capBroke.tok);
+  await call(`/captain/orders/${ord5.id}/status`, 'POST', { status: 'failed_customer', reason: 'الزبون لم يرد' }, capBroke.tok);
+  assert.equal((await call('/captain/wallet', 'GET', null, capBroke.tok)).data.balance_points, 25);
 });

@@ -1,4 +1,4 @@
-import { db, tx, addEvent, commission } from './db.js';
+import { db, tx, addEvent, commission, orderCostPoints, walletEnforcement, applyPointsEntry } from './db.js';
 import { config, dayOf } from './config.js';
 import { sendTo, sendToAdmins, isConnected } from './realtime.js';
 
@@ -33,6 +33,17 @@ export function resolveOrderCost(captain, defaultCost = config.defaultOrderCostP
     return { cost_points: Number(captain.cost_override), cost_source: 'override' };
   }
   return { cost_points: baseDefault, cost_source: 'default' };
+}
+
+/** Available spendable points for a captain after subtracting reserved open-order costs. */
+export const captainAvailablePoints = (captain) =>
+  Number(captain?.balance_points ?? 0) - Number(captain?.reserved_cost ?? 0);
+
+function isWalletEligible(captain, defaultCost, enforced, now = Date.now()) {
+  if (!enforced) return true;
+  const { cost_points } = resolveOrderCost(captain, defaultCost, now);
+  if (cost_points === 0) return true;
+  return captainAvailablePoints(captain) >= cost_points;
 }
 
 /** Order as seen by each role. Customer details are hidden from captains until they accept. */
@@ -84,6 +95,7 @@ export async function viewOrder(o, role) {
 export async function computeShortage(zoneId = null) {
   const hasZ = zoneId != null;
   const now = Date.now();
+  const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
   const waitingRows = hasZ
     ? await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
     : await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now);
@@ -93,37 +105,39 @@ export async function computeShortage(zoneId = null) {
       const isTimedOut = now - effectiveStart >= config.shortageTimeoutMs;
       if (isTimedOut) return viewOrder(o, 'admin');
       if (o.status !== 'searching') return null;
-      const untriedCap = await db.get(
-        `SELECT 1 FROM users u
+      const untriedCaps = await db.all(
+        `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+           COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
+         FROM users u
          WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-           AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
-         LIMIT 1`,
+           AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)`,
         o.zone_id,
         o.id
       );
-      return untriedCap ? null : viewOrder(o, 'admin');
+      const hasEligible = untriedCaps.some((c) => isWalletEligible(c, defaultCost, enforced, now));
+      return hasEligible ? null : viewOrder(o, 'admin');
     })
   );
   const escalatedOrders = checked.filter(Boolean);
 
-  const [freeRow, onlineRow] = await Promise.all([
-    hasZ
-      ? db.get(`
-          SELECT COUNT(*) c FROM users u
-          WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-            AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
-        `, zoneId)
-      : db.get(`
-          SELECT COUNT(*) c FROM users u
-          WHERE u.role='captain' AND u.status='active' AND u.online=1
-            AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived'))
-        `),
-    hasZ
-      ? db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1 AND zone_id=?", zoneId)
-      : db.get("SELECT COUNT(*) c FROM users WHERE role='captain' AND status='active' AND online=1"),
-  ]);
-  const freeOnlineCaptains = freeRow.c;
-  const onlineCaptains = onlineRow.c;
+  const onlineRows = await (hasZ
+    ? db.all(`
+        SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+          COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost,
+          EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) is_busy
+        FROM users u
+        WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
+      `, zoneId)
+    : db.all(`
+        SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+          COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost,
+          EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) is_busy
+        FROM users u
+        WHERE u.role='captain' AND u.status='active' AND u.online=1
+      `));
+  const eligibleRows = onlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
+  const freeOnlineCaptains = eligibleRows.filter((r) => !r.is_busy).length;
+  const onlineCaptains = eligibleRows.length;
   const alert = escalatedOrders.length > 0;
   return {
     alert,
@@ -157,8 +171,12 @@ export async function notifyOrder(orderId) {
  * If neither Pass 1 nor Pass 2 finds a captain, returns null → order remains in 'searching' and escalates to Admin.
  */
 async function pickCaptain(order) {
-  const freeRows = await db.all(
-    `SELECT u.id FROM users u
+  const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
+  const now = Date.now();
+  const freeAll = await db.all(
+    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+       COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
+     FROM users u
      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
        AND NOT EXISTS (SELECT 1 FROM orders o WHERE (o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) OR (o.offered_captain_id=u.id AND o.status='offered'))
        AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
@@ -166,11 +184,14 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
+  const freeRows = freeAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
   const freePick = freeRows.find((r) => isConnected(r.id)) ?? freeRows[0];
   if (freePick) return freePick;
 
-  const busyRows = await db.all(
-    `SELECT u.id FROM users u
+  const busyAll = await db.all(
+    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+       COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
+     FROM users u
      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
        AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.offered_captain_id=u.id AND o.status='offered')
        AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)
@@ -178,6 +199,7 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
+  const busyRows = busyAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
   return busyRows.find((r) => isConnected(r.id)) ?? busyRows[0] ?? null;
 }
 
@@ -236,8 +258,11 @@ export async function releaseOffer(orderId, outcome) {
 export async function closeOrder(orderId, status, { actor, reason, withCommission = false, liability = 0, liabilityReason = null } = {}) {
   const comm = withCommission ? await commission() : 0;
   let cancelledOfferedId = null;
+  let deductionRes = null;
+  let orderZoneId = null;
   await tx(async () => {
     const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
+    orderZoneId = o.zone_id;
     const now = Date.now();
     await db.run(
       `UPDATE orders SET status=?, closed_at=?, day=?, close_reason=?, commission=?, liability=?, liability_reason=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?`,
@@ -254,9 +279,23 @@ export async function closeOrder(orderId, status, { actor, reason, withCommissio
       await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", orderId);
       cancelledOfferedId = o.offered_captain_id;
     }
+    if (status === 'delivered' && o.captain_id && Number(o.cost_points) > 0) {
+      deductionRes = await applyPointsEntry({
+        captainId: o.captain_id,
+        kind: 'deduction',
+        amount: -Number(o.cost_points),
+        orderId: o.id,
+        actorId: actor ?? o.captain_id,
+        note: `خصم توصيل طلب #${String(o.id).padStart(4, '0')}`,
+      });
+    }
     await addEvent(orderId, status, actor, { reason });
   });
   if (cancelledOfferedId) sendTo(cancelledOfferedId, { type: 'offer_end', order_id: orderId, reason: 'cancelled' });
+  if (deductionRes && !deductionRes.duplicate) {
+    sendTo(deductionRes.entry.captain_id, { type: 'balance', balance_points: deductionRes.balance_points, entry: deductionRes.entry });
+    sendToAdmins({ type: 'balance', captain_id: deductionRes.entry.captain_id, balance_points: deductionRes.balance_points }, orderZoneId);
+  }
   await notifyOrder(orderId);
 }
 
