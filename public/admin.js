@@ -1,4 +1,13 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v20';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone } from './shared.js?v=panther2026v24';
+import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
+
+const toDtLocal = (ms) => {
+  if (ms == null) return '';
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 function matchOrder(o, rawQ, stFilter = '') {
   if (stFilter && o.status !== stFilter) return false;
@@ -31,14 +40,17 @@ authScreen('admin', (user) => {
     wallet: '💰 المحفظة',
     settings: '⚙️ المناطق والإعدادات',
   };
-  app.innerHTML = `<aside class="sb"><div class="logo"><img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm"><div style="line-height:1.1"><div dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--gold);letter-spacing:1.2px;display:block;font-weight:700">DELIVERY • توصيل</small></div></div>
+  app.innerHTML = `<aside class="sb"><div class="logo"><img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25"><div style="line-height:1.15"><div lang="en" dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--brand-primary);letter-spacing:1.2px;display:block;font-weight:700"><span lang="en" dir="ltr">DELIVERY</span> • توصيل</small></div></div>
     <nav class="nav tabs">${Object.entries(TABS).map(([k, v]) => `<button data-t="${k}">${v}</button>`).join('')}</nav>
     <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button id="lo2">خروج</button></div></aside>
     <section class="main">
       <div class="topbar2">
         <div class="topbar-brand">
-          <img src="/logo.jpg" alt="PANTHER" class="brand-logo-sm topbar-logo" width="34" height="34">
-          <h2 id="ptitle"></h2>
+          <img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm topbar-logo" width="46" height="24">
+          <div class="topbar-title-stack">
+            <span class="topbar-wordmark" lang="en" dir="ltr">PANTHER <span class="brand-delivery-sub">DELIVERY</span></span>
+            <h2 id="ptitle"></h2>
+          </div>
         </div>
         <div class="topbar-actions">
           ${!isStandalone() ? '<button type="button" class="ok sm" data-install-app="admin">📲 تثبيت تطبيق الإدارة</button>' : ''}
@@ -121,10 +133,23 @@ authScreen('admin', (user) => {
 
   const isZoneAdmin = user.role === 'zone_admin';
   const feed = [];
-  let tab = 'dash', zones = [], liveMap = null, liveFitted = false;
+  let tab = 'dash', zones = [], liveMap = null, liveFitted = false, liveStageObs = null;
   let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
-  let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = [];
+  let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
+  let liveSelection = null;
+  let liveFilters = {
+    showMerchants: true,
+    showCaptains: true,
+    showRoutes: true,
+    showGreen: true,
+    showBlue: true,
+    showYellow: true,
+    showNeutral: true,
+    showGray: true,
+  };
+  let liveLegendCollapsed = window.innerWidth <= 767;
+  let liveHintOverride = null;
   let locIntervals = { active: 10_000, idle: 60_000 };
   const ordersIndex = new Map();
   const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
@@ -286,7 +311,7 @@ authScreen('admin', (user) => {
       <div class="assign-input-group">
         <select data-assign-sel="${o.id}">
           <option value="">${o.captain ? '🔄 تحويل لكابتن...' : '🛵 تعيين كابتن...'}</option>
-          ${capList.map((c) => `<option value="${c.id}">${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+          ${capList.map((c) => `<option value="${c.id}" ${c.online ? '' : 'disabled'}>${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين — غير متاح'})</option>`).join('')}
         </select>
         <button type="button" data-assign-btn="${o.id}" title="تثبيت تعيين الكابتن">تعيين ✓</button>
       </div>
@@ -442,7 +467,7 @@ authScreen('admin', (user) => {
               <div class="assign-input-group">
                 <select data-assign-sel="${o.id}">
                   <option value="">${hasCap ? '🔄 اختيار كابتن بديل...' : '🛵 اختر كابتن للتعيين...'}</option>
-                  ${capList.map((c) => `<option value="${c.id}">${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين'})</option>`).join('')}
+                  ${capList.map((c) => `<option value="${c.id}" ${c.online ? '' : 'disabled'}>${c.busy ? '🛵' : c.online ? '🟢' : '⚪'} ${esc(c.name)} (${c.busy ? 'مشغول' : c.online ? 'أونلاين' : 'أوفلاين — غير متاح'})</option>`).join('')}
                 </select>
                 <button type="button" class="ok sm" data-assign-btn="${o.id}">تعيين ✓</button>
               </div>
@@ -701,8 +726,8 @@ authScreen('admin', (user) => {
     const unassignedOrders = (liveCache.orders || []).filter((o) => !['delivered', 'cancelled', 'failed'].includes(o.status));
     const el = document.createElement('div');
     el.id = 'addordmodal';
-    el.style.cssText = 'position:fixed;inset:0;z-index:9999;background:var(--c-000000-a700);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
-    el.innerHTML = `<div class="card" style="width:100%;max-width:480px;padding:18px;background:var(--c-ground);color:var(--c-ink);max-height:90vh;overflow-y:auto">
+    el.style.cssText = 'position:fixed;inset:0;z-index:var(--z-modal);background:var(--surface-overlay);backdrop-filter:blur(4px);display:grid;place-items:center;padding:14px';
+    el.innerHTML = `<div class="card" style="width:100%;max-width:480px;padding:18px;background:var(--bg-elevated);color:var(--text-primary);max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h3 style="margin:0">➕ إضافة / تعيين طلب لكابتن</h3>
         <button type="button" class="ghost" id="aomClose">✕</button>
@@ -722,11 +747,11 @@ authScreen('admin', (user) => {
         <button class="big ok" style="margin-top:12px">🛵 إضافة وإسناد الطلب</button>
       </form>
       ${defaultCapId && unassignedOrders.length ? `
-        <hr style="border-color:var(--c-ffffff-a100);margin:14px 0">
+        <hr style="border-color:var(--border-neutral);margin:14px 0">
         <h4 style="margin:0 0 8px">أو إسناد طلب حالي موجود لهذا الكابتن:</h4>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${unassignedOrders.map((o) => `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:var(--c-ffffff-a050);border-radius:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px;background:var(--bg-subtle);border-radius:8px">
               <div><b dir="ltr">${serialNo(o)}</b> — 📍 ${esc(o.customer_address || '—')} ${o.captain ? `<span class="mut">(حالياً مع ${esc(o.captain.name)})</span>` : ''}</div>
               <button type="button" class="ok sm" data-quick-assign="${o.id}">🛵 إسناد للكابتن</button>
             </div>
@@ -801,8 +826,18 @@ authScreen('admin', (user) => {
   async function go(t) {
     tab = t;
     clearTimeout(refreshTimer);
+    if (view()) view().onclick = null;
+    liveStageObs?.disconnect();
+    liveStageObs = null;
+    if (liveMap) { try { liveMap.remove(); } catch {} }
     liveMap = null; liveFitted = false;
-    capMarkers.clear(); merchMarkers.clear(); orderMarkers.clear(); routeLayers = [];
+    liveSelection = null;
+    if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
+    liveHintOverride = null;
+    capMarkers.clear(); merchMarkers.clear(); orderMarkers.clear();
+    if (routeLayers instanceof Map) routeLayers.clear();
+    else routeLayers = new Map();
+    document.body.classList.toggle('is-live-view', t === 'live');
     $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
     const dockTarget = t === 'dash' ? 'live' : t;
     $$('.admin-bottom-dock button[data-t]').forEach((b) => {
@@ -923,7 +958,7 @@ authScreen('admin', (user) => {
       });
       capList.forEach((c) => {
         if (c.lat != null && c.lng != null) {
-          const icon = c.busy ? emoji('🛵') : c.online ? createPulsingDot('#22c55e') : createPulsingDot('#94a3b8');
+          const icon = c.busy ? emoji('🛵') : c.online ? createPulsingDot('#10B981') : createPulsingDot('#94A3B8');
           const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
           const mk = L.marker([c.lat, c.lng], { icon })
             .addTo(dashMap)
@@ -995,96 +1030,130 @@ authScreen('admin', (user) => {
     async live() {
       const s = await api('/admin/stats');
       updateShortageBanner(s.shortage);
+      liveLegendCollapsed = window.innerWidth <= 767;
+      liveSelection = null;
+      if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
+      liveHintOverride = null;
+
       view().innerHTML = `
-        <div class="stats telemetry-bar" id="lstats">
-          ${[['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending]].map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('')}
-        </div>
-        <div class="card tactical-radar-card">
-          <div class="row-head">
-            <div>
-              <h3 style="margin:0">📡 رادار غرفة العمليات والتوجيه التكتيكي</h3>
-              <div class="mut" style="font-size:12px">تتبع حي لحركة الكباتن ومسارات التوصيل النشطة</div>
-            </div>
-            <div class="order-action-bar">
-              <button type="button" class="act-pill act-details" id="liveFit">🎯 تمركز الخريطة</button>
-              <button type="button" class="act-pill act-redispatch" id="liveRef">🔄 تحديث فوري</button>
-            </div>
+        <div class="live-ops-stage">
+          <div id="lmap" class="live-ops-map" aria-label="خريطة العمليات الحية"></div>
+          <div class="live-ops-hud">
+            <aside id="liveLegendPanel" class="live-legend-panel ${liveLegendCollapsed ? 'is-collapsed' : ''}" aria-label="دليل الخريطة والفلاتر">
+              <div class="live-legend-head">
+                <button type="button" id="liveLegendToggle" class="live-legend-toggle" aria-expanded="${!liveLegendCollapsed}" aria-controls="liveLegendBody">
+                  <span>🎛️ الدليل والفلاتر (<span id="liveVisSummary">0</span>)</span>
+                  <span id="liveLegendChev" aria-hidden="true">${liveLegendCollapsed ? '▾' : '▴'}</span>
+                </button>
+                <div class="live-legend-head-tools">
+                  <button type="button" id="liveFit" class="live-hud-ico-btn" aria-label="تمركز الخريطة لإظهار الكل" title="إظهار الكل">🎯</button>
+                  <button type="button" id="liveRef" class="live-hud-ico-btn" aria-label="تحديث البيانات الفورية" title="تحديث">🔄</button>
+                </div>
+              </div>
+              <div id="liveLegendBody" class="live-legend-body">
+                <div class="live-legend-kpis" id="lstats">
+                  <div class="live-kpi-pill"><b id="lkLiveOrders">${s.live}</b><span>طلبات حية</span></div>
+                  <div class="live-kpi-pill"><b id="lkOnlineCaps">${s.online}/${s.captains}</b><span>أونلاين</span></div>
+                  <div class="live-kpi-pill"><b id="lkMerchants">${s.merchants}</b><span>منشآت</span></div>
+                </div>
+                <div class="live-legend-group-title">طبقات الخريطة</div>
+                <label class="live-filter-row" for="lfMerchants">
+                  <span class="live-filter-label"><input type="checkbox" id="lfMerchants" ${liveFilters.showMerchants ? 'checked' : ''}><span>🏪 إظهار المنشآت</span></span>
+                  <span class="live-filter-count" id="lfcMerchants">0</span>
+                </label>
+                <label class="live-filter-row" for="lfCaptains">
+                  <span class="live-filter-label"><input type="checkbox" id="lfCaptains" ${liveFilters.showCaptains ? 'checked' : ''}><span>🛵 إظهار الكباتن</span></span>
+                  <span class="live-filter-count" id="lfcCaptains">0</span>
+                </label>
+                <label class="live-filter-row" for="lfRoutes">
+                  <span class="live-filter-label"><input type="checkbox" id="lfRoutes" ${liveFilters.showRoutes ? 'checked' : ''}><span>📍 المسارات والوجهات</span></span>
+                  <span class="live-filter-count" id="lfcRoutes">0</span>
+                </label>
+                <div class="live-legend-group-title">حالات العلامات</div>
+                <label class="live-filter-row" for="lfGreen">
+                  <span class="live-filter-label"><input type="checkbox" id="lfGreen" ${liveFilters.showGreen ? 'checked' : ''}><span class="live-swatch is-green" aria-hidden="true"></span><span>أخضر نابض: للزبون (استلام/وصول) أو طلب نشط</span></span>
+                  <span class="live-filter-count" id="lfcGreen">0</span>
+                </label>
+                <label class="live-filter-row" for="lfBlue">
+                  <span class="live-filter-label"><input type="checkbox" id="lfBlue" ${liveFilters.showBlue ? 'checked' : ''}><span class="live-swatch is-blue" aria-hidden="true"></span><span>أزرق نابض: كابتن متجه للمنشأة (مقبول)</span></span>
+                  <span class="live-filter-count" id="lfcBlue">0</span>
+                </label>
+                <label class="live-filter-row" for="lfYellow">
+                  <span class="live-filter-label"><input type="checkbox" id="lfYellow" ${liveFilters.showYellow ? 'checked' : ''}><span class="live-swatch is-yellow" aria-hidden="true"></span><span>أصفر نابض: كابتن متاح أو بحث/عرض</span></span>
+                  <span class="live-filter-count" id="lfcYellow">0</span>
+                </label>
+                <label class="live-filter-row" for="lfNeutral">
+                  <span class="live-filter-label"><input type="checkbox" id="lfNeutral" ${liveFilters.showNeutral ? 'checked' : ''}><span class="live-swatch is-neutral" aria-hidden="true"></span><span>محايد: منشأة بلا طلب مفتوح</span></span>
+                  <span class="live-filter-count" id="lfcNeutral">0</span>
+                </label>
+                <label class="live-filter-row" for="lfGray">
+                  <span class="live-filter-label"><input type="checkbox" id="lfGray" ${liveFilters.showGray ? 'checked' : ''}><span class="live-swatch is-gray" aria-hidden="true"></span><span>رمادي: كابتن أوفلاين (غير متاح)</span></span>
+                  <span class="live-filter-count" id="lfcGray">0</span>
+                </label>
+              </div>
+            </aside>
+            <div id="liveHintBar" class="live-hint-bar" role="status" aria-live="polite"></div>
           </div>
-          <div id="lmap" class="map" style="height:480px"></div>
-        </div>
-        <div class="card">
-          <div class="row-head" style="flex-wrap:wrap;gap:10px">
-            <div>
-              <h3 style="margin:0">📦 مركز التحكم بالطلبات الحية الجارية</h3>
-              <div class="mut" style="font-size:12px">توجيه الكباتن، إعادة التدوير، ومتابعة حالة كل طلب لحظة بلحظة</div>
+          <dialog id="liveTransferDialog" class="live-transfer-dialog" aria-labelledby="ltTitle">
+            <div class="lt-dlg-head">
+              <h3 id="ltTitle">🔄 تأكيد نقل وتوجيه الطلب</h3>
+              <button type="button" id="ltCloseBtn" class="ghost sm" aria-label="إغلاق">✕</button>
             </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;justify-content:flex-end">
-              <input id="liveOrderSearch" placeholder="🔍 ابحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:340px;margin:0">
-              <button type="button" class="ok sm" data-add-order="">➕ إسناد طلب جديد</button>
+            <p id="ltMsg" class="lt-dlg-msg"></p>
+            <div id="ltMeta" class="lt-dlg-meta"></div>
+            <div id="ltWarnBox" class="lt-dlg-warn hide" role="alert"></div>
+            <div class="lt-dlg-actions">
+              <button type="button" id="ltConfirmBtn" class="ok">✓ تأكيد النقل</button>
+              <button type="button" id="ltCancelBtn" class="sec" autofocus>إلغاء</button>
             </div>
-          </div>
-          <div class="tablewrap">
-            <table>
-              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>إجراءات</th></tr></thead>
-              <tbody id="lrows"></tbody>
-            </table>
-          </div>
-        </div>
-        <div id="detail"></div>
-        <div class="split2 tactical-split2">
-          <div class="card">
-            <div class="row-head">
-              <h3 style="margin:0">🛵 أسطول الكباتن والمواقع الحية</h3>
-              <span class="mut" style="font-size:12px">إسناد مباشر وتحديد على الرادار</span>
-            </div>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>الكابتن</th><th>الهاتف</th><th>الحالة والطلبات</th><th>إجراءات</th></tr></thead>
-                <tbody id="lcaps"></tbody>
-              </table>
-            </div>
-          </div>
-          <div class="card">
-            <div class="row-head">
-              <h3 style="margin:0">🏪 شبكة المنشآت المعتمدة</h3>
-              <span class="mut" style="font-size:12px">تمركز سريع على الخريطة</span>
-            </div>
-            <div class="tablewrap">
-              <table>
-                <thead><tr><th>المنشأة</th><th>الهاتف</th><th>العنوان</th><th>الموقع</th></tr></thead>
-                <tbody id="lmerchs"></tbody>
-              </table>
-            </div>
-          </div>
+          </dialog>
         </div>`;
 
       liveMap = makeMap('lmap', DAMASCUS, 12);
-      $('#liveFit').onclick = () => {
+      const stageEl = $('.live-ops-stage');
+      if (stageEl && 'ResizeObserver' in window) {
+        liveStageObs = new ResizeObserver(() => { liveMap?.invalidateSize({ animate: false }); });
+        liveStageObs.observe(stageEl);
+      }
+
+      const legendPanel = $('#liveLegendPanel');
+      const legendToggle = $('#liveLegendToggle');
+      const legendChev = $('#liveLegendChev');
+      legendToggle?.addEventListener('click', () => {
+        liveLegendCollapsed = !liveLegendCollapsed;
+        legendPanel?.classList.toggle('is-collapsed', liveLegendCollapsed);
+        legendToggle.setAttribute('aria-expanded', String(!liveLegendCollapsed));
+        if (legendChev) legendChev.textContent = liveLegendCollapsed ? '▾' : '▴';
+      });
+
+      $('#liveFit')?.addEventListener('click', () => {
         const pts = collectAllPoints(liveCache);
         if (pts.length) fitMapToPoints(liveMap, pts);
-      };
-      $('#liveRef').onclick = () => { clearTimeout(refreshTimer); loadLive(); };
+      });
+      $('#liveRef')?.addEventListener('click', () => {
+        clearTimeout(refreshTimer);
+        loadLive();
+      });
 
-      view().onclick = async (e) => {
-        if (await handleOrderActionClick(e)) return;
-        const dEl = e.target.closest('[data-d]');
-        if (dEl) return detail(dEl.dataset.d);
-        const capEl = e.target.closest('[data-cap]');
-        if (capEl) {
-          e.preventDefault();
-          const cid = Number(capEl.dataset.cap);
-          const cap = (liveCache.captains || []).find((c) => c.id === cid) || (liveCache.orders || []).find((o) => o.captain?.id === cid)?.captain;
-          if (cap) captainModal(cap);
-          return;
-        }
-        const panEl = e.target.closest('[data-pan]');
-        if (panEl && liveMap) {
-          const [la, ln] = panEl.dataset.pan.split(',').map(Number);
-          liveMap.setView([la, ln], 16);
-          $('#lmap').scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+      const wireFilter = (id, key) => {
+        $(id)?.addEventListener('change', (e) => {
+          liveFilters[key] = e.target.checked;
+          applyLiveFiltersAndMarkers();
+        });
       };
+      wireFilter('#lfMerchants', 'showMerchants');
+      wireFilter('#lfCaptains', 'showCaptains');
+      wireFilter('#lfRoutes', 'showRoutes');
+      wireFilter('#lfGreen', 'showGreen');
+      wireFilter('#lfBlue', 'showBlue');
+      wireFilter('#lfYellow', 'showYellow');
+      wireFilter('#lfNeutral', 'showNeutral');
+      wireFilter('#lfGray', 'showGray');
 
+      const dlg = $('#liveTransferDialog');
+      dlg?.addEventListener('close', () => { dlg.returnValue = ''; });
+
+      renderLiveHint();
       await loadLive();
     },
 
@@ -1190,8 +1259,29 @@ authScreen('admin', (user) => {
                   <input id="nuAddr" name="address" maxlength="200" autocomplete="street-address">
                 </div>
               </div>
-              <label>موقع المنشأة على الخريطة (اضغط للتحديد)</label>
-              <div id="nmap" class="map"></div>
+              <div class="nu-loc-link-box">
+                <label for="nuMapLink">رابط الموقع من Google Maps</label>
+                <div id="nuMapLinkHint" class="form-hint">الصق رابط المشاركة (@lat,lng أو maps.app.goo.gl) لاستخراج الإحداثيات ومعاينتها</div>
+                <div class="nu-link-row">
+                  <input id="nuMapLink" type="url" dir="ltr" inputmode="url" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="https://maps.app.goo.gl/..." aria-describedby="nuMapLinkHint" aria-invalid="false">
+                  <button type="button" class="sec sm" id="nuParseLinkBtn">استخراج الموقع</button>
+                </div>
+                <div id="nuMapLinkFeedback" class="nu-loc-feedback hide" role="status" aria-live="polite"></div>
+              </div>
+              <div class="row nu-coords-row">
+                <div>
+                  <label for="nuLat">خط العرض (Latitude)</label>
+                  <input id="nuLat" type="number" step="any" min="-90" max="90" dir="ltr" inputmode="decimal" placeholder="33.513800" aria-invalid="false">
+                </div>
+                <div>
+                  <label for="nuLng">خط الطول (Longitude)</label>
+                  <input id="nuLng" type="number" step="any" min="-180" max="180" dir="ltr" inputmode="decimal" placeholder="36.276500" aria-invalid="false">
+                </div>
+              </div>
+              <div id="nuCoordsErr" class="nu-loc-feedback is-error hide" role="status"></div>
+              <div id="nuLocActiveWarn" class="nu-loc-active-warn hide" role="status">⚠️ تغيير الموقع لا يؤثر على الطلبات الحالية</div>
+              <label id="nmapLabel">موقع المنشأة على الخريطة (اضغط للتحديد أو للمعاينة)</label>
+              <div id="nmap" class="map" role="region" aria-labelledby="nmapLabel"></div>
             </div>
             ${!isZoneAdmin ? `
             <div id="capCostFields" class="hide" style="margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px">
@@ -1241,17 +1331,178 @@ authScreen('admin', (user) => {
           </div>
         </div>`;
 
-      let npos = [null, null], nmap = null, editUserId = null, usersReqSeq = 0;
+      let npos = [null, null], origPos = [null, null], editActiveOrdersCount = 0;
+      let locationSource = null, nmap = null, nmapCtrl = null, editUserId = null, usersReqSeq = 0;
 
       wirePwToggle($('#nuPwToggle'), $('#nuPw'));
+
+      const setLinkFeedback = (msg = '', kind = '') => {
+        const box = $('#nuMapLinkFeedback');
+        const inp = $('#nuMapLink');
+        if (!box || !inp) return;
+        if (!msg) {
+          box.textContent = '';
+          box.className = 'nu-loc-feedback hide';
+          inp.setAttribute('aria-invalid', 'false');
+          inp.setAttribute('aria-describedby', 'nuMapLinkHint');
+          return;
+        }
+        box.textContent = msg;
+        box.className = `nu-loc-feedback ${kind === 'error' ? 'is-error' : 'is-ok'}`;
+        if (kind === 'error') {
+          inp.setAttribute('aria-invalid', 'true');
+          inp.setAttribute('aria-describedby', 'nuMapLinkHint nuMapLinkFeedback');
+        } else {
+          inp.setAttribute('aria-invalid', 'false');
+          inp.setAttribute('aria-describedby', 'nuMapLinkHint nuMapLinkFeedback');
+        }
+      };
+
+      const setCoordsError = (msg = '') => {
+        const box = $('#nuCoordsErr');
+        const latEl = $('#nuLat');
+        const lngEl = $('#nuLng');
+        if (!box || !latEl || !lngEl) return;
+        if (!msg) {
+          box.textContent = '';
+          box.classList.add('hide');
+          latEl.setAttribute('aria-invalid', 'false');
+          lngEl.setAttribute('aria-invalid', 'false');
+          latEl.removeAttribute('aria-describedby');
+          lngEl.removeAttribute('aria-describedby');
+          return;
+        }
+        box.textContent = `❌ ${msg}`;
+        box.classList.remove('hide');
+        latEl.setAttribute('aria-invalid', 'true');
+        lngEl.setAttribute('aria-invalid', 'true');
+        latEl.setAttribute('aria-describedby', 'nuCoordsErr');
+        lngEl.setAttribute('aria-describedby', 'nuCoordsErr');
+      };
+
+      const syncLocActiveWarning = () => {
+        const warnEl = $('#nuLocActiveWarn');
+        if (!warnEl) return;
+        const isEditingMerch = editUserId != null && $('#nrole')?.value === 'merchant';
+        const changed = npos[0] !== origPos[0] || npos[1] !== origPos[1];
+        warnEl.classList.toggle('hide', !(isEditingMerch && editActiveOrdersCount > 0 && changed));
+      };
 
       const ensureNuMap = () => {
         if (!nmap) {
           nmap = makeMap('nmap', DAMASCUS, 12);
-          pickLocation(nmap, (a, b) => { npos = [a, b]; });
+          nmapCtrl = pickLocation(nmap, (a, b) => {
+            npos = [a, b];
+            locationSource = 'map';
+            if ($('#nuLat')) $('#nuLat').value = String(Number(a.toFixed(6)));
+            if ($('#nuLng')) $('#nuLng').value = String(Number(b.toFixed(6)));
+            setCoordsError('');
+            setLinkFeedback('');
+            syncLocActiveWarning();
+          });
         }
         setTimeout(() => nmap?.invalidateSize(), 60);
       };
+
+      const readManualCoords = () => {
+        const latRaw = enDigits($('#nuLat')?.value || '').trim();
+        const lngRaw = enDigits($('#nuLng')?.value || '').trim();
+        if (!latRaw && !lngRaw) return { empty: true };
+        if (!latRaw || !lngRaw) return { error: 'يرجى إدخال كل من خط العرض وخط الطول' };
+        const a = Number(latRaw);
+        const b = Number(lngRaw);
+        if (!Number.isFinite(a) || !Number.isFinite(b) || a < -90 || a > 90 || b < -180 || b > 180) {
+          return { error: 'خط العرض يجب أن يكون بين -90 و90 وخط الطول بين -180 و180' };
+        }
+        if (a === 0 && b === 0) {
+          return { error: 'الإحداثيات (0, 0) غير صالحة' };
+        }
+        return { lat: a, lng: b };
+      };
+
+      const handleManualCoordInput = (validateNow = false) => {
+        const res = readManualCoords();
+        if (res.empty) {
+          npos = [null, null];
+          nmapCtrl?.clearMarker();
+          setCoordsError('');
+          syncLocActiveWarning();
+          return;
+        }
+        if (res.error) {
+          npos = [null, null];
+          if (validateNow) setCoordsError(res.error);
+          else setCoordsError('');
+          syncLocActiveWarning();
+          return;
+        }
+        npos = [res.lat, res.lng];
+        locationSource = 'manual';
+        setCoordsError('');
+        ensureNuMap();
+        nmapCtrl?.setMarker(res.lat, res.lng);
+        nmap?.setView([res.lat, res.lng], Math.max(nmap?.getZoom() || 12, 15), { animate: false });
+        syncLocActiveWarning();
+      };
+
+      $('#nuLat')?.addEventListener('input', () => handleManualCoordInput(false));
+      $('#nuLng')?.addEventListener('input', () => handleManualCoordInput(false));
+      $('#nuLat')?.addEventListener('blur', () => handleManualCoordInput(true));
+      $('#nuLng')?.addEventListener('blur', () => handleManualCoordInput(true));
+
+      const parseMapLink = async () => {
+        const inp = $('#nuMapLink');
+        const btn = $('#nuParseLinkBtn');
+        const raw = inp?.value?.trim() || '';
+        if (!raw) {
+          setLinkFeedback('❌ يرجى لصق رابط Google Maps أولاً أو استخدام الحقول اليدوية', 'error');
+          inp?.focus();
+          return;
+        }
+        if (btn) btn.disabled = true;
+        try {
+          const data = await api('/admin/geo/parse-link', 'POST', { link: raw });
+          const lat = Number(data.lat);
+          const lng = Number(data.lng);
+          npos = [lat, lng];
+          locationSource = 'link';
+          if ($('#nuLat')) $('#nuLat').value = String(Number(lat.toFixed(6)));
+          if ($('#nuLng')) $('#nuLng').value = String(Number(lng.toFixed(6)));
+          setCoordsError('');
+          ensureNuMap();
+          nmap?.invalidateSize();
+          nmap?.setView([lat, lng], 16, { animate: false });
+          nmapCtrl?.setMarker(lat, lng);
+          setTimeout(() => {
+            if (!nmap || !document.body.contains(nmap.getContainer())) return;
+            nmap.invalidateSize();
+            nmap.setView([lat, lng], 16, { animate: false });
+            nmapCtrl?.setMarker(lat, lng);
+          }, 80);
+          setLinkFeedback(`✅ تم استخراج الموقع من الرابط (${lat.toFixed(5)}, ${lng.toFixed(5)}) — راجع العلامة على الخريطة قبل الحفظ`, 'ok');
+          syncLocActiveWarning();
+        } catch (err) {
+          setLinkFeedback(`❌ ${err?.message || 'تعذّر استخراج الإحداثيات، استخدم الحقول اليدوية أو الخريطة'}`, 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      };
+
+      $('#nuParseLinkBtn')?.addEventListener('click', () => parseMapLink());
+      $('#nuMapLink')?.addEventListener('input', () => {
+        if ($('#nuMapLink')?.getAttribute('aria-invalid') === 'true') setLinkFeedback('');
+      });
+      $('#nuMapLink')?.addEventListener('paste', () => {
+        setTimeout(() => {
+          if ($('#nuMapLink')?.value?.trim()) parseMapLink();
+        }, 0);
+      });
+      $('#nuMapLink')?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.isComposing) {
+          ev.preventDefault();
+          parseMapLink();
+        }
+      });
 
       const toDtLocal = (ms) => {
         if (ms == null) return '';
@@ -1292,6 +1543,17 @@ authScreen('admin', (user) => {
         editUserId = null;
         nu.reset();
         npos = [null, null];
+        origPos = [null, null];
+        editActiveOrdersCount = 0;
+        locationSource = null;
+        if ($('#nuMapLink')) $('#nuMapLink').value = '';
+        if ($('#nuLat')) $('#nuLat').value = '';
+        if ($('#nuLng')) $('#nuLng').value = '';
+        setLinkFeedback('');
+        setCoordsError('');
+        syncLocActiveWarning();
+        nmapCtrl?.clearMarker();
+        nmap?.setView(DAMASCUS, 12, { animate: false });
         const defaultRole = usersTab === 'admin' ? 'zone_admin' : usersTab;
         $('#nrole').value = isZoneAdmin && defaultRole === 'zone_admin' ? 'merchant' : defaultRole;
         if (!isZoneAdmin && usersZoneFilter) {
@@ -1314,6 +1576,12 @@ authScreen('admin', (user) => {
         editUserId = u.id;
         const nu = $('#nu');
         nu.reset();
+        locationSource = null;
+        editActiveOrdersCount = Number(u.active_orders_count || 0);
+        origPos = [u.lat ?? null, u.lng ?? null];
+        if ($('#nuMapLink')) $('#nuMapLink').value = '';
+        setLinkFeedback('');
+        setCoordsError('');
         $('#nuHeading').textContent = `✏️ تعديل بيانات: ${u.business_name || u.name}`;
         $('#nrole').value = u.role;
         if (u.zone_id != null && $('#nzone')) $('#nzone').value = String(u.zone_id);
@@ -1336,15 +1604,26 @@ authScreen('admin', (user) => {
           ensureNuMap();
           if (u.lat != null && u.lng != null) {
             npos = [u.lat, u.lng];
+            if ($('#nuLat')) $('#nuLat').value = String(u.lat);
+            if ($('#nuLng')) $('#nuLng').value = String(u.lng);
             setTimeout(() => {
-              if (!nmap) return;
-              nmap.setView([u.lat, u.lng], 15);
-              nmap.fire('click', { latlng: L.latLng(u.lat, u.lng) });
+              if (!nmap || !document.body.contains(nmap.getContainer())) return;
+              nmap.invalidateSize();
+              nmap.setView([u.lat, u.lng], 15, { animate: false });
+              nmapCtrl?.setMarker(u.lat, u.lng);
             }, 80);
           } else {
             npos = [null, null];
+            if ($('#nuLat')) $('#nuLat').value = '';
+            if ($('#nuLng')) $('#nuLng').value = '';
+            nmapCtrl?.clearMarker();
           }
+        } else {
+          npos = [null, null];
+          if ($('#nuLat')) $('#nuLat').value = '';
+          if ($('#nuLng')) $('#nuLng').value = '';
         }
+        syncLocActiveWarning();
         nu.scrollIntoView({ behavior: 'smooth', block: 'start' });
         setTimeout(() => $('#nuName')?.focus(), 120);
       };
@@ -1607,8 +1886,25 @@ authScreen('admin', (user) => {
         else f.zone_id = Number(f.zone_id);
 
         if (f.role === 'merchant') {
-          if (npos[0] == null) return toast('حدّد موقع المنشأة على الخريطة');
+          const mc = readManualCoords();
+          if (mc.error) {
+            setCoordsError(mc.error);
+            $('#nuLat')?.focus();
+            return toast(mc.error);
+          }
+          if (!mc.empty) {
+            npos = [mc.lat, mc.lng];
+          }
+          if (npos[0] == null || npos[1] == null) {
+            const msg = 'حدّد موقع المنشأة عبر الرابط أو خط العرض والطول أو الخريطة';
+            setCoordsError(msg);
+            $('#nuLat')?.focus();
+            return toast(msg);
+          }
           [f.lat, f.lng] = npos;
+          if (locationSource && (editUserId == null || npos[0] !== origPos[0] || npos[1] !== origPos[1])) {
+            f.location_source = locationSource;
+          }
         } else {
           delete f.business_name;
           delete f.address;
@@ -1624,7 +1920,9 @@ authScreen('admin', (user) => {
             f.exempt_from = fromDtLocal($('#nuExemptFrom').value);
             f.exempt_until = fromDtLocal($('#nuExemptUntil').value);
           }
-          ok = await act(() => api(`/admin/users/${editUserId}`, 'PATCH', f), 'تم تحديث بيانات الحساب');
+          const patchRes = await act(() => api(`/admin/users/${editUserId}`, 'PATCH', f), null);
+          ok = Boolean(patchRes);
+          if (ok) toast(patchRes.warning || 'تم تحديث بيانات الحساب');
         } else {
           if (f.zone_id === null) delete f.zone_id;
           ok = await act(() => api('/admin/users', 'POST', f), 'تم إنشاء الحساب');
@@ -1734,35 +2032,86 @@ authScreen('admin', (user) => {
               </tbody>
             </table>
           </div>
-        </div>
-        <dialog id="walletModal" class="wallet-dlg" aria-labelledby="walletModalTitle"></dialog>`;
+        </div>`;
 
-      const dlg = $('#walletModal');
       const openCaptainWalletModal = async (cid) => {
+        let dlg = $('#walletModal');
+        if (!dlg) {
+          dlg = document.createElement('dialog');
+          dlg.id = 'walletModal';
+          dlg.className = 'wallet-dlg';
+          dlg.setAttribute('aria-labelledby', 'walletModalTitle');
+          document.body.appendChild(dlg);
+          dlg.addEventListener('click', (ev) => {
+            if (ev.target === dlg) dlg.close();
+          });
+        }
         const data = await api(`/admin/captains/${cid}/ledger?limit=25`);
         const c = data.captain;
+        const now = Date.now();
         let clientRef = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+        // Determine exemption status line
+        let exemptStatusText = 'غير معفى';
+        if (c.cost_override === 0) {
+          exemptStatusText = 'معفى دائم';
+        } else if (c.exempt_until && Number(c.exempt_until) > now) {
+          if (!c.exempt_from || Number(c.exempt_from) <= now) {
+            exemptStatusText = `معفى حتى ${time(c.exempt_until)}`;
+          } else {
+            exemptStatusText = `إعفاء يبدأ ${time(c.exempt_from)} حتى ${time(c.exempt_until)}`;
+          }
+        }
+
+        const sourceLabel = c.cost_source === 'exempt_permanent' ? 'إعفاء دائم' :
+                            c.cost_source === 'exempt_temporary' ? 'إعفاء مؤقت' :
+                            c.cost_source === 'override' ? 'سعر مخصص' : 'الافتراضي العام';
+
         dlg.innerHTML = `
           <div class="row-head" style="margin-bottom:10px">
             <div>
               <h3 id="walletModalTitle" style="margin:0">💳 محفظة ${esc(c.name)} ${c.tag ? `<code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''}</h3>
-              <div class="mut" style="font-size:13px">الرصيد الحالي: <b>${c.balance_points ?? 0} نقطة</b> — تكلفة الطلب: <b>${c.effective_cost_points} نقطة</b></div>
+              <div class="mut" style="font-size:13px">الرصيد الحالي: <b>${c.balance_points ?? 0} نقطة</b> — التكلفة الفعلية: <b>${c.effective_cost_points} نقطة</b> (${sourceLabel})</div>
             </div>
             <button type="button" class="sec sm" id="wmClose">✕ إغلاق</button>
           </div>
           <form id="wmTopupForm">
-            <label for="wmPts">إضافة رصيد يدوي (نقاط صحيحة)</label>
-            <input id="wmPts" name="points" type="number" min="1" max="10000000" step="1" inputmode="numeric" required autofocus placeholder="مثال: 500">
+            <div style="font-weight:700;margin-bottom:6px">💰 شحن الرصيد اليدوي</div>
+            <label for="wmPts">إضافة رصيد (نقاط صحيحة — اتركه فارغاً إذا كنت تعدل الرسوم فقط)</label>
+            <input id="wmPts" name="points" type="number" min="1" max="10000000" step="1" inputmode="numeric" placeholder="مثال: 500">
             <div class="wallet-presets">
               <button type="button" class="sec sm" data-addpts="100">+100</button>
               <button type="button" class="sec sm" data-addpts="250">+250</button>
               <button type="button" class="sec sm" data-addpts="500">+500</button>
               <button type="button" class="sec sm" data-addpts="1000">+1000</button>
             </div>
-            <label for="wmNote">ملاحظة / رقم الحوالة (اختياري)</label>
+            <label for="wmNote" style="margin-top:6px">ملاحظة / رقم الحوالة (اختياري)</label>
             <input id="wmNote" name="note" maxlength="200" placeholder="حوالة بنكية / تسليم يدوي">
-            <div style="margin-top:12px">
-              <button type="submit" class="big ok" id="wmSubmit">تأكيد شحن النقاط</button>
+
+            ${!isZoneAdmin ? `
+            <div class="billing-settings-box" style="margin-top:14px;padding:12px;border:1px solid var(--border-neutral-strong);border-radius:10px;background:var(--bg-subtle)">
+              <div style="font-weight:700;margin-bottom:4px">⚙️ إعدادات الرسوم والخصم (المدير العام)</div>
+              <div class="mut" style="font-size:12.5px;margin-bottom:8px">حالة الإعفاء الحالية: <b class="clr-ok-soft">${exemptStatusText}</b></div>
+
+              <label for="wmCostOverride">تكلفة الطلب للكابتن (نقطة)</label>
+              <div class="form-hint">فارغ = استخدام الافتراضي العام | 0 = معفى دائم | رقم موجب = تكلفة خاصة للكابتن</div>
+              <input id="wmCostOverride" name="cost_override" type="number" min="0" max="100000" step="1" placeholder="استخدام الافتراضي العام">
+              <div class="mut" style="font-size:12px;margin:2px 0 8px">القيمة الفعالة حالياً: <b>${c.effective_cost_points} نقطة</b> (المصدر: ${sourceLabel})</div>
+
+              <div class="row">
+                <div>
+                  <label for="wmExemptFrom">بداية الإعفاء المؤقت</label>
+                  <input id="wmExemptFrom" name="exempt_from" type="datetime-local">
+                </div>
+                <div>
+                  <label for="wmExemptUntil">نهاية الإعفاء المؤقت</label>
+                  <input id="wmExemptUntil" name="exempt_until" type="datetime-local">
+                </div>
+              </div>
+            </div>` : ''}
+
+            <div style="margin-top:14px;display:flex;gap:8px">
+              <button type="submit" class="big ok" id="wmSubmit" style="flex:1">حفظ / تنفيذ العملية</button>
             </div>
           </form>
           <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
@@ -1781,26 +2130,119 @@ authScreen('admin', (user) => {
               </tbody>
             </table>
           </div>`;
+
         if (!dlg.open) dlg.showModal();
-        $('#wmClose').onclick = () => dlg.close();
+        const closeBtn = dlg.querySelector('#wmClose');
+        if (closeBtn) closeBtn.onclick = () => dlg.close();
+
+        // Pre-fill billing fields for admin
+        const costInp = dlg.querySelector('#wmCostOverride');
+        if (!isZoneAdmin && costInp) {
+          costInp.value = c.cost_override != null ? String(c.cost_override) : '';
+          const fromInp = dlg.querySelector('#wmExemptFrom');
+          if (fromInp) fromInp.value = toDtLocal(c.exempt_from);
+          const untilInp = dlg.querySelector('#wmExemptUntil');
+          if (untilInp) untilInp.value = toDtLocal(c.exempt_until);
+        }
+
         dlg.querySelectorAll('[data-addpts]').forEach((b) => {
           b.onclick = () => { $('#wmPts').value = b.dataset.addpts; };
         });
-        $('#wmTopupForm').onsubmit = async (ev) => {
+
+        const topupForm = dlg.querySelector('#wmTopupForm');
+        if (topupForm) topupForm.onsubmit = async (ev) => {
           ev.preventDefault();
-          const btn = $('#wmSubmit');
-          const pts = Number($('#wmPts').value);
-          if (!Number.isInteger(pts) || pts < 1) return toast('أدخل عدد نقاط صحيحاً موجباً');
-          btn.disabled = true;
-          const res = await act(() => api(`/admin/captains/${c.id}/topup`, 'POST', {
-            points: pts,
-            note: $('#wmNote').value.trim(),
-            client_ref: clientRef,
-          }), 'تم شحن النقاط بنجاح');
-          btn.disabled = false;
-          if (res) {
-            await openCaptainWalletModal(c.id);
-            if (tab === 'wallet') views.wallet();
+          const btn = dlg.querySelector('#wmSubmit');
+
+          const ptsInp = dlg.querySelector('#wmPts');
+          const rawPts = ptsInp ? ptsInp.value.trim() : '';
+          let doTopup = false;
+          let pts = 0;
+          if (rawPts !== '') {
+            pts = Number(rawPts);
+            if (!Number.isInteger(pts) || pts < 1) return toast('أدخل عدد نقاط صحيحاً موجباً للشحن');
+            doTopup = true;
+          }
+
+          let doBillingPatch = false;
+          const billingPayload = {};
+          const costEl = dlg.querySelector('#wmCostOverride');
+          if (!isZoneAdmin && costEl) {
+            const rawCost = costEl.value.trim();
+            const fromEl = dlg.querySelector('#wmExemptFrom');
+            const untilEl = dlg.querySelector('#wmExemptUntil');
+            const rawFrom = fromEl ? fromEl.value : '';
+            const rawUntil = untilEl ? untilEl.value : '';
+
+            // Cost validation
+            let parsedCost = null;
+            if (rawCost !== '') {
+              parsedCost = Number(rawCost);
+              if (!Number.isInteger(parsedCost) || parsedCost < 0) {
+                return toast('تكلفة الطلب يجب أن تكون عدداً صحيحاً أكبر من أو يساوي 0 أو فارغاً');
+              }
+            }
+
+            const fromEpoch = rawFrom ? new Date(rawFrom).getTime() : null;
+            const untilEpoch = rawUntil ? new Date(rawUntil).getTime() : null;
+
+            // Date validation
+            if (fromEpoch != null && untilEpoch != null && untilEpoch <= fromEpoch) {
+              return toast('تاريخ نهاية الإعفاء يجب أن يكون بعد تاريخ البداية');
+            }
+            if (fromEpoch == null && untilEpoch != null && untilEpoch < Date.now()) {
+              return toast('تاريخ نهاية الإعفاء يجب أن يكون في المستقبل عند عدم تحديد تاريخ بداية');
+            }
+
+            // Check what changed compared to c
+            const prevCost = c.cost_override != null ? Number(c.cost_override) : null;
+            if (parsedCost !== prevCost) {
+              billingPayload.cost_override = parsedCost;
+              doBillingPatch = true;
+            }
+
+            const prevFrom = c.exempt_from != null ? Number(c.exempt_from) : null;
+            if (fromEpoch !== prevFrom) {
+              billingPayload.exempt_from = fromEpoch;
+              doBillingPatch = true;
+            }
+
+            const prevUntil = c.exempt_until != null ? Number(c.exempt_until) : null;
+            if (untilEpoch !== prevUntil) {
+              billingPayload.exempt_until = untilEpoch;
+              doBillingPatch = true;
+            }
+          }
+
+          if (!doTopup && !doBillingPatch) {
+            return toast('لم تقم بتغيير أي بيانات أو إدخال نقاط للشحن');
+          }
+
+          if (btn) btn.disabled = true;
+          let topupOk = false;
+          let billingOk = false;
+
+          try {
+            if (doTopup) {
+              const noteInp = dlg.querySelector('#wmNote');
+              const res = await act(() => api(`/admin/captains/${c.id}/topup`, 'POST', {
+                points: pts,
+                note: noteInp ? noteInp.value.trim() : '',
+                client_ref: clientRef,
+              }), 'تم شحن النقاط بنجاح');
+              if (res) topupOk = true;
+            }
+
+            if (doBillingPatch) {
+              const res = await act(() => api(`/admin/users/${c.id}`, 'PATCH', billingPayload), 'تم حفظ إعدادات الرسوم والإعفاء');
+              if (res) billingOk = true;
+            }
+
+            if (topupOk || billingOk) {
+              await openCaptainWalletModal(c.id);
+            }
+          } finally {
+            if (btn) btn.disabled = false;
           }
         };
       };
@@ -1931,11 +2373,11 @@ authScreen('admin', (user) => {
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
     detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${orderStatusBadge(o)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
-        ${!targetBox ? `<div style="margin:10px 0;padding:10px;background:var(--c-ffffff-a040);border-radius:10px">
+        ${!targetBox ? `<div style="margin:10px 0;padding:10px;background:var(--bg-subtle);border-radius:10px">
           <b>🛵 الكابتن المسند للطلب:</b>
           <div style="margin-top:6px">${renderOrderCaptainCell(o, capList)}</div>
         </div>` : `<p><b>🛵 الكابتن:</b> ${esc(o.captain?.name || 'غير معيّن')}</p>`}
-        <p>تكلفة الطلب: <b>${points(o.cost_points ?? 0)}</b>${o.cost_source === 'exempt' ? ' <span class="badge" style="background:var(--accent)">معفى</span>' : o.cost_source === 'captain_override' ? ' <span class="mut">(سعر خاص)</span>' : ''}${o.liability ? ` — تسوية نقاط إدارية: <b class="clr-bad">-${points(o.liability)}</b> (${esc(o.liability_reason || '')})` : ''}${o.cost_points == null && o.commission > 0 ? ` <span class="mut">(أرشيف ل.س: ${enDigits(o.commission)})</span>` : ''}</p>
+        <p>تكلفة الطلب: <b>${points(o.cost_points ?? 0)}</b>${o.cost_source === 'exempt' ? ' <span class="badge b-active">معفى</span>' : o.cost_source === 'captain_override' ? ' <span class="mut">(سعر خاص)</span>' : ''}${o.liability ? ` — تسوية نقاط إدارية: <b class="clr-bad">-${points(o.liability)}</b> (${esc(o.liability_reason || '')})` : ''}${o.cost_points == null && o.commission > 0 ? ` <span class="mut">(أرشيف ل.س: ${enDigits(o.commission)})</span>` : ''}</p>
         ${hasMap ? '<div id="dmap" class="map" style="height:260px"></div>' : ''}
         <ol class="timeline">${o.events.map((e) => `<li>${time(e.at)} — ${esc(e.type)} ${esc(e.actor || '')}</li>`).join('')}</ol>
         ${!targetBox ? `<div class="row">${o.status === 'accepted' ? `<button type="button" class="ok" id="fpBtn">⚡ تأكيد استلام (تجاوز GPS)</button>` : ''}${!isZoneAdmin && o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">⚠️ تعديل / خصم نقاط (تعويض)</button>` : ''}
@@ -1987,140 +2429,715 @@ authScreen('admin', (user) => {
     detBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
+  function findMerchantByOrder(o) {
+    if (!o) return null;
+    if (o.merchant_id != null) {
+      const byId = (liveCache.merchants || []).find((m) => m.id === o.merchant_id);
+      if (byId) return byId;
+    }
+    const name = o.merchant?.name;
+    if (!name) return null;
+    return (liveCache.merchants || []).find((m) => (m.business_name || m.name) === name) || null;
+  }
+
+  function orderBelongsToMerchant(o, m) {
+    if (!o || !m) return false;
+    if (o.merchant_id != null) return o.merchant_id === m.id;
+    const oName = o.merchant?.name;
+    return Boolean(oName && oName === (m.business_name || m.name));
+  }
+
+  function getMerchantOpenOrders(m) {
+    return (liveCache.orders || []).filter(
+      (o) => orderBelongsToMerchant(o, m) && !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)
+    );
+  }
+
+  function getMerchantTransferableOrder(m) {
+    const open = getMerchantOpenOrders(m);
+    return open.find((o) => o.status === 'searching') || open.find((o) => o.status === 'offered') || null;
+  }
+
+  function getMerchantVisualState(m) {
+    const open = getMerchantOpenOrders(m);
+    if (open.some((o) => ['searching', 'offered'].includes(o.status))) {
+      return { stateKey: 'yellow', stateClass: 'ops-state-yellow ops-pulsing', pulsing: true, label: 'بانتظار كابتن', openOrders: open };
+    }
+    if (open.some((o) => ['accepted', 'picked_up', 'arrived'].includes(o.status))) {
+      return { stateKey: 'green', stateClass: 'ops-state-green ops-pulsing', pulsing: true, label: 'طلب نشط قيد التنفيذ', openOrders: open };
+    }
+    return { stateKey: 'neutral', stateClass: 'ops-state-neutral', pulsing: false, label: 'لا يوجد طلب مفتوح', openOrders: [] };
+  }
+
+  function getCaptainVisualState(c) {
+    return deriveCaptainVisualState(c, liveCache.orders || []);
+  }
+
+  function isLiveStateFilterVisible(stateKey) {
+    if (stateKey === 'green') return liveFilters.showGreen;
+    if (stateKey === 'blue') return liveFilters.showBlue;
+    if (stateKey === 'yellow') return liveFilters.showYellow;
+    if (stateKey === 'neutral') return liveFilters.showNeutral;
+    if (stateKey === 'gray') return liveFilters.showGray;
+    return true;
+  }
+
+  function renderLiveHint() {
+    const bar = $('#liveHintBar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    bar.classList.remove('is-selecting', 'is-warning');
+
+    if (liveHintOverride?.text) {
+      if (liveHintOverride.tone === 'warning') bar.classList.add('is-warning');
+      else if (liveHintOverride.tone === 'selecting') bar.classList.add('is-selecting');
+      const sp = document.createElement('span');
+      sp.textContent = liveHintOverride.text;
+      bar.appendChild(sp);
+      return;
+    }
+
+    if (liveSelection?.kind === 'merchant') {
+      const m = (liveCache.merchants || []).find((x) => x.id === liveSelection.merchantId);
+      const ord = (liveCache.orders || []).find((x) => x.id === liveSelection.orderId) || ordersIndex.get(liveSelection.orderId);
+      bar.classList.add('is-selecting');
+      const sp = document.createElement('span');
+      sp.textContent = `📌 محدد: طلب ${ord ? serialNo(ord) : ''} من «${m?.business_name || m?.name || 'المنشأة'}» — اختر كابتن أونلاين للنقل (أو Esc للإلغاء)`;
+      const clr = document.createElement('button');
+      clr.type = 'button';
+      clr.className = 'live-hint-clear';
+      clr.textContent = '✕ إلغاء';
+      clr.addEventListener('click', () => setLiveSelection(null));
+      bar.append(sp, clr);
+      return;
+    }
+
+    if (liveSelection?.kind === 'captain') {
+      const cap = (liveCache.captains || []).find((x) => x.id === liveSelection.captainId);
+      bar.classList.add('is-selecting');
+      const sp = document.createElement('span');
+      sp.textContent = `📌 محدد: الكابتن «${cap?.name || 'الكابتن'}» — اختر منشأة صفراء لنقل طلبها إليه (أو Esc للإلغاء)`;
+      const clr = document.createElement('button');
+      clr.type = 'button';
+      clr.className = 'live-hint-clear';
+      clr.textContent = '✕ إلغاء';
+      clr.addEventListener('click', () => setLiveSelection(null));
+      bar.append(sp, clr);
+      return;
+    }
+
+    const sp = document.createElement('span');
+    sp.textContent = '💡 اضغط على منشأة صفراء (بحث/عرض) أو كابتن أونلاين لنقل وتوجيه الطلبات';
+    bar.appendChild(sp);
+  }
+
+  function showLiveNotice(text, tone = 'warning', durationMs = 4500) {
+    if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
+    const timer = setTimeout(() => {
+      liveHintOverride = null;
+      renderLiveHint();
+    }, durationMs);
+    liveHintOverride = { text, tone, timer };
+    renderLiveHint();
+  }
+
+  function setLiveSelection(sel) {
+    if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
+    liveHintOverride = null;
+    liveSelection = sel;
+    refreshAllMarkerSelectionClasses();
+    renderLiveHint();
+  }
+
+  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, glyph, badgeCount }) {
+    const classes = ['ops-marker', kindClass, stateClass];
+    if (selected) classes.push('is-selected');
+    if (validTarget) classes.push('is-valid-target');
+    if (dimmed) classes.push('is-dimmed');
+    const badgeHtml = badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
+    return L.divIcon({
+      className: classes.join(' '),
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}`,
+      iconSize: [48, 48],
+      iconAnchor: [24, 24],
+    });
+  }
+
+  function wireMarkerDomAccessibility(mk, ariaLabel, onActivate) {
+    mk._opsActivate = onActivate;
+    mk._opsAriaLabel = ariaLabel;
+    const applyToEl = () => {
+      const el = mk.getElement?.();
+      if (!el) return;
+      el.setAttribute('role', 'button');
+      el.setAttribute('tabindex', '0');
+      el.setAttribute('aria-label', mk._opsAriaLabel || '');
+      if (!el.dataset.opsKeyWired) {
+        el.dataset.opsKeyWired = '1';
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            mk._opsActivate?.();
+          }
+        });
+      }
+    };
+    if (!mk._opsClickWired) {
+      mk._opsClickWired = true;
+      mk.on('click', () => mk._opsActivate?.());
+      mk.on('add', applyToEl);
+    }
+    applyToEl();
+  }
+
+  function computeMerchantSelectionFlags(m, st) {
+    const transferable = getMerchantTransferableOrder(m);
+    const selected = liveSelection?.kind === 'merchant' && liveSelection.merchantId === m.id;
+    let validTarget = false;
+    let dimmed = false;
+    if (liveSelection?.kind === 'captain') {
+      validTarget = Boolean(transferable);
+      dimmed = !validTarget;
+    } else if (liveSelection?.kind === 'merchant' && !selected) {
+      dimmed = true;
+    }
+    return { selected, validTarget, dimmed, transferableCount: st.openOrders.length };
+  }
+
+  function computeCaptainSelectionFlags(c) {
+    const selected = liveSelection?.kind === 'captain' && liveSelection.captainId === c.id;
+    let validTarget = false;
+    let dimmed = false;
+    if (liveSelection?.kind === 'merchant') {
+      validTarget = Boolean(c.online);
+      dimmed = !c.online;
+    } else if (liveSelection?.kind === 'captain' && !selected) {
+      dimmed = true;
+    }
+    return { selected, validTarget, dimmed };
+  }
+
+  function upsertMerchantMarker(m) {
+    if (!liveMap || m == null) return;
+    const existing = merchMarkers.get(m.id);
+    if (m.lat == null || m.lng == null) {
+      if (existing) { existing.remove(); merchMarkers.delete(m.id); }
+      return;
+    }
+    const st = getMerchantVisualState(m);
+    const shouldShow = liveFilters.showMerchants && isLiveStateFilterVisible(st.stateKey);
+    const { selected, validTarget, dimmed, transferableCount } = computeMerchantSelectionFlags(m, st);
+    const name = m.business_name || m.name || 'منشأة';
+    const orderInfo = st.openOrders.length
+      ? ` — ${st.openOrders.map((o) => `${serialNo(o)} (${STATUS[o.status] || o.status})`).join('، ')}`
+      : ' — لا يوجد طلب مفتوح';
+    const tip = `🏪 ${name}${orderInfo}`;
+    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${transferableCount}`;
+
+    let mk = existing;
+    if (!mk) {
+      const icon = buildLiveMarkerIcon({
+        kindClass: 'ops-merchant',
+        stateClass: st.stateClass,
+        selected,
+        validTarget,
+        dimmed,
+        glyph: '🏪',
+        badgeCount: transferableCount,
+      });
+      mk = L.marker([m.lat, m.lng], { icon });
+      mk._opsSig = sig;
+      mk._opsCoords = `${m.lat},${m.lng}`;
+      mk.bindTooltip(tip);
+      merchMarkers.set(m.id, mk);
+    } else {
+      const coords = `${m.lat},${m.lng}`;
+      if (mk._opsCoords !== coords) {
+        mk.setLatLng([m.lat, m.lng]);
+        mk._opsCoords = coords;
+      }
+      if (mk._opsSig !== sig) {
+        mk.setIcon(buildLiveMarkerIcon({
+          kindClass: 'ops-merchant',
+          stateClass: st.stateClass,
+          selected,
+          validTarget,
+          dimmed,
+          glyph: '🏪',
+          badgeCount: transferableCount,
+        }));
+        mk._opsSig = sig;
+      }
+      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+    }
+
+    if (shouldShow) {
+      if (!liveMap.hasLayer(mk)) mk.addTo(liveMap);
+    } else if (liveMap.hasLayer(mk)) {
+      mk.remove();
+    }
+
+    wireMarkerDomAccessibility(mk, tip, () => {
+      const freshM = (liveCache.merchants || []).find((x) => x.id === m.id) || m;
+      handleMerchantTap(freshM);
+    });
+  }
+
+  function upsertCaptainMarker(c, { animate = false } = {}) {
+    if (!liveMap || c == null) return;
+    const existing = capMarkers.get(c.id);
+    if (c.lat == null || c.lng == null) {
+      if (existing) { existing.remove(); capMarkers.delete(c.id); }
+      return;
+    }
+    const st = getCaptainVisualState(c);
+    const shouldShow = liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey);
+    const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
+    const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
+    const tip = `🛵 ${c.name} — ${st.busy ? `${st.label} (${actCount})` : st.label}`;
+    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}`;
+
+    let mk = existing;
+    if (!mk) {
+      const icon = buildLiveMarkerIcon({
+        kindClass: 'ops-captain',
+        stateClass: st.stateClass,
+        selected,
+        validTarget,
+        dimmed,
+        glyph: '🛵',
+        badgeCount: actCount,
+      });
+      mk = L.marker([c.lat, c.lng], { icon });
+      mk._opsSig = sig;
+      mk._opsCoords = `${c.lat},${c.lng}`;
+      mk.bindTooltip(tip);
+      capMarkers.set(c.id, mk);
+    } else {
+      const coords = `${c.lat},${c.lng}`;
+      if (mk._opsCoords !== coords) {
+        if (animate && liveMap.hasLayer(mk)) animateMarker(mk, [c.lat, c.lng]);
+        else mk.setLatLng([c.lat, c.lng]);
+        mk._opsCoords = coords;
+      }
+      if (mk._opsSig !== sig) {
+        mk.setIcon(buildLiveMarkerIcon({
+          kindClass: 'ops-captain',
+          stateClass: st.stateClass,
+          selected,
+          validTarget,
+          dimmed,
+          glyph: '🛵',
+          badgeCount: actCount,
+        }));
+        mk._opsSig = sig;
+      }
+      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+    }
+
+    if (shouldShow) {
+      if (!liveMap.hasLayer(mk)) mk.addTo(liveMap);
+    } else if (liveMap.hasLayer(mk)) {
+      mk.remove();
+    }
+
+    wireMarkerDomAccessibility(mk, tip, () => {
+      const freshC = (liveCache.captains || []).find((x) => x.id === c.id) || c;
+      handleCaptainTap(freshC);
+    });
+  }
+
+  function refreshAllMarkerSelectionClasses() {
+    (liveCache.merchants || []).forEach((m) => upsertMerchantMarker(m));
+    (liveCache.captains || []).forEach((c) => upsertCaptainMarker(c));
+  }
+
+  function syncOrderOverlay(o) {
+    if (!liveMap || !o?.id) return;
+    const pinKey = 'c' + o.id;
+    const isClosed = ['delivered', 'cancelled', 'failed', 'expired'].includes(o.status);
+    const showRoutes = liveFilters.showRoutes && !isClosed;
+
+    const existingPin = orderMarkers.get(pinKey);
+    if (showRoutes && o.customer_lat != null && o.customer_lng != null) {
+      const tip = `📍 طلب ${serialNo(o)}: ${o.customer_address || ''}`;
+      if (!existingPin) {
+        const mk = L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(liveMap).bindTooltip(tip);
+        orderMarkers.set(pinKey, mk);
+      } else {
+        existingPin.setLatLng([o.customer_lat, o.customer_lng]);
+        if (!liveMap.hasLayer(existingPin)) existingPin.addTo(liveMap);
+        existingPin.setTooltipContent?.(tip);
+      }
+    } else if (existingPin) {
+      existingPin.remove();
+      orderMarkers.delete(pinKey);
+    }
+
+    if (!(routeLayers instanceof Map)) routeLayers = new Map();
+    const existingRoute = routeLayers.get(o.id);
+    if (showRoutes && o.captain?.lat != null && ['accepted', 'picked_up', 'arrived'].includes(o.status)) {
+      const dest = o.status === 'accepted' ? [o.merchant?.lat, o.merchant?.lng] : [o.customer_lat, o.customer_lng];
+      const capCoords = `${o.captain.lat},${o.captain.lng}->${dest[0]},${dest[1]}`;
+      if (dest[0] != null && dest[1] != null) {
+        if (!existingRoute || existingRoute._opsSig !== capCoords) {
+          existingRoute?.layer?.remove?.();
+          const tokenSig = capCoords;
+          makeRoute(liveMap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
+            if (tab === 'live' && liveMap && liveFilters.showRoutes) {
+              const prev = routeLayers.get(o.id);
+              prev?.layer?.remove?.();
+              routeLayers.set(o.id, { layer, _opsSig: tokenSig });
+            } else {
+              layer.remove();
+            }
+          });
+        } else if (existingRoute.layer && !liveMap.hasLayer(existingRoute.layer)) {
+          existingRoute.layer.addTo(liveMap);
+        }
+      }
+    } else if (existingRoute) {
+      existingRoute.layer?.remove?.();
+      routeLayers.delete(o.id);
+    }
+  }
+
+  function updateLegendCountsAndKpis() {
+    const orders = (liveCache.orders || []).filter((o) => !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status));
+    const merchants = liveCache.merchants || [];
+    const captains = liveCache.captains || [];
+
+    let mCount = 0, cCount = 0, green = 0, blue = 0, yellow = 0, neutral = 0, gray = 0;
+    let visCount = 0;
+    merchants.forEach((m) => {
+      if (m.lat == null || m.lng == null) return;
+      mCount++;
+      const st = getMerchantVisualState(m);
+      if (st.stateKey === 'green') green++;
+      else if (st.stateKey === 'yellow') yellow++;
+      else neutral++;
+      if (liveFilters.showMerchants && isLiveStateFilterVisible(st.stateKey)) visCount++;
+    });
+    captains.forEach((c) => {
+      if (c.lat == null || c.lng == null) return;
+      cCount++;
+      const st = getCaptainVisualState(c);
+      if (st.stateKey === 'green') green++;
+      else if (st.stateKey === 'blue') blue++;
+      else if (st.stateKey === 'yellow') yellow++;
+      else gray++;
+      if (liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey)) visCount++;
+    });
+
+    const onlineCaps = captains.filter((c) => c.online).length;
+    const setTxt = (id, val) => { const el = $(id); if (el) el.textContent = String(val); };
+    setTxt('#lkLiveOrders', orders.length);
+    setTxt('#lkOnlineCaps', `${onlineCaps}/${captains.length}`);
+    setTxt('#lkMerchants', merchants.length);
+    setTxt('#lfcMerchants', mCount);
+    setTxt('#lfcCaptains', cCount);
+    setTxt('#lfcRoutes', orders.length);
+    setTxt('#lfcGreen', green);
+    setTxt('#lfcBlue', blue);
+    setTxt('#lfcYellow', yellow);
+    setTxt('#lfcNeutral', neutral);
+    setTxt('#lfcGray', gray);
+    setTxt('#liveVisSummary', visCount);
+  }
+
+  function applyLiveFiltersAndMarkers() {
+    if (tab !== 'live' || !liveMap) return;
+    (liveCache.merchants || []).forEach((m) => upsertMerchantMarker(m));
+    (liveCache.captains || []).forEach((c) => upsertCaptainMarker(c));
+    (liveCache.orders || []).forEach((o) => syncOrderOverlay(o));
+    updateLegendCountsAndKpis();
+  }
+
+  function syncCaptainDerivedBusyState(captainId) {
+    if (!captainId) return null;
+    const cap = (liveCache.captains || []).find((c) => c.id === captainId);
+    if (!cap) return null;
+    const acts = (liveCache.orders || []).filter(
+      (o) => o.captain_id === captainId && ['accepted', 'picked_up', 'arrived'].includes(o.status)
+    );
+    cap.busy = acts.length > 0;
+    cap.active_order_id = acts[0]?.id ?? null;
+    cap.active_orders = acts.map((x) => ({
+      id: x.id,
+      serial_no: x.serial_no || String(x.id).padStart(4, '0'),
+      customer_address: x.customer_address,
+      status: x.status,
+    }));
+    return cap;
+  }
+
+  function applyOrderUpdateToLiveCache(freshOrder) {
+    if (!freshOrder?.id) return;
+    rememberOrders([freshOrder]);
+    const orders = liveCache.orders || (liveCache.orders = []);
+    const idx = orders.findIndex((x) => x.id === freshOrder.id);
+    const prevOrder = idx >= 0 ? orders[idx] : null;
+    const prevCapId = prevOrder?.captain_id ?? null;
+    const isClosed = ['delivered', 'cancelled', 'failed', 'expired'].includes(freshOrder.status);
+
+    if (isClosed) {
+      if (idx >= 0) orders.splice(idx, 1);
+    } else if (idx >= 0) {
+      orders[idx] = freshOrder;
+    } else {
+      orders.unshift(freshOrder);
+    }
+
+    if (tab === 'live' && liveMap) {
+      const m = findMerchantByOrder(freshOrder) || findMerchantByOrder(prevOrder);
+      if (m) upsertMerchantMarker(m);
+      if (prevCapId && prevCapId !== freshOrder.captain_id) {
+        const oldCap = syncCaptainDerivedBusyState(prevCapId);
+        if (oldCap) upsertCaptainMarker(oldCap);
+      }
+      if (freshOrder.captain_id) {
+        const newCap = syncCaptainDerivedBusyState(freshOrder.captain_id);
+        if (newCap) {
+          if (freshOrder.captain?.lat != null && newCap.lat == null) {
+            newCap.lat = freshOrder.captain.lat;
+            newCap.lng = freshOrder.captain.lng;
+          }
+          upsertCaptainMarker(newCap);
+        }
+      }
+      syncOrderOverlay(freshOrder);
+      if (liveSelection?.kind === 'merchant' && liveSelection.orderId === freshOrder.id) {
+        if (!['searching', 'offered'].includes(freshOrder.status)) {
+          setLiveSelection(null);
+          showLiveNotice(`ℹ️ تغيرت حالة الطلب ${serialNo(freshOrder)} إلى «${STATUS[freshOrder.status] || freshOrder.status}»`, 'info', 3500);
+        }
+      }
+      updateLegendCountsAndKpis();
+    }
+  }
+
+  function handleMerchantTap(m) {
+    if (!m) return;
+    if (liveSelection?.kind === 'captain') {
+      const cap = (liveCache.captains || []).find((c) => c.id === liveSelection.captainId);
+      if (!cap || !cap.online) {
+        setLiveSelection(null);
+        showLiveNotice('⛔ الكابتن المحدد لم يعد متصلاً', 'warning');
+        return;
+      }
+      const open = getMerchantOpenOrders(m);
+      const transferable = getMerchantTransferableOrder(m);
+      if (transferable) {
+        openLiveTransferDialog(transferable, m, cap);
+        return;
+      }
+      const locked = open.find((o) => ['picked_up', 'arrived'].includes(o.status));
+      if (locked) {
+        showLiveNotice(`⚠️ لا يمكن نقل الطلب ${serialNo(locked)} بعد الاستلام أو الوصول للزبون عبر الخريطة`, 'warning');
+        toast('لا يمكن نقل طلب بعد الاستلام أو الوصول للزبون');
+        return;
+      }
+      const acceptedOnly = open.find((o) => o.status === 'accepted');
+      if (acceptedOnly) {
+        showLiveNotice(`ℹ️ الطلب ${serialNo(acceptedOnly)} قيد التوجه للمنشأة بالفعل وليس في حالة بحث/عرض`, 'warning');
+        return;
+      }
+      showLiveNotice(`ℹ️ منشأة «${m.business_name || m.name}» ليس لديها طلب في حالة بحث أو عرض للنقل`, 'warning');
+      return;
+    }
+
+    if (liveSelection?.kind === 'merchant' && liveSelection.merchantId === m.id) {
+      setLiveSelection(null);
+      return;
+    }
+
+    const open = getMerchantOpenOrders(m);
+    const transferable = getMerchantTransferableOrder(m);
+    if (transferable) {
+      setLiveSelection({ kind: 'merchant', merchantId: m.id, orderId: transferable.id });
+      return;
+    }
+    const locked = open.find((o) => ['picked_up', 'arrived'].includes(o.status));
+    if (locked) {
+      showLiveNotice(`⚠️ لا يمكن نقل الطلب ${serialNo(locked)} لأنه في حالة «${STATUS[locked.status]}» (تم استلامه أو وصل للزبون)`, 'warning');
+      toast('لا يمكن نقل طلب تم استلامه أو وصل للزبون من الخريطة');
+      return;
+    }
+    const acceptedOnly = open.find((o) => o.status === 'accepted');
+    if (acceptedOnly) {
+      showLiveNotice(`ℹ️ طلب «${m.business_name || m.name}» (${serialNo(acceptedOnly)}) مسند بالفعل لكابتن في الطريق للمنشأة`, 'warning');
+      return;
+    }
+    showLiveNotice(`ℹ️ منشأة «${m.business_name || m.name}» ليس لديها أي طلب مفتوح حالياً`, 'warning', 3200);
+  }
+
+  function handleCaptainTap(c) {
+    if (!c) return;
+    if (!c.online) {
+      showLiveNotice(`⛔ الكابتن «${c.name}» أوفلاين حالياً ولا يصلح للنقل`, 'warning');
+      toast('الكابتن أوفلاين ولا يمكن تعيين الطلبات له');
+      return;
+    }
+    if (liveSelection?.kind === 'merchant') {
+      const m = (liveCache.merchants || []).find((x) => x.id === liveSelection.merchantId);
+      const ord = (liveCache.orders || []).find((o) => o.id === liveSelection.orderId) || getMerchantTransferableOrder(m);
+      if (!ord || !['searching', 'offered'].includes(ord.status)) {
+        setLiveSelection(null);
+        showLiveNotice('⚠️ الطلب لم يعد في حالة بحث أو عرض للنقل', 'warning');
+        return;
+      }
+      openLiveTransferDialog(ord, m, c);
+      return;
+    }
+    if (liveSelection?.kind === 'captain' && liveSelection.captainId === c.id) {
+      setLiveSelection(null);
+      return;
+    }
+    setLiveSelection({ kind: 'captain', captainId: c.id });
+  }
+
+  function openLiveTransferDialog(order, merchant, captain) {
+    const dlg = $('#liveTransferDialog');
+    if (!dlg) return;
+    if (!['searching', 'offered'].includes(order?.status)) {
+      showLiveNotice('⚠️ لا يمكن نقل هذا الطلب في حالته الحالية', 'warning');
+      return;
+    }
+    if (!captain?.online) {
+      showLiveNotice('⛔ الكابتن أوفلاين ولا يصلح للنقل', 'warning');
+      return;
+    }
+
+    const merchName = merchant?.business_name || merchant?.name || order.merchant?.name || 'المنشأة';
+    const capName = captain.name || 'الكابتن';
+    const actCount = captain.active_orders?.length || (captain.busy ? 1 : 0);
+    const capStateLabel = captain.busy ? `مشغول حالياً (${actCount} طلب)` : 'أونلاين متاح';
+
+    $('#ltMsg').innerHTML = `هل تريد نقل الطلب <b dir="ltr">${serialNo(order)}</b> من «<b>${esc(merchName)}</b>» إلى «<b>${esc(capName)}</b>»؟`;
+    $('#ltMeta').innerHTML = `
+      <div>📍 <b>الوجهة:</b> ${esc(order.customer_address || '—')}</div>
+      <div>🛵 <b>حالة الكابتن:</b> ${esc(capStateLabel)}</div>
+      <div>💰 <b>رصيد الكابتن:</b> ${points(captain.balance_points ?? 0)}${captain.effective_cost_points != null ? ` • <b>تكلفة الطلب:</b> ${points(captain.effective_cost_points)}` : ''}</div>`;
+
+    const warnBox = $('#ltWarnBox');
+    const confirmBtn = $('#ltConfirmBtn');
+    const cancelBtn = $('#ltCancelBtn');
+    const closeBtn = $('#ltCloseBtn');
+    warnBox.classList.add('hide');
+    warnBox.textContent = '';
+    confirmBtn.textContent = '✓ تأكيد النقل';
+    confirmBtn.removeAttribute('aria-describedby');
+    confirmBtn.disabled = false;
+
+    const ac = new AbortController();
+    let awaitingWarningConfirm = false;
+
+    const cleanup = () => ac.abort();
+    dlg.addEventListener('close', cleanup, { once: true });
+
+    const closeDlg = () => {
+      cleanup();
+      if (dlg.open) dlg.close();
+    };
+    cancelBtn.addEventListener('click', closeDlg, { signal: ac.signal });
+    closeBtn.addEventListener('click', closeDlg, { signal: ac.signal });
+
+    confirmBtn.addEventListener('click', async () => {
+      confirmBtn.disabled = true;
+      try {
+        const body = awaitingWarningConfirm
+          ? { captain_id: captain.id, confirm_warning: true }
+          : { captain_id: captain.id, check_warning: true };
+        const res = await api(`/admin/orders/${order.id}/assign-captain`, 'POST', body);
+        if (res?.needs_confirm && res.warning) {
+          awaitingWarningConfirm = true;
+          warnBox.textContent = `⚠️ ${res.warning}`;
+          warnBox.classList.remove('hide');
+          confirmBtn.textContent = '⚠️ تأكيد النقل رغم تنبيه الرصيد';
+          confirmBtn.setAttribute('aria-describedby', 'ltWarnBox');
+          confirmBtn.disabled = false;
+          return;
+        }
+        applyOrderUpdateToLiveCache(res);
+        closeDlg();
+        setLiveSelection(null);
+        toast(`✅ تم نقل الطلب ${serialNo(order)} إلى ${capName}`);
+      } catch (err) {
+        warnBox.textContent = `❌ ${err.message || 'تعذّر إتمام النقل'}`;
+        warnBox.classList.remove('hide');
+        confirmBtn.disabled = false;
+        toast(err.message || 'تعذّر إتمام النقل');
+      }
+    }, { signal: ac.signal });
+
+    dlg.showModal();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tab === 'live' && liveSelection && !document.querySelector('dialog[open]')) {
+      setLiveSelection(null);
+    }
+  });
+
   async function loadLive() {
     if (tab !== 'live' || !liveMap) return;
-    const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
+    const d = await api('/admin/live');
     if (tab !== 'live' || !liveMap) return;
     liveCache = d;
     if (d.intervals) locIntervals = d.intervals;
     rememberOrders(d.orders);
     rememberOrders(d.recentOrders);
-    updateShortageBanner(d.shortage || s.shortage);
+    updateShortageBanner(d.shortage);
 
-    const stEl = $('#lstats');
-    if (stEl) {
-      stEl.innerHTML = [['طلبات حية', s.live], ['كباتن أونلاين', `${s.online}/${s.captains}`], ['منشآت', s.merchants], ['سُلّم اليوم', s.deliveredToday], ['بانتظار الموافقة', s.pending]]
-        .map(([k, v]) => `<div class="card telemetry-item"><div class="stat">${v}</div><div class="mut">${k}</div></div>`).join('');
-    }
-
-    const orders = d.orders || [];
-    const captains = d.captains || [];
     const merchants = d.merchants || [];
+    const captains = d.captains || [];
+    const orders = d.orders || [];
 
-    const renderLiveOrders = () => {
-      const q = $('#liveOrderSearch')?.value || '';
-      const pool = q.trim() ? (d.recentOrders || orders) : orders;
-      const filtered = pool.filter((o) => matchOrder(o, q));
-      const lrows = $('#lrows');
-      if (!lrows) return;
-      lrows.innerHTML = filtered.map((o) => `<tr>
-        <td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td>
-        <td><b>🏪 ${esc(o.merchant?.name || '—')}</b></td>
-        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${orderStatusBadge(o)}${o.eta_minutes ? `<div class="mut">~${o.eta_minutes} د</div>` : ''}</td>
-        <td>${renderOrderCaptainCell(o, captains)}</td>
-        <td>${renderOrderRowActions(o)}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد طلبات مطابقة</td></tr>';
-    };
-    renderLiveOrders();
-    const lSearch = $('#liveOrderSearch');
-    if (lSearch) lSearch.oninput = renderLiveOrders;
-
-    $('#lcaps').innerHTML = captains.map((c) => `<tr>
-      <td><a href="#" class="cap-chip" data-cap="${c.id}">🛵 ${esc(c.name)}</a>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''}</td>
-      <td dir="ltr">${esc(c.phone)}</td>
-      <td>${capStatusTag(c)}${renderCaptainLocDiag(c)}</td>
-      <td>
-        <div class="order-action-bar">
-          <button type="button" class="act-pill act-assign" data-add-order="${c.id}">➕ إسناد طلب</button>
-          ${c.lat != null ? `<button type="button" class="act-pill act-details" data-pan="${c.lat},${c.lng}">📍 رادار</button>` : ''}
-        </div>
-      </td>
-    </tr>`).join('') || '<tr><td colspan="4" class="mut">لا يوجد كباتن</td></tr>';
-
-    $('#lmerchs').innerHTML = merchants.map((m) => `<tr>
-      <td><b>🏪 ${esc(m.business_name || m.name)}</b><div class="mut">${esc(m.name)}</div></td>
-      <td dir="ltr">${esc(m.phone)}</td>
-      <td>${esc(m.address || zname(m.zone_id))}</td>
-      <td>${m.lat != null ? `<button type="button" class="act-pill act-details" data-pan="${m.lat},${m.lng}">📍 رادار</button>` : '<span class="mut">بلا موقع</span>'}</td>
-    </tr>`).join('') || '<tr><td colspan="4" class="mut">لا توجد منشآت</td></tr>';
-
-    // Plot all registered merchants
     const seenM = new Set();
     merchants.forEach((m) => {
-      if (m.lat == null || m.lng == null) return;
-      seenM.add(m.id);
-      let mk = merchMarkers.get(m.id);
-      if (!mk) {
-        mk = L.marker([m.lat, m.lng], { icon: emoji('🏪') }).addTo(liveMap);
-        merchMarkers.set(m.id, mk);
-      } else {
-        mk.setLatLng([m.lat, m.lng]);
-      }
-      mk.bindTooltip(`🏪 ${m.business_name || m.name}`);
+      if (m.lat != null && m.lng != null) seenM.add(m.id);
+      upsertMerchantMarker(m);
     });
     [...merchMarkers.keys()].filter((k) => !seenM.has(k)).forEach((k) => { merchMarkers.get(k).remove(); merchMarkers.delete(k); });
 
-    // Plot all captains with smooth movement
     const seenC = new Set();
     captains.forEach((c) => {
-      if (c.lat == null || c.lng == null) return;
-      seenC.add(c.id);
-      const label = `🛵 ${c.name} — ${c.busy ? `مشغول #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين'}`;
-      setCap(c.id, c.lat, c.lng, label, c.busy, c.online, c);
+      if (c.lat != null && c.lng != null) seenC.add(c.id);
+      upsertCaptainMarker(c);
     });
     [...capMarkers.keys()].filter((k) => !seenC.has(k)).forEach((k) => { capMarkers.get(k).remove(); capMarkers.delete(k); });
 
-    // Plot active order destinations & route polylines
-    orderMarkers.forEach((m) => m.remove());
-    orderMarkers.clear();
-    routeLayers.forEach((r) => r.remove());
-    routeLayers = [];
-    orders.forEach((o) => {
-      if (o.customer_lat != null && o.customer_lng != null) {
-        const mk = L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') })
-          .addTo(liveMap)
-          .bindTooltip(`📍 طلب ${serialNo(o)}: ${o.customer_address || ''}`);
-        orderMarkers.set('c' + o.id, mk);
-      }
-      if (o.captain?.lat != null && ['accepted', 'picked_up', 'arrived'].includes(o.status)) {
-        const dest = o.status === 'accepted' ? [o.merchant?.lat, o.merchant?.lng] : [o.customer_lat, o.customer_lng];
-        if (dest[0] != null) {
-          makeRoute(liveMap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
-            if (tab === 'live' && liveMap) routeLayers.push(layer);
-            else layer.remove();
-          });
-        }
-      }
+    const openOrderIds = new Set(orders.map((o) => o.id));
+    [...orderMarkers.keys()].forEach((k) => {
+      const idNum = Number(String(k).replace(/^c/, ''));
+      if (!openOrderIds.has(idNum)) { orderMarkers.get(k).remove(); orderMarkers.delete(k); }
     });
+    if (routeLayers instanceof Map) {
+      [...routeLayers.keys()].forEach((idNum) => {
+        if (!openOrderIds.has(idNum)) { routeLayers.get(idNum)?.layer?.remove?.(); routeLayers.delete(idNum); }
+      });
+    }
+    orders.forEach((o) => syncOrderOverlay(o));
+
+    updateLegendCountsAndKpis();
+    renderLiveHint();
 
     if (!liveFitted) {
       const pts = collectAllPoints(d);
       if (pts.length) { fitMapToPoints(liveMap, pts); liveFitted = true; }
     }
-
-    refreshTimer = setTimeout(loadLive, 15000);
   }
 
   function setCap(id, lat, lng, label, busy, online = true, capObj = null) {
-    let m = capMarkers.get(id);
-    const icon = busy ? emoji('🛵') : online ? createPulsingDot('#22c55e') : createPulsingDot('#94a3b8');
-    if (!m) {
-      m = L.marker([lat, lng], { icon }).addTo(liveMap);
-      capMarkers.set(id, m);
-    } else {
-      animateMarker(m, [lat, lng]);
-      m.setIcon(icon);
-    }
-    if (label) m.bindTooltip(label);
-    if (capObj) {
-      m.bindPopup(renderCaptainPopupHtml(capObj));
-      m.on('popupopen', tickCaptainLocAges);
-    }
+    if (tab !== 'live' || !liveMap) return;
+    const target = capObj ? { ...capObj, id, lat, lng, busy: Boolean(busy), online: Boolean(online) } : { id, name: label || `#${id}`, lat, lng, busy: Boolean(busy), online: Boolean(online) };
+    upsertCaptainMarker(target, { animate: true });
   }
 
   connectWs((m) => {
-    if (m.shortage) updateShortageBanner(m.shortage);
+    const myZoneShortage = isZoneAdmin && m.zoneShortage ? m.zoneShortage : null;
+    if (myZoneShortage || m.shortage) updateShortageBanner(myZoneShortage || m.shortage);
     const lbl = {
       order: 'تحديث على طلب' + (m.order ? ` ${serialNo(m.order)}` : ''),
       pending_user: 'طلب تسجيل جديد',
@@ -2141,7 +3158,14 @@ authScreen('admin', (user) => {
         if (m.at) capInCache.last_loc_at = m.at;
         if (m.vis) capInCache.last_loc_vis = m.vis;
         if (m.busy !== undefined) capInCache.busy = m.busy;
+        if (m.active_order_id !== undefined) capInCache.active_order_id = m.active_order_id;
+        if (m.active_orders !== undefined) capInCache.active_orders = m.active_orders;
       }
+      (liveCache.orders || []).forEach((o) => {
+        if (o.captain_id === m.captain_id) {
+          o.captain = o.captain ? { ...o.captain, lat: m.lat, lng: m.lng } : { id: m.captain_id, lat: m.lat, lng: m.lng };
+        }
+      });
       const capInUsers = (currentUsersList || []).find((c) => c.id === m.captain_id);
       if (capInUsers) {
         if (m.at) capInUsers.last_loc_at = m.at;
@@ -2155,19 +3179,42 @@ authScreen('admin', (user) => {
       });
       tickCaptainLocAges();
       if (tab === 'live' && liveMap) {
-        const existing = capMarkers.get(m.captain_id);
-        if (existing) {
-          animateMarker(existing, [m.lat, m.lng]);
-          if (capInCache) existing.setPopupContent(renderCaptainPopupHtml(capInCache));
+        if (capInCache) {
+          upsertCaptainMarker(capInCache, { animate: true });
         } else {
-          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, capInCache);
+          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, null);
         }
+        (liveCache.orders || [])
+          .filter((o) => o.captain_id === m.captain_id && ['accepted', 'picked_up', 'arrived'].includes(o.status))
+          .forEach((o) => syncOrderOverlay(o));
       }
     } else if (m.type === 'balance') {
+      const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
+      if (capInCache && m.balance_points != null) capInCache.balance_points = m.balance_points;
       if (tab === 'wallet') views.wallet();
-    } else if (['order', 'pending_user', 'captain'].includes(m.type)) {
-      if (m.type === 'pending_user') toast('طلب تسجيل جديد بانتظار الموافقة');
-      if (tab === 'live') { clearTimeout(refreshTimer); loadLive(); }
+    } else if (m.type === 'captain') {
+      const capInCache = (liveCache.captains || []).find((c) => c.id === m.id);
+      if (capInCache) {
+        capInCache.online = Boolean(m.online);
+        if (tab === 'live' && liveMap) {
+          upsertCaptainMarker(capInCache);
+          if (liveSelection?.kind === 'captain' && liveSelection.captainId === capInCache.id && !capInCache.online) {
+            setLiveSelection(null);
+            showLiveNotice(`⛔ أصبح الكابتن «${capInCache.name}» أوفلاين`, 'warning');
+          }
+          updateLegendCountsAndKpis();
+        }
+      } else if (tab === 'live') {
+        loadLive();
+      }
+    } else if (m.type === 'order') {
+      if (m.order) {
+        applyOrderUpdateToLiveCache(m.order);
+      } else if (tab === 'live') {
+        loadLive();
+      }
+    } else if (m.type === 'pending_user') {
+      toast('طلب تسجيل جديد بانتظار الموافقة');
     }
   });
 

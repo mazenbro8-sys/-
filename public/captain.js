@@ -3,7 +3,7 @@ import {
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, openServerConfigModal, normalizeCaptainTone, playCaptainTone, lStore
-} from './shared.js?v=panther2026v20';
+} from './shared.js?v=panther2026v24';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -15,9 +15,9 @@ authScreen('captain', (user) => {
   topHeader.className = 'panther-header';
   topHeader.innerHTML = `
     <h1>
-      <img src="logo.jpg" alt="PANTHER" class="brand-logo-sm">
+      <img src="brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25">
       <div class="hdr-brand-stack">
-        <span class="brand-title-sm" dir="ltr">PANTHER</span>
+        <span class="brand-title-sm" lang="en" dir="ltr">PANTHER <span class="brand-delivery-sub">DELIVERY</span></span>
         <span class="hdr-role-tag">الكابتن ${esc(user.name)}${user.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(user.tag)}</code>` : ''}</span>
       </div>
     </h1>
@@ -39,7 +39,6 @@ authScreen('captain', (user) => {
     <!-- TAB 1: HOME (Hero Radar Status + Bento Stats + Live Radar Map) -->
     <section id="tab-home" class="cap-tab">
       <div class="card captain-hero-card" id="heroStatusCard">
-        <div class="hero-ambient-glow"></div>
         <div class="hero-status-top">
           <div class="hero-radar-indicator" id="radarOrb">
             <span class="radar-core">🛵</span>
@@ -55,14 +54,12 @@ authScreen('captain', (user) => {
 
       <div class="stats4">
         <div class="card bento-stat-card bento-primary">
-          <div class="bento-watermark">📦</div>
           <div class="bento-label">طلبات اليوم المسلّمة</div>
           <div class="bento-value" id="stDelivered">0</div>
           <div class="bento-sub" id="stTotalAll">إجمالي الكلي: 0 طلب</div>
           <div class="bento-sub" id="stDeductedToday">خصم اليوم: 0 نقطة</div>
         </div>
         <div class="card bento-stat-card bento-accent" id="homeActCard" style="cursor:pointer">
-          <div class="bento-watermark">🛵</div>
           <div class="bento-label">الطلبات النشطة حالياً</div>
           <div class="bento-value" id="stActiveCount">0</div>
           <div class="bento-action-link">إدارة الطلبات النشطة ⬅️</div>
@@ -148,13 +145,13 @@ authScreen('captain', (user) => {
           </div>
           <button type="button" id="snd" class="ok sm">🔊 تجربة الصوت</button>
         </div>
-        <div class="setting-row">
+        <label class="setting-row" for="vibToggle" style="cursor:pointer">
           <div>
             <div class="setting-title">الاهتزاز مع الرنين</div>
             <div class="setting-sub">اهتزاز الهاتف عند وصول طلب جديد</div>
           </div>
-          <input type="checkbox" id="vibToggle" class="accent-warn" style="width:22px;height:22px">
-        </div>
+          <input type="checkbox" id="vibToggle" class="accent-warn">
+        </label>
         <div class="setting-row">
           <div>
             <div class="setting-title">نغمة التنبيه الصوتية</div>
@@ -230,7 +227,7 @@ authScreen('captain', (user) => {
       </div>
 
       <!-- Logout -->
-      <div class="card" style="border-color:var(--c-ef4444-a350)">
+      <div class="card" style="border-color:var(--status-bad-border)">
         <div class="setting-row" style="padding:0">
           <div>
             <div class="setting-title clr-bad-soft">🚪 تسجيل الخروج من الحساب</div>
@@ -566,8 +563,8 @@ authScreen('captain', (user) => {
         ${stepperHtml}
 
         <!-- Merchant Box -->
-        <div style="padding:12px;border-radius:12px;background:var(--c-ffffff-a030);border:1px solid var(--c-f59e0b-a200);margin-bottom:10px">
-          <div style="font-weight:800;color:var(--gold);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
+        <div style="padding:12px;border-radius:12px;background:var(--bg-subtle);border:1px solid var(--border-brand-soft);margin-bottom:10px">
+          <div style="font-weight:800;color:var(--brand-primary);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
           <div><b>${esc(o.merchant.name)}</b> — <span class="mut">${esc(o.merchant.address)}</span></div>
           <div class="row" style="margin-top:8px">
             ${o.merchant.phone ? `<a class="btn-nav sec sm" href="tel:${esc(o.merchant.phone)}">📞 اتصال بالمنشأة</a>` : ''}
@@ -576,7 +573,7 @@ authScreen('captain', (user) => {
         </div>
 
         <!-- Customer Box -->
-        <div style="padding:12px;border-radius:12px;background:var(--c-22c55e-a080);border:1px solid var(--c-22c55e-a300);margin-bottom:10px">
+        <div style="padding:12px;border-radius:12px;background:var(--status-ok-soft);border:1px solid var(--status-ok-border);margin-bottom:10px">
           <div class="clr-ok-soft" style="font-weight:800;margin-bottom:4px">📍 بيانات التوصيل والزبون</div>
           <div style="font-size:16px;font-weight:800;margin-bottom:4px">${esc(o.customer_address || '—')}</div>
           ${o.customer_name && o.customer_name !== '—' ? `<div>الزبون: <b>${esc(o.customer_name)}</b></div>` : ''}
@@ -666,7 +663,7 @@ authScreen('captain', (user) => {
       <div class="hist-card">
         <div style="flex:1;min-width:190px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <b dir="ltr" style="color:var(--gold);font-size:15px">${serialNo(o)}</b>
+            <b dir="ltr" style="color:var(--brand-primary);font-size:15px">${serialNo(o)}</b>
             ${badge(o.status)}
           </div>
           <div style="font-weight:700">🏪 ${esc(o.merchant?.name || '—')}</div>

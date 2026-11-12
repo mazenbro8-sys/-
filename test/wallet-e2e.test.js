@@ -458,4 +458,41 @@ test('F2: immutable captain hashtag codes, uniqueness, normalization, zone-scope
   const f10Ord4Det = (await call(`/admin/orders/${f10Ord4.id}`, 'GET', null, adm)).data;
   assert.ok(f10Ord4Det.events.some((e) => e.type === 'admin_force_pickup'));
   assert.equal((await call(`/captain/orders/${f10Ord4.id}/status`, 'POST', { status: 'failed_customer' }, capBroke.tok)).status, 200);
+
+  // Billing controls in wallet modal verification:
+  // 1. zone_admin blocked from setting billing changes (403)
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 20 }, za1)).status, 403);
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { exempt_from: Date.now(), exempt_until: Date.now() + 10000 }, za1)).status, 403);
+
+  // 2. Super admin setting custom cost
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 45 }, adm)).status, 200);
+  let cap1Ledger = (await call(`/admin/captains/${cap1.data.id}/ledger`, 'GET', null, adm)).data;
+  assert.equal(cap1Ledger.captain.cost_override, 45);
+  assert.equal(cap1Ledger.captain.effective_cost_points, 45);
+  assert.equal(cap1Ledger.captain.cost_source, 'override');
+
+  // 3. Setting 0 for permanent exemption
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 0, exempt_from: null, exempt_until: null }, adm)).status, 200);
+  cap1Ledger = (await call(`/admin/captains/${cap1.data.id}/ledger`, 'GET', null, adm)).data;
+  assert.equal(cap1Ledger.captain.cost_override, 0);
+  assert.equal(cap1Ledger.captain.effective_cost_points, 0);
+  assert.equal(cap1Ledger.captain.cost_source, 'exempt_permanent');
+
+  // 4. Setting temporary exemption window (and validation: end before start or past end without start)
+  const tStart = Date.now() + 1000;
+  const tEnd = Date.now() + 3600000;
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { exempt_from: tEnd, exempt_until: tStart }, adm)).status, 400);
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { exempt_from: null, exempt_until: Date.now() - 5000 }, adm)).status, 400);
+
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: 45, exempt_from: tStart - 2000, exempt_until: tEnd }, adm)).status, 200);
+  cap1Ledger = (await call(`/admin/captains/${cap1.data.id}/ledger`, 'GET', null, adm)).data;
+  assert.equal(cap1Ledger.captain.effective_cost_points, 0);
+  assert.equal(cap1Ledger.captain.cost_source, 'exempt_temporary');
+
+  // 5. Clearing the override back to default
+  assert.equal((await call(`/admin/users/${cap1.data.id}`, 'PATCH', { cost_override: null, exempt_from: null, exempt_until: null }, adm)).status, 200);
+  cap1Ledger = (await call(`/admin/captains/${cap1.data.id}/ledger`, 'GET', null, adm)).data;
+  assert.equal(cap1Ledger.captain.cost_override, null);
+  assert.equal(cap1Ledger.captain.effective_cost_points, 25);
+  assert.equal(cap1Ledger.captain.cost_source, 'default');
 });

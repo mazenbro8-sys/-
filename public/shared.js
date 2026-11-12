@@ -100,8 +100,8 @@ export function openServerConfigModal(onSaved) {
   modal.style.cssText = 'position:fixed;inset:0;z-index:var(--z-modal);background:var(--surface-overlay);backdrop-filter:var(--blur-sm);display:grid;place-items:center;padding:var(--space-4)';
   modal.innerHTML = `<div class="card" style="width:100%;max-width:430px;text-align:right">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3 style="margin:0;color:var(--gold)">🌐 إعدادات اتصال السيرفر</h3>
-      <button type="button" class="ghost sm" id="srvCfgClose">✕</button>
+      <h3 style="margin:0;color:var(--brand-primary)">🌐 إعدادات اتصال السيرفر</h3>
+      <button type="button" class="ghost sm" id="srvCfgClose" aria-label="إغلاق">✕</button>
     </div>
     <p class="mut" style="font-size:13px;margin:0 0 12px">أدخل رابط السيرفر (مثل رابط Cloudflare أو الدومين أو IP الشبكة المحلية):</p>
     <input id="srvUrlInput" dir="ltr" type="url" placeholder="https://mashwar-app.onrender.com" value="${esc(current)}" style="width:100%;margin-bottom:10px;text-align:left">
@@ -118,14 +118,14 @@ export function openServerConfigModal(onSaved) {
   const inp = $('#srvUrlInput', modal), msg = $('#srvTestMsg', modal);
   $('#srvTestBtn', modal).onclick = async () => {
     const val = inp.value.trim().replace(/\/+$/, '');
-    if (!val) { msg.textContent = '⚠️ يرجى إدخال رابط السيرفر أولاً'; msg.style.color = 'var(--c-fbbf24)'; return; }
-    msg.textContent = '⏳ جاري فحص الاتصال بالسيرفر...'; msg.style.color = 'var(--c-a1a1aa)';
+    if (!val) { msg.textContent = '⚠️ يرجى إدخال رابط السيرفر أولاً'; msg.style.color = 'var(--status-warn-text)'; return; }
+    msg.textContent = '⏳ جاري فحص الاتصال بالسيرفر...'; msg.style.color = 'var(--text-secondary)';
     try {
       const r = await fetch(val + '/api/zones');
-      if (r.ok) { msg.textContent = '✅ الاتصال بالسيرفر ناجح ويعمل بشكل ممتاز!'; msg.style.color = 'var(--c-22c55e)'; }
-      else { msg.textContent = `❌ السيرفر استجاب برمز خطأ (${r.status})`; msg.style.color = 'var(--c-bad)'; }
+      if (r.ok) { msg.textContent = '✅ الاتصال بالسيرفر ناجح ويعمل بشكل ممتاز!'; msg.style.color = 'var(--status-ok-text)'; }
+      else { msg.textContent = `❌ السيرفر استجاب برمز خطأ (${r.status})`; msg.style.color = 'var(--status-bad-text)'; }
     } catch {
-      msg.textContent = '❌ تعذّر الوصول للسيرفر، تأكد من الرابط أو اتصال الإنترنت'; msg.style.color = 'var(--c-bad)';
+      msg.textContent = '❌ تعذّر الوصول للسيرفر، تأكد من الرابط أو اتصال الإنترنت'; msg.style.color = 'var(--status-bad-text)';
     }
   };
   $('#srvSaveBtn', modal).onclick = () => {
@@ -201,29 +201,29 @@ export async function promptInstallApp(role = ROLE_KEY) {
   document.getElementById('pwaInstallModal')?.remove();
   const modal = document.createElement('div');
   modal.id = 'pwaInstallModal';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:10000;background:var(--c-000000-a780);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
-  modal.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:20px;border:1.5px solid var(--c-fbbf24-a450);text-align:right">
+  modal.style.cssText = 'position:fixed;inset:0;z-index:var(--z-toast);background:var(--surface-overlay);backdrop-filter:blur(6px);display:grid;place-items:center;padding:14px';
+  modal.innerHTML = `<div class="card" style="width:100%;max-width:440px;padding:20px;border:1.5px solid var(--border-brand-soft);text-align:right">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <div style="display:flex;align-items:center;gap:10px">
-        <img src="/icon-192.png" alt="PANTHER" style="width:48px;height:48px;border-radius:12px;border:1px solid var(--c-fbbf24-a450)">
+        <img src="/icon-192.png" alt="PANTHER" style="width:48px;height:48px;border-radius:12px;border:1px solid var(--border-brand-soft)">
         <div>
-          <h3 style="margin:0;color:var(--gold)">📲 تثبيت ${esc(meta.short)}</h3>
+          <h3 style="margin:0;color:var(--brand-primary)">📲 تثبيت ${esc(meta.short)}</h3>
           <div class="mut" style="font-size:12px">يعمل كتطبيق هاتف مستقل بشاشة كاملة</div>
         </div>
       </div>
-      <button type="button" class="ghost sm" id="pwaClose">✕</button>
+      <button type="button" class="ghost sm" id="pwaClose" aria-label="إغلاق">✕</button>
     </div>
-    <div style="background:var(--c-f59e0b-a100);border:1px solid var(--c-f59e0b-a400);border-radius:12px;padding:12px;margin-bottom:10px">
-      <b class="clr-warn" style="display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
-      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
+    <div style="background:var(--brand-primary-soft);border:1px solid var(--border-brand-soft);border-radius:12px;padding:12px;margin-bottom:10px">
+      <b style="color:var(--brand-primary);display:block;margin-bottom:6px">🤖 على هواتف أندرويد (Chrome / Samsung):</b>
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--text-secondary)">
         <li>اضغط على زر القائمة <b>(⋮)</b> في أعلى المتصفح.</li>
         <li>اختر <b>«تثبيت التطبيق» (Install App)</b> أو <b>«الإضافة إلى الشاشة الرئيسية»</b>.</li>
         <li>اضغط <b>تثبيت</b> ليظهر التطبيق بأيقونة <b>PANTHER</b> على هاتفك.</li>
       </ol>
     </div>
-    <div style="background:var(--c-ffffff-a040);border:1px solid var(--c-ffffff-a120);border-radius:12px;padding:12px;margin-bottom:14px">
+    <div style="background:var(--bg-subtle);border:1px solid var(--border-neutral-strong);border-radius:12px;padding:12px;margin-bottom:14px">
       <b class="clr-near-wht" style="display:block;margin-bottom:6px">🍎 على هواتف آيفون (Safari):</b>
-      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--c-mut)">
+      <ol style="margin:0;padding-right:18px;font-size:13.5px;line-height:1.7;color:var(--text-secondary)">
         <li>اضغط على زر المشاركة <b>(⬆️ Share)</b> في أسفل المتصفح.</li>
         <li>اختر <b>«إضافة إلى الصفحة الرئيسية» (Add to Home Screen)</b>.</li>
         <li>اضغط <b>إضافة (Add)</b> في أعلى الشاشة.</li>
@@ -249,12 +249,12 @@ export function renderInstallBanner(role = ROLE_KEY) {
   const meta = APP_META[role] || APP_META.merchant;
   const wantInstall = new URLSearchParams(location.search).get('install') === '1';
   if (!wantInstall) return '';
-  return `<div class="card" id="appInstallCard" style="border:1.5px solid var(--c-fbbf24-a450);background:linear-gradient(145deg,var(--c-181411-a960),var(--c-ea580c-a140));margin-bottom:14px;text-align:right">
+  return `<div class="card" id="appInstallCard" style="border:1.5px solid var(--border-brand-soft);background:var(--bg-elevated);margin-bottom:14px;text-align:right">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:12px">
-        <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid var(--c-fbbf24-a500);box-shadow:0 6px 18px var(--c-ea580c-a300)">
+        <img src="/icon-192.png" alt="PANTHER" style="width:54px;height:54px;border-radius:14px;border:1.5px solid var(--border-brand-soft)">
         <div>
-          <div style="font-weight:900;font-size:15.5px;color:var(--c-ink)">${meta.icon} ${esc(meta.name)}</div>
+          <div style="font-weight:900;font-size:15.5px;color:var(--text-primary)">${meta.icon} ${esc(meta.name)}</div>
           <div class="mut" style="font-size:12.5px">${esc(meta.desc)}</div>
         </div>
       </div>
@@ -363,20 +363,10 @@ if (!document.getElementById('_mapCSS')) {
   const style = document.createElement('style');
   style.id = '_mapCSS';
   style.textContent = `
-    @keyframes _pulse {
-      0%   { transform: scale(1);   opacity: .95; }
-      70%  { transform: scale(2.6); opacity: 0; }
-      100% { transform: scale(2.6); opacity: 0; }
-    }
     .pulsing-dot {
       width: 14px; height: 14px; border-radius: 50%;
-      border: 2px solid var(--c-ink); box-shadow: 0 2px 6px var(--c-000000-a500);
+      border: 2px solid var(--text-primary); box-shadow: 0 2px 6px rgba(0,0,0,0.5);
       position: relative;
-    }
-    .pulsing-dot::after {
-      content: ''; position: absolute; inset: -2px;
-      border-radius: 50%; background: inherit;
-      animation: _pulse 1.5s ease-out infinite;
     }
   `;
   document.head.appendChild(style);
@@ -465,17 +455,29 @@ export function makeMap(el, center = DAMASCUS, zoom = 13) {
 }
 
 export const emoji = (e) => L.divIcon({
-  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 5px var(--c-000000-a550))">${e}</div>`,
+  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6))">${e}</div>`,
   className: '', iconSize: [28, 28], iconAnchor: [14, 14],
 });
 
 export function pickLocation(map, onPick) {
   let mk;
+  const setMarker = (lat, lng) => {
+    const ll = L.latLng(lat, lng);
+    if (mk) mk.setLatLng(ll);
+    else mk = L.marker(ll, { icon: emoji('📍') }).addTo(map);
+    return mk;
+  };
+  const clearMarker = () => {
+    if (mk) {
+      mk.remove();
+      mk = null;
+    }
+  };
   map.on('click', (e) => {
-    if (mk) mk.setLatLng(e.latlng);
-    else mk = L.marker(e.latlng, { icon: emoji('📍') }).addTo(map);
+    setMarker(e.latlng.lat, e.latlng.lng);
     onPick(e.latlng.lat, e.latlng.lng);
   });
+  return { setMarker, clearMarker };
 }
 
 export async function makeRoute(map, from, to) {
@@ -488,11 +490,11 @@ export async function makeRoute(map, from, to) {
       const data = await res.json();
       if (data.code === 'Ok' && data.routes?.length) {
         const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
-        return L.polyline(coords, { color: '#f59e0b', weight: 5, opacity: 0.92 }).addTo(map);
+        return L.polyline(coords, { color: '#F5B700', weight: 5, opacity: 0.92 }).addTo(map);
       }
     } catch {}
   }
-  return L.polyline([from, to], { color: '#f59e0b', weight: 4, opacity: 0.8, dashArray: '10 8' }).addTo(map);
+  return L.polyline([from, to], { color: '#F5B700', weight: 4, opacity: 0.8, dashArray: '10 8' }).addTo(map);
 }
 
 export function animateMarker(marker, newLatLng, duration = 1000) {
@@ -521,7 +523,7 @@ export function fitMapToPoints(map, points) {
   map.fitBounds(bounds, { padding: [45, 45], maxZoom: 16 });
 }
 
-export function createPulsingDot(color = '#22c55e') {
+export function createPulsingDot(color = '#10B981') {
   return L.divIcon({
     html: `<div class="pulsing-dot" style="background:${color}"></div>`,
     className: '', iconSize: [14, 14], iconAnchor: [7, 7],
@@ -587,13 +589,12 @@ export async function authScreen(role, onReady) {
     : `<div style="margin-top:14px;text-align:center"><button type="button" class="ghost sm" data-server-cfg="1">🌐 تغيير رابط السيرفر</button></div>`;
   root.innerHTML = `${renderInstallBanner(role)}
     <div class="card hero vault-card">
-      <div class="vault-glow-orb"></div>
       <div class="brand-emblem-wrap">
-        <img src="logo.jpg" alt="PANTHER DELIVERY" class="brand-logo-lg">
+        <img src="brand/panther-mark-reversed.png" alt="PANTHER DELIVERY" class="brand-logo-lg" width="128" height="67">
         <span class="brand-role-pill">${roleIcon} ${esc(roleLabel)}</span>
       </div>
-      <div class="brand-title-gradient" dir="ltr">PANTHER DELIVERY</div>
-      <div class="brand-sub">B2B SMART DISPATCH • نظام التوصيل الذكي</div>
+      <div class="brand-title-gradient" lang="en" dir="ltr">PANTHER DELIVERY</div>
+      <div class="brand-sub"><span lang="en" dir="ltr">B2B SMART DISPATCH</span> • نظام التوصيل الذكي</div>
       <p class="mut" style="margin:0 auto 18px;max-width:320px;line-height:1.6">سجّل الدخول إلى حسابك المعتمد للمتابعة. تُدار جميع الحسابات مركزياً عبر الإدارة.</p>
       <form id="lf" class="vault-form" style="text-align:right">
         <div class="input-group">
@@ -666,9 +667,9 @@ export function header(title, user, onLogout) {
     : '';
   h.innerHTML = `
     <h1>
-      <img src="logo.jpg" alt="PANTHER" class="brand-logo-sm">
+      <img src="brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25">
       <div class="hdr-brand-stack">
-        <span class="brand-title-sm" dir="ltr">PANTHER</span>
+        <span class="brand-title-sm" lang="en" dir="ltr">PANTHER <span class="brand-delivery-sub">DELIVERY</span></span>
         <span class="hdr-role-tag">${esc(title)}</span>
       </div>
     </h1>
@@ -693,7 +694,7 @@ export function captainModal(cap) {
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🛵 ${esc(cap.name)}</h3><button type="button" class="ghost" id="capx">✕</button></div>
     <p style="margin:10px 0">📞 <b dir="ltr">${esc(cap.phone || '—')}</b></p>
     ${hasLoc ? '<div id="capmap" class="map" style="height:240px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}
-    ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:block;text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:var(--c-22c55e);color:var(--c-ink);font-weight:700;text-decoration:none">📞 اتصال مباشر</a>` : ''}
+    ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:inline-flex;align-items:center;justify-content:center;width:100%;min-height:var(--touch-min);text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:var(--status-ok);color:var(--text-on-ok);font-weight:800;text-decoration:none">📞 اتصال مباشر</a>` : ''}
   </div>`;
   document.body.appendChild(el);
   const close = () => el.remove();

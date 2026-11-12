@@ -5,6 +5,7 @@ import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCuto
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
+import { resolveAndParseGoogleMapsLink, GeoParseError } from './geo.js';
 
 export const api = express.Router();
 
@@ -29,11 +30,33 @@ const int = (v, name, min, max) => {
   if (!Number.isInteger(n) || n < min || n > max) throw bad(`قيمة غير صالحة: ${name}`);
   return n;
 };
+const LOCATION_SOURCES = new Set(['link', 'manual', 'map']);
+const parseLocationSource = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'string' || !LOCATION_SOURCES.has(v)) throw bad('مصدر الموقع غير صالح');
+  return v;
+};
+const sanitizeAuditPayload = (b) => {
+  const clean = { ...(b || {}) };
+  delete clean.password;
+  delete clean.link;
+  delete clean.map_link;
+  delete clean.url;
+  return clean;
+};
 const coord = (lat, lng, required = false) => {
-  if (lat == null && lng == null && !required) return [null, null];
+  const emptyLat = lat === undefined || lat === null || lat === '';
+  const emptyLng = lng === undefined || lng === null || lng === '';
+  if (emptyLat && emptyLng && !required) return [null, null];
+  if (emptyLat || emptyLng || typeof lat === 'boolean' || typeof lng === 'boolean') {
+    throw bad('إحداثيات غير صالحة');
+  }
   const a = Number(typeof lat === 'string' ? toEnDigits(lat) : lat);
   const b = Number(typeof lng === 'string' ? toEnDigits(lng) : lng);
-  if (!(a >= -90 && a <= 90 && b >= -180 && b <= 180) || lat === '' || lng === '') throw bad('إحداثيات غير صالحة');
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a < -90 || a > 90 || b < -180 || b > 180) {
+    throw bad('إحداثيات غير صالحة');
+  }
+  if (a === 0 && b === 0) throw bad('الإحداثيات (0, 0) غير صالحة');
   return [a, b];
 };
 const phone = (v) => {
@@ -127,6 +150,10 @@ const createAccount = wrap(async (req, res) => {
   if (!/[A-Za-z\u0600-\u06FF]/.test(pass) || !/\d/.test(pass)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
   let zone = null;
   if (isZoneAdmin) {
+    if (role === 'merchant' && b.zone_id != null && b.zone_id !== '') {
+      const reqZone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
+      if (reqZone !== req.user.zone_id) throw new HttpError(403, 'لا يمكنك إنشاء منشأة خارج منطقتك');
+    }
     zone = req.user.zone_id;
   } else if (role !== 'admin' || (b.zone_id != null && b.zone_id !== '')) {
     zone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
@@ -134,11 +161,12 @@ const createAccount = wrap(async (req, res) => {
   if (zone != null && !(await db.get('SELECT 1 FROM zones WHERE id=? AND active=1', zone))) {
     throw bad('المنطقة غير موجودة');
   }
-  let business = null, address = null, lat = null, lng = null;
+  let business = null, address = null, lat = null, lng = null, locationSource = null;
   if (role === 'merchant') {
     business = str(b.business_name, 'اسم المنشأة', 2, 80);
     address = str(b.address, 'العنوان', 3, 200);
     [lat, lng] = coord(b.lat, b.lng);
+    locationSource = parseLocationSource(b.location_source);
   }
   if (await db.get('SELECT 1 FROM users WHERE phone=?', p)) throw new HttpError(409, 'رقم الهاتف مسجل مسبقاً');
   const tag = role === 'captain' ? await generateUniqueCaptainTag() : null;
@@ -146,7 +174,13 @@ const createAccount = wrap(async (req, res) => {
     'INSERT INTO users(role,phone,name,pass_hash,zone_id,status,business_name,address,lat,lng,tag,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
     role, p, name, bcrypt.hashSync(pass, 12), zone, 'active', business, address, lat, lng, tag, Date.now()
   );
-  await audit(req.user.id, 'create_user', { role, phone: p, zone_id: zone, ...(tag ? { tag } : {}) });
+  await audit(req.user.id, 'create_user', {
+    role,
+    phone: p,
+    zone_id: zone,
+    ...(tag ? { tag } : {}),
+    ...(locationSource ? { location_source: locationSource } : {}),
+  });
   res.status(201).json({ ok: true, id: Number(r.lastInsertRowid), ...(tag ? { tag } : {}), message: 'تم إنشاء الحساب' });
 });
 
@@ -339,8 +373,9 @@ C.post('/location', wrap(async (req, res) => {
   }
   const vis = rawVis === 'visible' || rawVis === 'hidden' ? rawVis : (u.last_loc_vis ?? null);
   const now = Date.now();
-  const act = await activeOrder(u.id);
-  const minGap = (act ? config.activeLocIntervalMs : config.idleLocIntervalMs) * 0.8;
+  const acts = await activeOrders(u.id);
+  const primaryAct = acts[0] || null;
+  const minGap = (acts.length ? config.activeLocIntervalMs : config.idleLocIntervalMs) * 0.8;
   if (now - (lastPing.get(u.id) ?? 0) < minGap) return res.status(204).end();
   lastPing.set(u.id, now);
   // basic anti-teleport sanity (>200 km/h between pings is ignored)
@@ -349,13 +384,28 @@ C.post('/location', wrap(async (req, res) => {
     if (hrs > 0 && haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) return res.status(204).end();
   }
   await db.run('UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, last_loc_vis=? WHERE id=?', lat, lng, now, vis, u.id);
-  await db.run('INSERT INTO locations(captain_id,lat,lng,order_id,at) VALUES(?,?,?,?,?)', u.id, lat, lng, act?.id ?? null, now);
-  if (act) {
+  await db.run('INSERT INTO locations(captain_id,lat,lng,order_id,at) VALUES(?,?,?,?,?)', u.id, lat, lng, primaryAct?.id ?? null, now);
+  for (const act of acts) {
     const m = { type: 'loc', order_id: act.id, lat, lng, at: now };
-    const v = await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', act.id), 'merchant');
+    const v = await viewOrder(act, 'merchant');
     sendTo(act.merchant_id, { ...m, eta_minutes: v.eta_minutes });
   }
-  sendToAdmins({ type: 'loc', captain_id: u.id, lat, lng, at: now, vis, busy: !!act }, u.zone_id);
+  sendToAdmins({
+    type: 'loc',
+    captain_id: u.id,
+    lat,
+    lng,
+    at: now,
+    vis,
+    busy: acts.length > 0,
+    active_order_id: primaryAct?.id ?? null,
+    active_orders: acts.map((x) => ({
+      id: x.id,
+      serial_no: String(x.id).padStart(4, '0'),
+      customer_address: x.customer_address,
+      status: x.status,
+    })),
+  }, u.zone_id);
   res.status(204).end();
 }));
 
@@ -580,6 +630,17 @@ A.get('/live', wrap(async (req, res) => {
   });
 }));
 
+A.post('/geo/parse-link', wrap(async (req, res) => {
+  const raw = req.body?.link ?? req.body?.url;
+  try {
+    const parsed = await resolveAndParseGoogleMapsLink(raw);
+    res.json(parsed);
+  } catch (e) {
+    if (e instanceof GeoParseError) throw bad(e.message);
+    throw e;
+  }
+}));
+
 A.post('/users', createAccount);
 A.get('/captains/by-tag/:tag', wrap(async (req, res) => {
   const tag = normalizeTag(req.params.tag);
@@ -630,7 +691,8 @@ A.get('/users', wrap(async (req, res) => {
   const defaultCost = await orderCostPoints();
   const rows = await db.all(
     `SELECT id,role,phone,name,business_name,address,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,lat,lng,last_lat,last_lng,last_loc_at,last_loc_vis,created_at,
-       EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=users.id AND o.status IN ('accepted','picked_up','arrived')) busy
+       EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=users.id AND o.status IN ('accepted','picked_up','arrived')) busy,
+       COALESCE((SELECT COUNT(*) FROM orders o WHERE o.merchant_id=users.id AND o.status IN ('searching','offered','accepted','picked_up','arrived')), 0) active_orders_count
      FROM users WHERE ${clauses.join(' AND ')} ORDER BY (status='pending') DESC, id DESC LIMIT 500`,
     ...args
   );
@@ -647,11 +709,16 @@ A.get('/users', wrap(async (req, res) => {
 A.patch('/users/:id', wrap(async (req, res) => {
   const id = oid(req);
   const zId = adminZone(req);
-  const u = zId != null
-    ? await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain') AND zone_id=? AND status!='deleted'", id, zId)
-    : await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain','zone_admin','admin') AND status!='deleted'", id);
+  const u = await db.get("SELECT * FROM users WHERE id=? AND role IN ('merchant','captain','zone_admin','admin') AND status!='deleted'", id);
   if (!u) throw new HttpError(404, 'المستخدم غير موجود');
   const b = req.body ?? {};
+  const hasLocEdit = b.lat !== undefined || b.lng !== undefined || b.location_source !== undefined;
+  if (zId != null && (!['merchant', 'captain'].includes(u.role) || u.zone_id !== zId)) {
+    if (hasLocEdit || u.role === 'merchant') {
+      throw new HttpError(403, 'ليس لديك صلاحية لتعديل منشأة خارج منطقتك');
+    }
+    throw new HttpError(404, 'المستخدم غير موجود');
+  }
   const hasCostEdit = b.cost_override !== undefined || b.exempt_from !== undefined || b.exempt_until !== undefined;
   let nextCostOverride = u.cost_override;
   let nextExemptFrom = u.exempt_from;
@@ -672,6 +739,9 @@ A.patch('/users/:id', wrap(async (req, res) => {
     if (b.exempt_until !== undefined) nextExemptUntil = parseEpoch(b.exempt_until, 'نهاية الإعفاء');
     if (nextExemptFrom != null && nextExemptUntil != null && nextExemptFrom > nextExemptUntil) {
       throw bad('تاريخ بداية الإعفاء يجب أن يكون قبل تاريخ نهايته');
+    }
+    if (nextExemptFrom == null && nextExemptUntil != null && nextExemptUntil < Date.now()) {
+      throw bad('تاريخ نهاية الإعفاء يجب أن يكون في المستقبل عند عدم تحديد تاريخ بداية');
     }
   }
   if (b.role != null && b.role !== u.role) {
@@ -727,15 +797,27 @@ A.patch('/users/:id', wrap(async (req, res) => {
       await db.run('UPDATE users SET zone_id=? WHERE id=?', z, id);
     }
   }
-  if (b.lat != null && b.lng != null) {
+  let locChanged = false;
+  let locSource = null;
+  if (b.location_source !== undefined) locSource = parseLocationSource(b.location_source);
+  if (b.lat !== undefined || b.lng !== undefined) {
     const [la, ln] = coord(b.lat, b.lng, true);
+    if (u.lat !== la || u.lng !== ln) locChanged = true;
     await db.run('UPDATE users SET lat=?, lng=? WHERE id=?', la, ln, id);
   }
   if (hasCostEdit) {
     await db.run('UPDATE users SET cost_override=?, exempt_from=?, exempt_until=? WHERE id=?', nextCostOverride, nextExemptFrom, nextExemptUntil, id);
   }
-  await audit(req.user.id, 'user_update', { id, ...b });
-  res.json({ ok: true });
+  let warning = null;
+  if (locChanged && u.role === 'merchant') {
+    const actRow = await db.get(
+      "SELECT COUNT(*) n FROM orders WHERE merchant_id=? AND status IN ('searching','offered','accepted','picked_up','arrived')",
+      id
+    );
+    if ((actRow?.n || 0) > 0) warning = 'تغيير الموقع لا يؤثر على الطلبات الحالية';
+  }
+  await audit(req.user.id, 'user_update', { id, ...sanitizeAuditPayload(b), ...(locSource ? { location_source: locSource } : {}) });
+  res.json({ ok: true, ...(warning ? { warning } : {}) });
 }));
 A.post('/users/:id/reset-password', wrap(async (req, res) => {
   const id = oid(req);
@@ -877,15 +959,19 @@ const getAdminOrder = async (req) => {
 };
 
 A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
-  const o = await getAdminOrder(req);
-  const id = o.id;
+  const id = oid(req);
   const zId = adminZone(req);
-  if (['delivered', 'cancelled', 'failed'].includes(o.status)) throw bad('لا يمكن تعيين كابتن لطلب مغلق');
+  const o = await db.get('SELECT * FROM orders WHERE id=?', id);
+  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  if (zId != null && o.zone_id !== zId) throw new HttpError(403, 'غير مصرح بنقل طلب خارج منطقتك');
+  if (['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن تعيين كابتن لطلب مغلق');
+  if (['picked_up', 'arrived'].includes(o.status)) throw bad('لا يمكن نقل طلب تم استلامه من المنشأة أو وصل للزبون');
   const capId = int(req.body?.captain_id, 'الكابتن', 1, 2 ** 31);
-  const cap = zId != null
-    ? await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted' AND zone_id=?", capId, zId)
-    : await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted'", capId);
+  const cap = await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted'", capId);
   if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  if (zId != null && cap.zone_id !== zId) throw new HttpError(403, 'غير مصرح بالتعيين لكابتن خارج منطقتك');
+  if (cap.status !== 'active') throw bad('حساب الكابتن غير مفعّل');
+  if (!cap.online) throw bad('لا يمكن تعيين كابتن أوفلاين (غير متصل)');
   const oldCapId = o.captain_id;
   const oldOfferedId = o.offered_captain_id;
   const now = Date.now();
@@ -898,14 +984,16 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
       warning = `تنبيه: رصيد الكابتن المتاح (${avail} نقطة) أقل من تكلفة الطلب (${costSnap.cost_points} نقطة)`;
     }
   }
+  if (warning && req.body?.check_warning && !req.body?.confirm_warning) {
+    return res.json({ needs_confirm: true, warning, order_id: id, captain_id: cap.id });
+  }
   await tx(async () => {
-    const newStatus = ['picked_up', 'arrived'].includes(o.status) ? o.status : 'accepted';
     await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run(
       'UPDATE orders SET status=?, captain_id=?, cost_points=?, cost_source=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
-      newStatus, cap.id, costSnap.cost_points, costSnap.cost_source, now, id
+      'accepted', cap.id, costSnap.cost_points, costSnap.cost_source, now, id
     );
-    await db.run("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?", now, cap.id);
+    await db.run('UPDATE users SET last_assigned_at=? WHERE id=?', now, cap.id);
     await addEvent(id, 'admin_assigned', req.user.id, { captain_id: cap.id, from_captain: oldCapId, cost_points: costSnap.cost_points, cost_source: costSnap.cost_source });
   });
   await audit(req.user.id, 'assign_captain', { order_id: id, captain_id: cap.id });

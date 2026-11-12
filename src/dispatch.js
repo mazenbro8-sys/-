@@ -81,6 +81,7 @@ export async function viewOrder(o, role) {
     v.cost_source = o.cost_source ?? null;
   }
   if (role === 'admin') {
+    v.merchant_id = o.merchant_id;
     v.captain_id = o.captain_id;
     v.offered_captain_id = o.offered_captain_id;
     if (cap) v.captain_name = cap.name;

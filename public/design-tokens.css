@@ -3,49 +3,54 @@
    ========================================================================== */
 :root {
   color-scheme: dark;
-  --bg-base:               #0A0A0C;
-  --bg-elevated:           #121216;
-  --bg-subtle:             #18181D;
-  --bg-input:              #0E0E12;
-  --surface-glass-1:       rgba(20, 20, 24, 0.72);
-  --surface-glass-2:       rgba(26, 26, 32, 0.84);
-  --surface-glass-3:       rgba(34, 34, 42, 0.92);
-  --surface-hover:         rgba(255, 255, 255, 0.05);
-  --surface-active:        rgba(255, 255, 255, 0.09);
-  --surface-overlay:       rgba(10, 10, 12, 0.78);
-  --brand-primary:         #FF6B1A;
-  --brand-primary-hover:   #FF813B;
-  --brand-primary-soft:    rgba(255, 107, 26, 0.14);
-  --brand-primary-glow:    rgba(255, 107, 26, 0.32);
-  --brand-accent:          #22D3EE;
-  --brand-accent-soft:     rgba(34, 211, 238, 0.14);
-  --brand-accent-border:   rgba(34, 211, 238, 0.40);
-  --text-primary:          #F8FAFC;
-  --text-secondary:        #A1A1AA;
-  --text-muted:            #8A8A93;
-  --text-on-brand:         #0A0A0C;
-  --text-on-ok:            #052E16;
-  --text-on-warn:          #0A0A0C;
+  --bg-base:               #1A1A1A;
+  --bg-elevated:           #242428;
+  --bg-subtle:             #2E2E34;
+  --bg-input:              #141417;
+  --surface-glass-1:       rgba(26, 26, 26, 0.90);
+  --surface-glass-2:       rgba(36, 36, 40, 0.94);
+  --surface-glass-3:       rgba(46, 46, 52, 0.96);
+  --surface-hover:         rgba(255, 255, 255, 0.06);
+  --surface-active:        rgba(255, 255, 255, 0.11);
+  --surface-overlay:       rgba(12, 12, 14, 0.82);
+  --brand-primary:         #F5B700;
+  --brand-primary-hover:   #E0A600;
+  --brand-primary-soft:    rgba(245, 183, 0, 0.14);
+  --brand-primary-glow:    rgba(245, 183, 0, 0.24);
+  --brand-accent:          var(--brand-primary);
+  --brand-accent-soft:     var(--brand-primary-soft);
+  --brand-accent-border:   var(--border-brand-soft);
+  --text-primary:          #FFFFFF;
+  --text-secondary:        #D4D4D8;
+  --text-muted:            #A6A6B2;
+  --text-on-brand:         #1A1A1A;
+  --text-on-ok:            #1A1A1A;
+  --text-on-warn:          #1A1A1A;
   --text-on-bad:           #FFFFFF;
   --status-ok:             #10B981;
   --status-ok-hover:       #059669;
   --status-ok-soft:        rgba(16, 185, 129, 0.14);
-  --status-ok-border:      rgba(16, 185, 129, 0.40);
+  --status-ok-border:      rgba(16, 185, 129, 0.44);
   --status-ok-text:        #6EE7B7;
-  --status-warn:           #FBBF24;
-  --status-warn-soft:      rgba(251, 191, 36, 0.14);
-  --status-warn-border:    rgba(251, 191, 36, 0.42);
-  --status-warn-text:      #FDE68A;
+  --status-warn:           #06B6D4;
+  --status-warn-soft:      rgba(6, 182, 212, 0.14);
+  --status-warn-border:    rgba(6, 182, 212, 0.44);
+  --status-warn-text:      #67E8F9;
   --status-bad:            #DC2626;
   --status-bad-hover:      #B91C1C;
   --status-bad-soft:       rgba(220, 38, 38, 0.16);
-  --status-bad-border:     rgba(220, 38, 38, 0.45);
+  --status-bad-border:     rgba(220, 38, 38, 0.48);
   --status-bad-text:       #FCA5A5;
-  --border-neutral:        rgba(255, 255, 255, 0.08);
-  --border-neutral-strong: rgba(255, 255, 255, 0.16);
-  --border-brand:          #FF6B1A;
-  --border-brand-soft:     rgba(255, 107, 26, 0.45);
-  --border-focus:          #FF6B1A;
+  --map-blue:              #3B82F6;
+  --map-blue-soft:         rgba(59, 130, 246, 0.16);
+  --map-blue-border:       rgba(59, 130, 246, 0.45);
+  --map-blue-text:         #93C5FD;
+  --map-gray:              #94A3B8;
+  --border-neutral:        rgba(255, 255, 255, 0.14);
+  --border-neutral-strong: rgba(255, 255, 255, 0.38);
+  --border-brand:          #F5B700;
+  --border-brand-soft:     rgba(245, 183, 0, 0.45);
+  --border-focus:          #F5B700;
   --font-sans:             'Cairo', system-ui, -apple-system, sans-serif;
   --text-xs:               0.75rem;
   --text-sm:               0.875rem;
@@ -72,7 +77,7 @@
   --space-8:               32px;
   --space-10:              40px;
   --space-12:              48px;
-  --touch-min:             44px;
+  --touch-min:             48px;
   --touch-comfortable:     48px;
   --touch-jumbo:           56px;
   --border-w-thin:         1px;
@@ -97,7 +102,7 @@
   --shadow-sm:             0 4px 12px rgba(0, 0, 0, 0.45);
   --shadow-md:             0 12px 28px rgba(0, 0, 0, 0.55), var(--shadow-inset-top);
   --shadow-lg:             0 20px 48px rgba(0, 0, 0, 0.72), var(--shadow-inset-top);
-  --shadow-offer:          0 16px 40px rgba(0, 0, 0, 0.75), 0 0 28px var(--brand-primary-glow);
+  --shadow-offer:          0 12px 28px rgba(0, 0, 0, 0.65);
   --opacity-disabled:      0.48;
   --opacity-muted:         0.75;
   --z-base:                0;
@@ -162,7 +167,11 @@ button.sec:hover:not(:disabled) { background: var(--surface-active); }
 button.ghost { background: transparent; color: var(--text-secondary); border-color: var(--border-neutral); }
 button.ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
 button.big { width: 100%; min-height: var(--touch-jumbo); padding: var(--space-3) var(--space-5); font-size: var(--text-md); border-radius: var(--radius-md); }
-button.sm { min-height: var(--space-8); padding: var(--space-1) var(--space-3); font-size: var(--text-xs); border-radius: var(--radius-xs); }
+button.sm { min-height: var(--space-10); padding: var(--space-2) var(--space-3); font-size: var(--text-xs); border-radius: var(--radius-xs); }
+@media (max-width: 767px), (pointer: coarse) {
+  button, a.btn-nav, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: var(--touch-min); }
+  button.sm, a.btn-nav.sm { min-height: var(--touch-min); padding: var(--space-2) var(--space-3); }
+}
 .badge {
   display: inline-flex;
   align-items: center;
