@@ -2199,3 +2199,216 @@ button.notif-item.is-read {
   text-align: center;
   font-size: var(--text-sm);
 }
+
+/* ==========================================================================
+   CAPTAIN 375PX POLISH: OFFER SHEET, HOME PRIORITY, ACTIVE ROW & MAP ZOOM
+   ========================================================================== */
+#app.has-bottom-nav {
+  padding-block-start: 10px;
+  padding-block-end: calc(var(--touch-jumbo) + 84px) !important;
+}
+
+.cap-tab,
+#tab-home,
+#tab-active,
+#tab-wallet,
+#tab-history,
+#tab-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cap-tab > .card,
+.cap-tab > details.card {
+  margin-bottom: 0 !important;
+  margin-block-end: 0 !important;
+}
+
+#tab-home .stats4 {
+  gap: 10px;
+  margin-block-end: 0;
+}
+
+#tab-home .bento-stat-card {
+  min-height: 84px !important;
+  padding: 11px 12px !important;
+}
+
+#tab-home .bento-value {
+  font-size: 1.65rem;
+  margin: 2px 0;
+}
+
+/* Priority 1 & 2: Offer Bottom Sheet above #bottomNav + Home Compact Mode */
+body:has(#offer .offer-sheet) #app.has-bottom-nav {
+  padding-block-end: calc(var(--touch-jumbo) + 96px) !important;
+}
+
+#offer:has(.offer-sheet) {
+  position: sticky;
+  bottom: calc(var(--touch-jumbo) + 26px + env(safe-area-inset-bottom, 0px));
+  z-index: calc(var(--z-bottom-nav) + 5);
+}
+
+#offer .offer.offer-sheet {
+  padding: 12px 14px !important;
+  box-shadow: var(--shadow-lg), var(--shadow-offer);
+}
+
+#offer .offer.offer-sheet h3 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+#offer .offer.offer-sheet p {
+  margin: 5px 0 !important;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+#offer .offer.offer-sheet #cd {
+  margin-block: 4px 2px;
+  padding: 2px 4px !important;
+  font-size: 16px !important;
+}
+
+#offer .offer.offer-sheet .row {
+  margin-top: 8px !important;
+  margin-block-start: 8px;
+  gap: 8px;
+}
+
+#offer #acc,
+#offer #rej {
+  min-height: 56px;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-weight: 900;
+  margin-top: 0;
+}
+
+#tab-home.home-compact .captain-hero-card {
+  padding: 10px 14px !important;
+}
+
+#tab-home.home-compact .hero-status-top {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#tab-home.home-compact .hero-radar-indicator {
+  width: 38px;
+  height: 38px;
+  font-size: 18px;
+}
+
+#tab-home.home-compact #onl {
+  font-size: 0.98rem;
+}
+
+#tab-home.home-compact #gps {
+  display: none;
+}
+
+#tab-home.home-compact #tog {
+  min-height: 48px;
+  padding: 8px 14px;
+  margin-top: 0;
+  font-size: 1rem !important;
+}
+
+#tab-home.home-compact .stats4 .bento-stat-card {
+  min-height: 54px !important;
+  padding: 8px 10px !important;
+  opacity: 0.65;
+}
+
+#tab-home.home-compact .stats4 .bento-sub {
+  display: none;
+}
+
+#tab-home.home-compact .stats4 .bento-value {
+  font-size: 1.25rem;
+  margin: 2px 0;
+}
+
+#tab-home.home-compact #idleMapCard {
+  opacity: 0.65;
+  padding: 8px 12px !important;
+}
+
+/* Priority 3: Active Order Single Quick-Action Row & Clearer Stepper */
+#tab-active .stepper {
+  gap: 5px;
+  padding: 8px 7px;
+}
+
+#tab-active .step-item {
+  opacity: 0.62;
+  padding: 7px 10px;
+}
+
+#tab-active .step-item.done {
+  opacity: 1;
+}
+
+#tab-active .step-item.curr {
+  opacity: 1;
+  background: var(--brand-primary);
+  color: var(--text-on-brand);
+  border: 2px solid var(--border-brand);
+  box-shadow: var(--shadow-sm);
+  transform: scale(1.03);
+  font-weight: 900;
+}
+
+.cap-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.cap-quick-actions .btn-nav,
+.cap-quick-actions button.btn-nav {
+  grid-column: auto;
+  min-height: 52px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 4px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  gap: 4px;
+}
+
+.cap-quick-actions .qa-nav {
+  grid-column: auto;
+  min-height: 52px;
+  font-size: 12.5px;
+  font-weight: 900;
+}
+
+/* Priority 4: Accessible Leaflet Zoom Controls (>= 44x44 desktop, 48x48 mobile) */
+body .leaflet-container .leaflet-control-zoom a.leaflet-control-zoom-in,
+body .leaflet-container .leaflet-control-zoom a.leaflet-control-zoom-out {
+  width: 44px;
+  height: 44px;
+  line-height: 42px;
+  font-size: 20px;
+  font-weight: 800;
+  background: var(--surface-glass-2);
+  color: var(--text-primary);
+  border-color: var(--border-neutral-strong);
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  body .leaflet-container .leaflet-control-zoom a.leaflet-control-zoom-in,
+  body .leaflet-container .leaflet-control-zoom a.leaflet-control-zoom-out {
+    width: 48px;
+    height: 48px;
+    line-height: 46px;
+  }
+}

@@ -54,15 +54,15 @@ authScreen('captain', (user) => {
         <button type="button" id="tog" class="ok hero-tog-btn">🚀 ابدأ العمل الآن</button>
       </div>
 
+      <!-- Incoming Offer Alert (priority slot directly below status when present) -->
+      <div id="offer"></div>
+
       <div id="capLowBalBanner" class="wallet-banner-warn hide">
         <span>⚠️ رصيد النقاط لا يكفي لتكلفة الطلب التالي — لن تصلك عروض جديدة حتى شحن المحفظة لدى الإدارة.</span>
         <button type="button" id="goWalletFromWarnBtn" class="sec sm">💰 المحفظة</button>
       </div>
 
-      <!-- Incoming Offer Alert (directly below status when present) -->
-      <div id="offer"></div>
-
-      <!-- Active Order Quick Summary (directly below status/offer when an order is active) -->
+      <!-- Active Order Quick Summary (below status/offer when an order is active) -->
       <div id="homeActiveOrderBox"></div>
 
       <!-- Compact Today Stats -->
@@ -445,13 +445,21 @@ authScreen('captain', (user) => {
     $('#capWalletLowBal')?.classList.toggle('hide', !low);
   }
 
+  function formatAvailablePoints(data) {
+    const avail = Number(data?.available_points ?? data?.balance_points ?? 0);
+    const enforced = (data?.wallet_enforcement ?? 'off') === 'on';
+    if (!enforced && avail <= 0) return 'متاح (الرصيد غير إلزامي حالياً)';
+    if (avail < 0) return '0 نقطة (محجوز للطلب النشط)';
+    return `${avail} نقطة`;
+  }
+
   async function loadCaptainWallet() {
     try {
       const w = await api('/captain/wallet');
       const kindLbl = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
       $('#capBalVal').textContent = `${w.balance_points ?? 0} نقطة`;
       $('#capCostVal').textContent = `${w.required_cost ?? 25} نقطة`;
-      $('#capAvailVal').textContent = `${w.available_points ?? 0} نقطة`;
+      $('#capAvailVal').textContent = formatAvailablePoints(w);
       syncLowBalWarn(w.low_balance);
       $('#capLedgerRows').innerHTML = (w.entries || []).map((e) => `<tr>
         <td>${kindLbl(e.kind)}</td>
@@ -509,7 +517,7 @@ authScreen('captain', (user) => {
     if (st.balance_points !== undefined) {
       $('#capBalVal').textContent = `${st.balance_points} نقطة`;
       $('#capCostVal').textContent = `${st.required_cost ?? 25} نقطة`;
-      $('#capAvailVal').textContent = `${st.available_points ?? st.balance_points} نقطة`;
+      $('#capAvailVal').textContent = formatAvailablePoints(st);
       syncLowBalWarn(st.low_balance);
     }
     const navBadge = $('#navActBadge');
@@ -527,13 +535,18 @@ authScreen('captain', (user) => {
   function renderOffer() {
     clearInterval(cd);
     const o = st.offer, box = $('#offer');
+    const homeTab = $('#tab-home');
     if (!o) {
       box.innerHTML = '';
+      homeTab?.classList.remove('home-compact');
       lastAutoShownOfferId = null;
       stopAlarm();
       notifCtrl?.syncCaptainOffer(null);
       return;
     }
+    homeTab?.classList.add('home-compact');
+    const mapCard = $('#idleMapCard');
+    if (mapCard?.open) mapCard.open = false;
     if (o.id !== lastAutoShownOfferId) {
       lastAutoShownOfferId = o.id;
       if (currentTab !== 'home') switchTab('home');
@@ -557,7 +570,7 @@ authScreen('captain', (user) => {
       onAccept: acceptCurrentOffer,
       onReject: rejectCurrentOffer,
     });
-    box.innerHTML = `<div class="card offer">
+    box.innerHTML = `<div class="card offer offer-sheet">
   <div class="row-head">
     <h3>🔔 طلب توصيل جديد — <span dir="ltr">${serialNo(o)}</span></h3>
     <span class="badge b-offered">بانتظار قبول كابتن</span>
@@ -634,9 +647,9 @@ authScreen('captain', (user) => {
 
     const stepIdx = o.status === 'accepted' ? 1 : o.status === 'picked_up' ? 2 : 3;
     const stepperHtml = `<div class="stepper">
-      <div class="step-item ${stepIdx > 1 ? 'done' : 'curr'}"><span class="step-dot">1</span><span>للمنشأة</span></div>
+      <div class="step-item ${stepIdx > 1 ? 'done' : 'curr'}"><span class="step-dot">${stepIdx > 1 ? '✓' : '1'}</span><span>للمنشأة</span></div>
       <div class="step-line ${stepIdx > 1 ? 'done' : ''}"></div>
-      <div class="step-item ${stepIdx > 2 ? 'done' : stepIdx === 2 ? 'curr' : ''}"><span class="step-dot">2</span><span>للزبون</span></div>
+      <div class="step-item ${stepIdx > 2 ? 'done' : stepIdx === 2 ? 'curr' : ''}"><span class="step-dot">${stepIdx > 2 ? '✓' : '2'}</span><span>للزبون</span></div>
       <div class="step-line ${stepIdx > 2 ? 'done' : ''}"></div>
       <div class="step-item ${stepIdx === 3 ? 'curr' : ''}"><span class="step-dot">3</span><span>التسليم</span></div>
     </div>`;
@@ -657,10 +670,6 @@ authScreen('captain', (user) => {
         <div style="padding:12px;border-radius:12px;background:var(--bg-subtle);border:1px solid var(--border-brand-soft);margin-bottom:10px">
           <div style="font-weight:800;color:var(--brand-primary);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
           <div><b>${esc(o.merchant.name)}</b> — <span class="mut">${esc(o.merchant.address)}</span></div>
-          <div class="row" style="margin-top:8px">
-            ${o.merchant.phone ? `<a class="btn-nav sec sm" href="tel:${esc(o.merchant.phone)}">📞 اتصال بالمنشأة</a>` : ''}
-            ${o.merchant.lat != null ? `<a class="btn-nav ghost sm" href="${buildNavUrl(o.merchant.lat, o.merchant.lng)}" target="_blank" rel="noopener">🧭 موقع المنشأة</a>` : ''}
-          </div>
         </div>
 
         <!-- Customer Box -->
@@ -670,7 +679,6 @@ authScreen('captain', (user) => {
           ${o.customer_name && o.customer_name !== '—' ? `<div>الزبون: <b>${esc(o.customer_name)}</b></div>` : ''}
           ${o.notes ? `<div class="mut" style="margin-top:4px">📝 ملاحظات: ${esc(o.notes)}</div>` : ''}
           ${o.customer_phone ? `<div class="row" style="margin-top:8px">
-            <a class="btn-nav ok sm" href="tel:${esc(o.customer_phone)}" dir="ltr">📞 ${esc(o.customer_phone)}</a>
             <a class="btn-nav sec sm" href="https://wa.me/${esc(waPhone)}" target="_blank" rel="noopener">💬 واتساب الزبون</a>
           </div>` : ''}
         </div>
@@ -678,14 +686,30 @@ authScreen('captain', (user) => {
         <div id="amap" class="map" style="height:330px"></div>
 
         <div class="cap-quick-actions">
-          ${dest.lat != null ? `<a class="btn-nav qa-nav" href="${buildNavUrl(dest.lat, dest.lng)}" target="_blank" rel="noopener noreferrer">🧭 <span>ملاحة ${navApp === 'waze' ? 'Waze' : 'Google Maps'}</span></a>` : ''}
-          ${o.merchant.phone ? `<a class="btn-nav qa-call" href="tel:${esc(o.merchant.phone)}" dir="ltr">📞 <span>اتصال بالمنشأة</span></a>` : ''}
-          ${o.customer_phone ? `<a class="btn-nav qa-call qa-cust" href="tel:${esc(o.customer_phone)}" dir="ltr">📞 <span>اتصال بالزبون</span></a>` : ''}
+          ${dest.lat != null
+            ? `<a id="qaNavBtn" class="btn-nav qa-nav" href="${buildNavUrl(dest.lat, dest.lng)}" target="_blank" rel="noopener noreferrer">🧭 <span>ملاحة</span></a>`
+            : `<button type="button" id="qaNavBtn" class="btn-nav qa-nav">🧭 <span>ملاحة</span></button>`}
+          ${o.merchant.phone
+            ? `<a id="qaMerchCallBtn" class="btn-nav qa-call" href="tel:${esc(o.merchant.phone)}">📞 <span>اتصال منشأة</span></a>`
+            : `<button type="button" id="qaMerchCallBtn" class="btn-nav qa-call">📞 <span>اتصال منشأة</span></button>`}
+          ${o.customer_phone
+            ? `<a id="qaCustCallBtn" class="btn-nav qa-call qa-cust" href="tel:${esc(o.customer_phone)}">📞 <span>اتصال زبون</span></a>`
+            : `<button type="button" id="qaCustCallBtn" class="btn-nav qa-call qa-cust">📞 <span>اتصال زبون</span></button>`}
         </div>
 
         <button type="button" class="big ok" id="nx">${n[1]}</button>
         ${o.status !== 'accepted' ? '<div class="cap-danger-zone"><div class="cap-danger-label">منطقة الإجراءات الخطرة</div><button type="button" class="big bad" id="fl">⚠️ الزبون لا يرد / العنوان خطأ</button></div>' : ''}
       </div>`;
+
+    if (dest.lat == null) {
+      $('#qaNavBtn')?.addEventListener('click', () => toast('إحداثيات الوجهة غير متوفرة على الخريطة'));
+    }
+    if (!o.merchant.phone) {
+      $('#qaMerchCallBtn')?.addEventListener('click', () => toast('رقم المنشأة غير متوفر'));
+    }
+    if (!o.customer_phone) {
+      $('#qaCustCallBtn')?.addEventListener('click', () => toast('📄 رقم الزبون مدوّن على فاتورة المنشأة عند الاستلام'));
+    }
 
     box.querySelectorAll('[data-act-id]').forEach((btn) => {
       btn.onclick = () => { selectedActiveId = Number(btn.dataset.actId); renderActive(); };
