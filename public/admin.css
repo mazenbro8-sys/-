@@ -1246,14 +1246,14 @@ body.ad select:focus-visible {
   .topbar-actions {
     flex: 0 0 auto;
     flex-wrap: nowrap;
-    gap: var(--space-2);
+    gap: 6px;
   }
 
   /* Gold Pill CTA on Mobile Topbar (min 48px touch target) */
   #adminAddOrderTop {
     min-height: var(--touch-min);
     height: var(--touch-min);
-    padding: 0 var(--space-3);
+    padding: 0 10px;
     border-radius: var(--radius-pill);
     background: var(--brand-primary);
     color: var(--text-on-brand);
@@ -1264,7 +1264,8 @@ body.ad select:focus-visible {
     white-space: nowrap;
   }
 
-  #adminSndBtn {
+  #adminSndBtn,
+  .topbar2 #notifBellBtn {
     min-height: var(--touch-min);
     height: var(--touch-min);
     width: var(--touch-min);
@@ -1289,17 +1290,17 @@ body.ad select:focus-visible {
     padding: var(--space-4);
   }
 
-  /* 3. Fixed 5-Slot Bottom Dock (.admin-bottom-dock) */
+  /* 3. Fixed 6-Slot Bottom Dock (.admin-bottom-dock) */
   .admin-bottom-dock {
     position: fixed;
     inset-block-end: var(--space-0);
     inset-inline: var(--space-0);
     z-index: var(--z-bottom-nav);
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
+    gap: 3px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
     background: var(--surface-glass-3);
     backdrop-filter: var(--blur-lg);
     -webkit-backdrop-filter: var(--blur-lg);
@@ -2239,4 +2240,164 @@ dialog.live-transfer-dialog::backdrop {
       transform: none;
     }
   }
+}
+
+/* ==========================================================================
+   ADMIN MESSAGES & NOTIFICATIONS SCREEN ("الرسائل")
+   ========================================================================== */
+.topbar2 #notifBellBtn {
+  width: var(--touch-min);
+  height: var(--touch-min);
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
+  flex-shrink: 0;
+}
+
+.admin-messages-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (min-width: 768px) {
+  .admin-messages-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+}
+
+.admin-messages-grid > .card {
+  margin-block-end: 0;
+  min-width: 0;
+}
+
+.msg-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.msg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.msg-field label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.msg-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.char-counter {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.char-counter.is-near-limit {
+  color: var(--brand-primary);
+}
+
+.msg-field select,
+.msg-field input,
+.msg-field textarea {
+  width: 100%;
+  min-height: var(--touch-min);
+  margin: 0;
+}
+
+.msg-field textarea {
+  min-height: 112px;
+  resize: vertical;
+  line-height: var(--leading-normal);
+}
+
+.msg-form-error {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--status-bad-soft);
+  border: var(--border-w-thin) solid var(--status-bad-border);
+  color: var(--status-bad-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-normal);
+}
+
+#msgSubmitBtn {
+  min-height: var(--touch-min);
+  width: 100%;
+  margin: 0;
+}
+
+.msg-sent-head-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+}
+
+.msg-sent-head-bar h3 {
+  margin: 0;
+}
+
+.msg-sent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.msg-sent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  border: var(--border-w-thin) solid var(--border-neutral);
+  min-width: 0;
+}
+
+.msg-sent-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.msg-sent-title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-extrabold);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.msg-sent-body {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: var(--leading-normal);
+}
+
+.msg-sent-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }

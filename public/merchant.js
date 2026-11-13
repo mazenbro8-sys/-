@@ -1,4 +1,4 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner } from './shared.js?v=panther2026v25';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner, getNotificationsController } from './shared.js?v=panther2026v27';
 
 authScreen('merchant', (user) => {
   header('المنشأة', user);
@@ -216,7 +216,9 @@ authScreen('merchant', (user) => {
   load();
 
   connectWs((m) => {
-    if (m.type === 'order') {
+    if (m.type === 'notification') {
+      getNotificationsController()?.handleWsNotification(m);
+    } else if (m.type === 'order') {
       const prev = orders.get(m.order.id);
       upsert(m.order);
       if (prev && prev.status !== m.order.status && m.order.status === 'accepted') toast(`الكابتن ${m.order.captain?.name} قبل الطلب #${m.order.id}`);

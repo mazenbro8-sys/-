@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore } from './shared.js?v=panther2026v25';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 
 const toDtLocal = (ms) => {
@@ -38,6 +38,7 @@ authScreen('admin', (user) => {
     users: '🏪 الحسابات',
     orders: '📦 الطلبات',
     wallet: '💰 المحفظة',
+    messages: '✉️ الرسائل',
     settings: '⚙️ المناطق والإعدادات',
   };
   app.innerHTML = `<aside class="sb"><div class="logo"><img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25"><div style="line-height:1.15"><div lang="en" dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--brand-primary);letter-spacing:1.2px;display:block;font-weight:700"><span lang="en" dir="ltr">DELIVERY</span> • توصيل</small></div></div>
@@ -68,8 +69,12 @@ authScreen('admin', (user) => {
       <button type="button" data-t="orders"><span class="dock-ico">📦</span><span class="dock-lbl">الطلبات</span></button>
       <button type="button" data-t="users"><span class="dock-ico">🏪</span><span class="dock-lbl">الحسابات</span></button>
       <button type="button" data-t="wallet"><span class="dock-ico">💰</span><span class="dock-lbl">المحفظة</span></button>
+      <button type="button" data-t="messages"><span class="dock-ico">✉️</span><span class="dock-lbl">الرسائل</span></button>
       <button type="button" data-t="settings"><span class="dock-ico">⚙️</span><span class="dock-lbl">المزيد</span></button>
     </nav>`;
+  const notifCtrl = mountNotificationsBell(app.querySelector('.topbar-actions'), {
+    insertBefore: app.querySelector('#adminSndBtn'),
+  });
   $('#lo2').onclick = () => $('#lo').click();
   const tick = () => {
     const d = new Date();
@@ -2373,6 +2378,240 @@ authScreen('admin', (user) => {
       $('#pgps').onchange = () => act(() => api('/admin/settings/pickup-gps', 'PUT', { value: $('#pgps').value }), 'تم تحديث إعداد التحقق من الموقع');
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
     },
+
+    async messages() {
+      const [sentList, usersList] = await Promise.all([
+        api('/admin/notifications'),
+        api('/admin/users'),
+      ]);
+      const selectableUsers = (usersList || []).filter((u) => u.id !== user.id);
+
+      const ROLE_LABELS = {
+        captain: 'الكباتن',
+        merchant: 'المنشآت',
+        zone_admin: 'مديرو المناطق',
+        admin: 'الإدارة',
+      };
+      const USER_ROLE_TAG = {
+        captain: 'كابتن',
+        merchant: 'منشأة',
+        zone_admin: 'مدير منطقة',
+        admin: 'مدير عام',
+      };
+
+      const targetTypeOptions = isZoneAdmin
+        ? `
+          <option value="role">👥 فئة في منطقتي</option>
+          <option value="user">👤 مستخدم في منطقتي</option>`
+        : `
+          <option value="all">🌐 جميع المستخدمين (الكل)</option>
+          <option value="zone">📍 منطقة محددة</option>
+          <option value="role">👥 فئة / دور محدد</option>
+          <option value="user">👤 مستخدم محدد</option>`;
+
+      const targetRoleOptions = isZoneAdmin
+        ? `
+          <option value="captain">🛵 كباتن منطقتي</option>
+          <option value="merchant">🏪 منشآت منطقتي</option>`
+        : `
+          <option value="captain">🛵 الكباتن</option>
+          <option value="merchant">🏪 المنشآت</option>
+          <option value="zone_admin">🛡️ مديرو المناطق</option>`;
+
+      const zoneFieldHtml = isZoneAdmin
+        ? ''
+        : `<div id="msgTargetZoneWrap" class="msg-field hide">
+            <label for="msgTargetZone">المنطقة المستهدفة</label>
+            <select id="msgTargetZone" name="zone_id">
+              ${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}
+            </select>
+          </div>`;
+
+      const userOptionsHtml = selectableUsers.length
+        ? selectableUsers.map((u) => `<option value="${u.id}">${esc(u.business_name || u.name)} — ${esc(USER_ROLE_TAG[u.role] || u.role)} (${esc(u.phone || '')})</option>`).join('')
+        : '<option value="">لا يوجد مستخدمون متاحون</option>';
+
+      view().innerHTML = `
+        <div class="admin-messages-grid">
+          <form id="adminMsgForm" class="card msg-form-fields" novalidate>
+            <h3 style="margin:0">✉️ إرسال إشعار جديد</h3>
+            <p class="mut" style="margin:0;font-size:13px">رسائل نصية باتجاه واحد فقط إلى المستلمين المحددين (بدون ردود).</p>
+
+            <div class="msg-field">
+              <label for="msgTargetType">نطاق المستلمين</label>
+              <select id="msgTargetType" name="target_type">
+                ${targetTypeOptions}
+              </select>
+            </div>
+
+            ${zoneFieldHtml}
+
+            <div id="msgTargetRoleWrap" class="msg-field ${isZoneAdmin ? '' : 'hide'}">
+              <label for="msgTargetRole">الفئة المستهدفة</label>
+              <select id="msgTargetRole" name="target_role">
+                ${targetRoleOptions}
+              </select>
+            </div>
+
+            <div id="msgTargetUserWrap" class="msg-field hide">
+              <label for="msgTargetUser">المستخدم المستهدف</label>
+              <select id="msgTargetUser" name="target_user_id">
+                ${userOptionsHtml}
+              </select>
+            </div>
+
+            <div class="msg-field">
+              <div class="msg-label-row">
+                <label for="msgTitle">عنوان الإشعار</label>
+                <span id="msgTitleCount" class="char-counter" dir="ltr">0 / 80</span>
+              </div>
+              <input id="msgTitle" name="title" type="text" maxlength="80" required aria-describedby="msgTitleCount" placeholder="مثال: تحديث مهم حول ساعات الذروة">
+            </div>
+
+            <div class="msg-field">
+              <div class="msg-label-row">
+                <label for="msgBody">نص الرسالة</label>
+                <span id="msgBodyCount" class="char-counter" dir="ltr">0 / 500</span>
+              </div>
+              <textarea id="msgBody" name="body" rows="4" maxlength="500" required aria-describedby="msgBodyCount" placeholder="اكتب نص الإشعار هنا (حد أقصى 500 حرف)..."></textarea>
+            </div>
+
+            <div id="msgFormError" class="msg-form-error hide" role="alert" aria-live="polite"></div>
+
+            <button type="submit" id="msgSubmitBtn" class="ok">📤 إرسال الإشعار</button>
+          </form>
+
+          <div class="card" id="adminSentCard">
+            <div class="msg-sent-head-bar">
+              <h3>📨 الإشعارات المرسلة</h3>
+              <span id="msgSentTotalBadge" class="badge">0</span>
+            </div>
+            <div id="adminSentList" class="msg-sent-list"></div>
+          </div>
+        </div>`;
+
+      const formEl = $('#adminMsgForm');
+      const typeSel = $('#msgTargetType');
+      const zoneWrap = $('#msgTargetZoneWrap');
+      const zoneSel = $('#msgTargetZone');
+      const roleWrap = $('#msgTargetRoleWrap');
+      const roleSel = $('#msgTargetRole');
+      const userWrap = $('#msgTargetUserWrap');
+      const userSel = $('#msgTargetUser');
+      const titleInp = $('#msgTitle');
+      const bodyInp = $('#msgBody');
+      const titleCountEl = $('#msgTitleCount');
+      const bodyCountEl = $('#msgBodyCount');
+      const errBox = $('#msgFormError');
+      const submitBtn = $('#msgSubmitBtn');
+      const sentListEl = $('#adminSentList');
+      const sentTotalBadge = $('#msgSentTotalBadge');
+
+      const syncTargetVisibility = () => {
+        const t = typeSel.value;
+        if (zoneWrap) zoneWrap.classList.toggle('hide', t !== 'zone');
+        roleWrap.classList.toggle('hide', t !== 'role');
+        userWrap.classList.toggle('hide', t !== 'user');
+      };
+      typeSel.onchange = syncTargetVisibility;
+      syncTargetVisibility();
+
+      const updateCounters = () => {
+        const tLen = (titleInp.value || '').length;
+        const bLen = (bodyInp.value || '').length;
+        titleCountEl.textContent = `${enDigits(tLen)} / 80`;
+        bodyCountEl.textContent = `${enDigits(bLen)} / 500`;
+        titleCountEl.classList.toggle('is-near-limit', tLen >= 70);
+        bodyCountEl.classList.toggle('is-near-limit', bLen >= 450);
+      };
+      titleInp.addEventListener('input', () => {
+        titleInp.removeAttribute('aria-invalid');
+        updateCounters();
+      });
+      bodyInp.addEventListener('input', () => {
+        bodyInp.removeAttribute('aria-invalid');
+        updateCounters();
+      });
+      updateCounters();
+
+      const formatTargetBadge = (n) => {
+        if (n.target_type === 'all') return '🌐 الجميع';
+        if (n.target_type === 'zone') return `📍 منطقة: ${zname(n.zone_id)}`;
+        if (n.target_type === 'role') {
+          const rLbl = ROLE_LABELS[n.target_role] || n.target_role || '—';
+          return n.zone_id != null ? `👥 ${rLbl} (${zname(n.zone_id)})` : `👥 ${rLbl}`;
+        }
+        return `👤 ${n.target_user_name || ('مستخدم #' + n.target_user_id)}`;
+      };
+
+      const renderSentRows = (rows) => {
+        const items = Array.isArray(rows) ? rows : [];
+        sentTotalBadge.textContent = `${enDigits(items.length)} إشعار`;
+        if (!items.length) {
+          sentListEl.innerHTML = '<div class="notif-empty mut">لم يتم إرسال أي إشعارات بعد</div>';
+          return;
+        }
+        sentListEl.innerHTML = items.map((n) => `
+          <article class="msg-sent-item">
+            <div class="msg-sent-top">
+              <strong class="msg-sent-title">${esc(n.title || '')}</strong>
+              <span class="badge">${esc(formatTargetBadge(n))}</span>
+            </div>
+            <div class="msg-sent-body">${esc(n.body || '')}</div>
+            <div class="msg-sent-meta">
+              <time>${esc(time(n.created_at))}</time>
+              <span class="badge b-active">👁️ قُرئت: ${enDigits(n.read_count ?? 0)}</span>
+            </div>
+          </article>`).join('');
+      };
+      renderSentRows(sentList);
+
+      const showFormError = (msg) => {
+        if (!msg) {
+          errBox.textContent = '';
+          errBox.classList.add('hide');
+          titleInp.removeAttribute('aria-invalid');
+          bodyInp.removeAttribute('aria-invalid');
+        } else {
+          errBox.textContent = `⚠️ ${msg}`;
+          errBox.classList.remove('hide');
+          if (msg.includes('العنوان')) titleInp.setAttribute('aria-invalid', 'true');
+          if (msg.includes('نص')) bodyInp.setAttribute('aria-invalid', 'true');
+        }
+      };
+
+      formEl.onsubmit = async (ev) => {
+        ev.preventDefault();
+        showFormError('');
+        const target_type = typeSel.value;
+        const payload = {
+          target_type,
+          title: titleInp.value,
+          body: bodyInp.value,
+        };
+        if (target_type === 'zone' && zoneSel) payload.zone_id = Number(zoneSel.value);
+        if (target_type === 'role') {
+          payload.target_role = roleSel.value;
+          if (isZoneAdmin && user.zone_id != null) payload.zone_id = Number(user.zone_id);
+        }
+        if (target_type === 'user') payload.target_user_id = userSel.value ? Number(userSel.value) : '';
+
+        submitBtn.disabled = true;
+        try {
+          await api('/admin/notifications', 'POST', payload);
+          titleInp.value = '';
+          bodyInp.value = '';
+          updateCounters();
+          toast('✅ تم إرسال الإشعار بنجاح');
+          const updated = await api('/admin/notifications');
+          renderSentRows(updated);
+        } catch (err) {
+          showFormError(err?.message || 'تعذر إرسال الإشعار');
+        } finally {
+          submitBtn.disabled = false;
+        }
+      };
+    },
   };
 
   function openLiabilityModal(orderId, onSaved) {
@@ -3202,6 +3441,10 @@ authScreen('admin', (user) => {
   }
 
   connectWs((m) => {
+    if (m.type === 'notification') {
+      notifCtrl?.handleWsNotification(m);
+      return;
+    }
     const myZoneShortage = isZoneAdmin && m.zoneShortage ? m.zoneShortage : null;
     if (myZoneShortage || m.shortage) updateShortageBanner(myZoneShortage || m.shortage);
     const lbl = {

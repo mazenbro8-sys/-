@@ -2,8 +2,9 @@ import {
   $, $$, esc, points, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, openServerConfigModal, ALARM_SOUNDS, normalizeCaptainTone, playCaptainTone, lStore
-} from './shared.js?v=panther2026v25';
+  setToken, openServerConfigModal, ALARM_SOUNDS, normalizeCaptainTone, playCaptainTone, lStore,
+  mountNotificationsBell
+} from './shared.js?v=panther2026v27';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -21,10 +22,13 @@ authScreen('captain', (user) => {
         <span class="hdr-role-tag">الكابتن ${esc(user.name)}${user.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(user.tag)}</code>` : ''}</span>
       </div>
     </h1>
-    <div style="display:flex;gap:8px;align-items:center">
+    <div id="hdrRightActions" class="hdr-right-actions" style="display:flex;gap:8px;align-items:center">
       <span id="hdrStatusBadge" class="badge b-cancelled">⚪ أوفلاين</span>
     </div>`;
   document.body.prepend(topHeader);
+  const notifCtrl = mountNotificationsBell(topHeader.querySelector('#hdrRightActions'), {
+    insertBefore: topHeader.querySelector('#hdrStatusBadge'),
+  });
 
   const bottomNav = $('#bottomNav');
   bottomNav.classList.remove('hide');
@@ -523,13 +527,36 @@ authScreen('captain', (user) => {
   function renderOffer() {
     clearInterval(cd);
     const o = st.offer, box = $('#offer');
-    if (!o) { box.innerHTML = ''; lastAutoShownOfferId = null; stopAlarm(); return; }
+    if (!o) {
+      box.innerHTML = '';
+      lastAutoShownOfferId = null;
+      stopAlarm();
+      notifCtrl?.syncCaptainOffer(null);
+      return;
+    }
     if (o.id !== lastAutoShownOfferId) {
       lastAutoShownOfferId = o.id;
       if (currentTab !== 'home') switchTab('home');
     }
     notifyOffer(o);
     startAlarm();
+    const acceptCurrentOffer = async () => {
+      await act(() => api(`/captain/offers/${o.id}/accept`, 'POST'), '✅ تم قبول الطلب');
+      selectedActiveId = o.id;
+      await refresh();
+      switchTab('active');
+    };
+    const rejectCurrentOffer = async () => {
+      await act(() => api(`/captain/offers/${o.id}/reject`, 'POST'), 'تم رفض العرض');
+      await refresh();
+    };
+    notifCtrl?.syncCaptainOffer({
+      offer: o,
+      exempt: st.exempt,
+      effective_cost_points: st.effective_cost_points,
+      onAccept: acceptCurrentOffer,
+      onReject: rejectCurrentOffer,
+    });
     box.innerHTML = `<div class="card offer">
   <div class="row-head">
     <h3>🔔 طلب توصيل جديد — <span dir="ltr">${serialNo(o)}</span></h3>
@@ -553,20 +580,13 @@ authScreen('captain', (user) => {
       const s = Math.max(0, Math.round((o.offer_expires_at - Date.now()) / 1000));
       const e = document.getElementById('cdVal');
       if (e) e.textContent = s;
+      notifCtrl?.updateCaptainOfferCountdown?.(s);
       if (!s) { clearInterval(cd); setTimeout(refresh, 1500); }
     };
     tick();
     cd = setInterval(tick, 1000);
-    $('#acc').onclick = async () => {
-      await act(() => api(`/captain/offers/${o.id}/accept`, 'POST'), '✅ تم قبول الطلب');
-      selectedActiveId = o.id;
-      await refresh();
-      switchTab('active');
-    };
-    $('#rej').onclick = async () => {
-      await act(() => api(`/captain/offers/${o.id}/reject`, 'POST'), 'تم رفض العرض');
-      await refresh();
-    };
+    $('#acc').onclick = acceptCurrentOffer;
+    $('#rej').onclick = rejectCurrentOffer;
   }
 
   function buildNavUrl(lat, lng) {
@@ -871,7 +891,9 @@ authScreen('captain', (user) => {
   $('#capWalletRefBtn').onclick = () => loadCaptainWallet();
 
   connectWs((m) => {
-    if (m.type === 'balance') {
+    if (m.type === 'notification') {
+      notifCtrl?.handleWsNotification(m);
+    } else if (m.type === 'balance') {
       toast('💳 تم تحديث رصيد محفظتك');
       refresh();
     } else if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {

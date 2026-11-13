@@ -683,12 +683,17 @@ export function header(title, user, onLogout) {
         <span class="hdr-role-tag">${esc(title)}</span>
       </div>
     </h1>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div class="hdr-right-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <span class="hdr-user-chip">👤 ${esc(user.business_name || user.name)}</span>
       ${srvBtn}${installBtn}
-      <button class="sec sm" id="lo">خروج</button>
+      <button type="button" class="sec sm" id="lo">خروج</button>
     </div>`;
   document.body.prepend(h);
+  if (!document.body.classList.contains('ad')) {
+    const actionsEl = h.querySelector('.hdr-right-actions');
+    const logoutEl = h.querySelector('#lo');
+    mountNotificationsBell(actionsEl, { insertBefore: logoutEl });
+  }
   $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
 }
 
@@ -858,4 +863,265 @@ export function playAdminTone(actx, rawTone = 'default') {
     );
   }
   return playCaptainTone(actx, tone);
+}
+
+// ---------- Shared One-Way Notifications Inbox (Bell + Modal Dialog) ----------
+let _notifCtrl = null;
+
+/** Returns the active notifications inbox controller if mounted on this page. */
+export function getNotificationsController() {
+  return _notifCtrl;
+}
+
+/**
+ * Mounts the notification bell button with unread badge and native <dialog> inbox
+ * into a page header container, reusing a single page controller instance.
+ */
+export function mountNotificationsBell(containerEl, { insertBefore = null } = {}) {
+  if (typeof document === 'undefined' || !containerEl) return _notifCtrl;
+
+  if (!_notifCtrl) {
+    let unreadCount = 0;
+    let activeOfferState = null;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'notifBellBtn';
+    btn.className = 'sec sm notif-bell-btn';
+    btn.setAttribute('aria-label', 'صندوق الإشعارات');
+    btn.setAttribute('aria-haspopup', 'dialog');
+    btn.innerHTML = `
+      <span class="notif-bell-ico" aria-hidden="true">🔔</span>
+      <span id="notifUnreadBadge" class="notif-unread-badge hide" dir="ltr">0</span>`;
+
+    const dlg = document.createElement('dialog');
+    dlg.id = 'notifInboxDialog';
+    dlg.className = 'notif-inbox-dialog';
+    dlg.setAttribute('aria-labelledby', 'notifInboxTitle');
+    dlg.setAttribute('closedby', 'any');
+    dlg.innerHTML = `
+      <div id="notifOfferPrioritySlot" class="notif-offer-priority-slot hide" role="region" aria-label="عرض توصيل نشط له الأولوية"></div>
+      <div class="card notif-inbox-card">
+        <div class="notif-inbox-head">
+          <div class="notif-inbox-title-wrap">
+            <h3 id="notifInboxTitle">🔔 الإشعارات</h3>
+            <span id="notifInboxUnreadSummary" class="badge">0 غير مقروء</span>
+          </div>
+          <button type="button" id="notifInboxClose" class="sec sm notif-inbox-close" aria-label="إغلاق صندوق الإشعارات" autofocus>✕ إغلاق</button>
+        </div>
+        <div id="notifInboxStatus" class="mut notif-inbox-status hide" aria-live="polite"></div>
+        <div id="notifInboxList" class="notif-inbox-list" role="list"></div>
+      </div>`;
+    document.body.appendChild(dlg);
+
+    const badgeEl = btn.querySelector('#notifUnreadBadge');
+    const summaryEl = dlg.querySelector('#notifInboxUnreadSummary');
+    const statusEl = dlg.querySelector('#notifInboxStatus');
+    const listEl = dlg.querySelector('#notifInboxList');
+    const offerSlotEl = dlg.querySelector('#notifOfferPrioritySlot');
+    const closeBtn = dlg.querySelector('#notifInboxClose');
+
+    const syncUnreadUi = () => {
+      const n = Math.max(0, Number(unreadCount) || 0);
+      unreadCount = n;
+      badgeEl.textContent = n > 99 ? '99+' : String(n);
+      badgeEl.classList.toggle('hide', n === 0);
+      btn.setAttribute('aria-label', n > 0 ? `صندوق الإشعارات (${n} غير مقروء)` : 'صندوق الإشعارات');
+      summaryEl.textContent = n > 0 ? `${enDigits(n)} غير مقروء` : 'لا توجد رسائل جديدة';
+      summaryEl.className = n > 0 ? 'badge b-searching' : 'badge';
+    };
+
+    const setUnreadCount = (n) => {
+      unreadCount = Math.max(0, Number(n) || 0);
+      syncUnreadUi();
+    };
+
+    const refreshUnreadCount = async () => {
+      try {
+        const r = await api('/notifications/unread-count');
+        setUnreadCount(r?.unread_count ?? 0);
+      } catch {}
+    };
+
+    const statePillHtml = (isRead) => (isRead
+      ? '<span class="notif-state-pill is-read"><span class="notif-state-shape" aria-hidden="true">✓</span><span class="notif-state-text">مقروء</span></span>'
+      : '<span class="notif-state-pill is-unread"><span class="notif-state-shape" aria-hidden="true">●</span><span class="notif-state-text">جديد</span></span>');
+
+    const markItemReadUi = (itemEl) => {
+      if (!itemEl || itemEl.classList.contains('is-read')) return;
+      itemEl.classList.remove('is-unread');
+      itemEl.classList.add('is-read');
+      const pill = itemEl.querySelector('.notif-state-pill');
+      if (pill) pill.outerHTML = statePillHtml(true);
+    };
+
+    const createInboxItemEl = (n) => {
+      const isRead = Boolean(n.read || n.read_at);
+      const itemBtn = document.createElement('button');
+      itemBtn.type = 'button';
+      itemBtn.className = `notif-item ${isRead ? 'is-read' : 'is-unread'}`;
+      itemBtn.dataset.notifId = String(n.id);
+      itemBtn.setAttribute('role', 'listitem');
+      itemBtn.innerHTML = `
+        <div class="notif-item-top">
+          <strong class="notif-item-title">${esc(n.title || '')}</strong>
+          ${statePillHtml(isRead)}
+        </div>
+        <div class="notif-item-body">${esc(n.body || '')}</div>
+        <div class="notif-item-meta mut">
+          <span>${esc(n.sender_name || 'الإدارة')}</span>
+          <span aria-hidden="true">•</span>
+          <time>${esc(time(n.created_at))}</time>
+        </div>`;
+
+      itemBtn.onclick = async () => {
+        if (itemBtn.classList.contains('is-read')) return;
+        itemBtn.disabled = true;
+        try {
+          await api(`/notifications/${n.id}/read`, 'POST');
+          markItemReadUi(itemBtn);
+          setUnreadCount(Math.max(0, unreadCount - 1));
+          refreshUnreadCount();
+        } catch (err) {
+          toast(err?.message || 'تعذر تحديث حالة القراءة');
+        } finally {
+          itemBtn.disabled = false;
+        }
+      };
+      return itemBtn;
+    };
+
+    const setStatus = (msg = '') => {
+      if (!msg) {
+        statusEl.textContent = '';
+        statusEl.classList.add('hide');
+      } else {
+        statusEl.textContent = msg;
+        statusEl.classList.remove('hide');
+      }
+    };
+
+    const loadInbox = async () => {
+      setStatus('⏳ جاري تحميل الإشعارات...');
+      try {
+        const rows = await api('/notifications/inbox');
+        setStatus('');
+        listEl.innerHTML = '';
+        if (!Array.isArray(rows) || !rows.length) {
+          listEl.innerHTML = '<div class="notif-empty mut">لا توجد إشعارات في صندوق الوارد حالياً</div>';
+          setUnreadCount(0);
+          return;
+        }
+        let unreadInInbox = 0;
+        for (const n of rows) {
+          if (!n.read && !n.read_at) unreadInInbox++;
+          listEl.appendChild(createInboxItemEl(n));
+        }
+        setUnreadCount(unreadInInbox);
+      } catch (err) {
+        setStatus(err?.message || 'تعذر تحميل الإشعارات');
+      }
+    };
+
+    const renderCaptainOfferPriority = () => {
+      const o = activeOfferState?.offer;
+      if (!o) {
+        offerSlotEl.innerHTML = '';
+        offerSlotEl.classList.add('hide');
+        return;
+      }
+      const secs = Math.max(0, Math.round(((o.offer_expires_at || 0) - Date.now()) / 1000));
+      offerSlotEl.classList.remove('hide');
+      offerSlotEl.innerHTML = `
+        <div class="notif-offer-priority-head">
+          <strong>⚡ عرض توصيل نشط — الأولوية للطلب <span dir="ltr">${serialNo(o)}</span></strong>
+          <span class="badge b-offered" dir="ltr">⏱️ <span id="notifOfferLeft">${enDigits(secs)}</span>ث</span>
+        </div>
+        <div class="notif-offer-priority-meta">
+          <div>🏪 <b>${esc(o.merchant?.name || 'منشأة')}</b></div>
+          <div>📍 ${esc(o.customer_address || '—')}</div>
+        </div>
+        <div class="notif-offer-priority-actions">
+          <button type="button" id="notifOfferAccBtn" class="ok">✅ قبول الطلب</button>
+          <button type="button" id="notifOfferRejBtn" class="bad">✕ رفض</button>
+        </div>`;
+
+      const accBtn = offerSlotEl.querySelector('#notifOfferAccBtn');
+      const rejBtn = offerSlotEl.querySelector('#notifOfferRejBtn');
+      if (accBtn) {
+        accBtn.onclick = async () => {
+          accBtn.disabled = true;
+          try { await activeOfferState?.onAccept?.(); } finally {
+            accBtn.disabled = false;
+            if (dlg.open) dlg.close();
+          }
+        };
+      }
+      if (rejBtn) {
+        rejBtn.onclick = async () => {
+          rejBtn.disabled = true;
+          try { await activeOfferState?.onReject?.(); } finally {
+            rejBtn.disabled = false;
+            if (dlg.open) dlg.close();
+          }
+        };
+      }
+    };
+
+    const openInbox = async () => {
+      renderCaptainOfferPriority();
+      if (!dlg.open) dlg.showModal();
+      await loadInbox();
+    };
+
+    btn.onclick = () => openInbox();
+    closeBtn.onclick = () => { if (dlg.open) dlg.close(); };
+    if (!('closedBy' in HTMLDialogElement.prototype)) {
+      const outside = (e) => {
+        const r = dlg.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+      };
+      let pressedOutside = false;
+      dlg.addEventListener('pointerdown', (e) => { pressedOutside = outside(e); });
+      dlg.addEventListener('pointerup', (e) => { if (pressedOutside && outside(e) && dlg.open) dlg.close(); });
+    }
+
+    _notifCtrl = {
+      button: btn,
+      dialog: dlg,
+      get unreadCount() { return unreadCount; },
+      open: openInbox,
+      close: () => { if (dlg.open) dlg.close(); },
+      refreshUnreadCount,
+      syncCaptainOffer(offerState) {
+        activeOfferState = offerState?.offer ? offerState : null;
+        renderCaptainOfferPriority();
+      },
+      updateCaptainOfferCountdown(secs) {
+        const el = offerSlotEl.querySelector('#notifOfferLeft');
+        if (el) el.textContent = enDigits(Math.max(0, Number(secs) || 0));
+      },
+      handleWsNotification(msg) {
+        const n = msg?.notification;
+        setUnreadCount(unreadCount + 1);
+        if (dlg.open && n && n.id != null) {
+          listEl.querySelector('.notif-empty')?.remove();
+          if (!listEl.querySelector(`[data-notif-id="${n.id}"]`)) {
+            listEl.prepend(createInboxItemEl({ ...n, read: false, read_at: null }));
+          }
+        }
+        refreshUnreadCount();
+      },
+    };
+
+    refreshUnreadCount();
+  }
+
+  const bellBtn = _notifCtrl.button;
+  if (insertBefore && insertBefore.parentElement === containerEl) {
+    containerEl.insertBefore(bellBtn, insertBefore);
+  } else if (bellBtn.parentElement !== containerEl) {
+    containerEl.appendChild(bellBtn);
+  }
+  return _notifCtrl;
 }
