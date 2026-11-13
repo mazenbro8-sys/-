@@ -15,11 +15,20 @@ const FLAVOR_ASSETS = {
   admin: ['admin.js', 'admin.css', 'shared.js', 'design-tokens.css', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-admin.json'],
 };
 
+const BRAND_FILES = ['panther-mark.png', 'panther-mark-reversed.png', 'panther-mark-mono.png'];
+
 fs.mkdirSync(path.join(OUT, 'vendor', 'leaflet'), { recursive: true });
+fs.mkdirSync(path.join(OUT, 'brand'), { recursive: true });
 
 // Copy flavor assets
 for (const f of FLAVOR_ASSETS[flavor]) {
   fs.copyFileSync(path.join(PUB, f), path.join(OUT, f));
+}
+for (const f of BRAND_FILES) {
+  const src = path.join(PUB, 'brand', f);
+  if (fs.existsSync(src)) {
+    fs.copyFileSync(src, path.join(OUT, 'brand', f));
+  }
 }
 
 // Write index.html from <flavor>.html with window.PANTHER_APK = true injected
@@ -32,9 +41,6 @@ fs.writeFileSync(path.join(OUT, 'index.html'), htmlSrc, 'utf8');
 const leafletDir = path.join(ROOT, 'node_modules', 'leaflet', 'dist');
 fs.cpSync(leafletDir, path.join(OUT, 'vendor', 'leaflet'), { recursive: true });
 
-// Copy app launcher icon to Android mipmap
-const mipmapDir = path.join(ROOT, 'android-captain', 'app', 'src', 'main', 'res', 'mipmap-xxhdpi');
-fs.mkdirSync(mipmapDir, { recursive: true });
-fs.copyFileSync(path.join(PUB, 'icon-192.png'), path.join(mipmapDir, 'ic_launcher.png'));
+// Launcher icons under android-captain/app/src/main/res/ are maintained separately and must not be overwritten.
 
 console.log(`✅ تم تجهيز ملفات تطبيق (${flavor}) للأندرويد في:`, OUT);

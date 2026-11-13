@@ -56,7 +56,8 @@ javac -source 17 -target 17 -encoding UTF-8 `
     -d "$StageDir\obj" `
     "$StageDir\gen\sy\panther\captain\R.java" `
     "$StageDir\src\java\sy\panther\captain\MainActivity.java" `
-    "$StageDir\src\java\sy\panther\captain\CaptainService.java"
+    "$StageDir\src\java\sy\panther\captain\CaptainService.java" `
+    "$StageDir\src\java\sy\panther\captain\BootReceiver.java"
 
 Write-Host "5) Converting bytecode to DEX with d8..." -ForegroundColor Cyan
 $ClassFiles = Get-ChildItem -Path "$StageDir\obj" -Filter "*.class" -Recurse | ForEach-Object { $_.FullName }
@@ -75,13 +76,13 @@ if (-not $KsPass -or -not $KeyPass) {
     throw "Missing required environment variable KEYSTORE_PASSWORD (and/or KEY_PASSWORD) for APK signing."
 }
 
-$Keystore = "$StageDir\release-key.jks"
-if (Test-Path "$Root\android-captain\release-key.jks") {
-    Copy-Item -Force "$Root\android-captain\release-key.jks" $Keystore
+$Keystore = "$StageDir\release-key-v2.jks"
+if (Test-Path "$Root\android-captain\release-key-v2.jks") {
+    Copy-Item -Force "$Root\android-captain\release-key-v2.jks" $Keystore
 } else {
     keytool -genkeypair -v -keystore $Keystore -alias $KeyAlias -keyalg RSA -keysize 2048 -validity 10000 `
         -storepass $KsPass -keypass $KeyPass -dname "CN=PANTHER Delivery, O=PANTHER, C=SY"
-    Copy-Item -Force $Keystore "$Root\android-captain\release-key.jks"
+    Copy-Item -Force $Keystore "$Root\android-captain\release-key-v2.jks"
 }
 
 & $ApkSigner sign --ks $Keystore --ks-key-alias $KeyAlias --ks-pass "pass:$KsPass" --key-pass "pass:$KeyPass" --out "$StageDir\panther-captain.apk" "$StageDir\aligned.apk"

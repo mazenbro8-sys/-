@@ -1,5 +1,6 @@
 package sy.panther.captain;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -16,6 +17,7 @@ import android.media.AudioTrack;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import java.io.BufferedReader;
@@ -313,7 +315,7 @@ public class CaptainService extends Service {
                 short[] phraseBuf = null;
 
                 while (alarmRunning && (System.currentTimeMillis() - start) < maxDurationMs) {
-                    String tone = prefs.getString("tone", "soft_bell");
+                    String tone = normalizeTone(prefs.getString("tone", "calm"));
                     if (phraseBuf == null || !tone.equals(cachedTone)) {
                         cachedTone = tone;
                         phraseBuf = buildPhrasePcm(sampleRate, tone, true);
@@ -353,7 +355,7 @@ public class CaptainService extends Service {
         new Thread(() -> {
             int sampleRate = 16000;
             SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
-            String tone = prefs.getString("tone", "soft_bell");
+            String tone = normalizeTone(prefs.getString("tone", "calm"));
             short[] phrase = buildPhrasePcm(sampleRate, tone, false);
             AudioTrack track = null;
             try {
@@ -379,56 +381,71 @@ public class CaptainService extends Service {
         }).start();
     }
 
+    private static String normalizeTone(String rawTone) {
+        if (rawTone == null) return "calm";
+        switch (rawTone) {
+            case "classic":
+                return "classic";
+            case "rapid":
+                return "rapid";
+            case "high":
+                return "high";
+            case "pulse":
+            case "double_pulse":
+                return "double_pulse";
+            case "calm":
+            case "soft_bell":
+            case "marimba":
+            case "chime":
+            default:
+                return "calm";
+        }
+    }
+
     private short[] buildPhrasePcm(int sampleRate, String rawTone, boolean includePause) {
-        String tone = rawTone != null ? rawTone : "soft_bell";
+        String tone = normalizeTone(rawTone);
         double cycleSec;
         switch (tone) {
-            case "marimba": cycleSec = includePause ? 2.10 : 1.05; break;
-            case "chime":   cycleSec = includePause ? 1.90 : 0.60; break;
-            case "pulse":   cycleSec = includePause ? 2.20 : 1.12; break;
-            case "rapid":   cycleSec = includePause ? 1.60 : 0.75; break;
-            case "high":    cycleSec = includePause ? 1.75 : 0.68; break;
-            case "classic": cycleSec = includePause ? 1.85 : 0.80; break;
-            case "soft_bell":
+            case "classic":      cycleSec = includePause ? 1.85 : 0.80; break;
+            case "rapid":        cycleSec = includePause ? 1.35 : 0.62; break;
+            case "high":         cycleSec = includePause ? 1.70 : 0.70; break;
+            case "double_pulse": cycleSec = includePause ? 1.95 : 0.95; break;
+            case "calm":
             default:
-                tone = "soft_bell";
-                cycleSec = includePause ? 2.00 : 0.90;
+                tone = "calm";
+                cycleSec = includePause ? 2.40 : 1.20;
                 break;
         }
         int totalSamples = Math.max(1, (int) (sampleRate * cycleSec));
         int[] mix = new int[totalSamples];
 
         switch (tone) {
-            case "marimba":
-                addSoftNote(mix, sampleRate, true, 440.0, 0.00, 0.52, 0.28, 0.008);
-                addSoftNote(mix, sampleRate, true, 523.25, 0.17, 0.60, 0.27, 0.008);
-                addSoftNote(mix, sampleRate, true, 659.25, 0.34, 0.68, 0.23, 0.008);
-                break;
-            case "chime":
-                addSoftNote(mix, sampleRate, false, 1200.0, 0.00, 0.30, 0.22, 0.008);
-                addSoftNote(mix, sampleRate, false, 1600.0, 0.14, 0.38, 0.20, 0.008);
-                break;
-            case "pulse":
-                addSoftNote(mix, sampleRate, false, 220.0, 0.00, 0.48, 0.28, 0.090);
-                addSoftNote(mix, sampleRate, false, 220.0, 0.56, 0.52, 0.24, 0.090);
-                break;
-            case "rapid":
-                addSoftNote(mix, sampleRate, true, 880.0, 0.00, 0.20, 0.26, 0.010);
-                addSoftNote(mix, sampleRate, true, 659.25, 0.22, 0.22, 0.25, 0.010);
-                addSoftNote(mix, sampleRate, true, 880.0, 0.46, 0.24, 0.26, 0.010);
-                break;
-            case "high":
-                addSoftNote(mix, sampleRate, false, 1046.5, 0.00, 0.28, 0.24, 0.012);
-                addSoftNote(mix, sampleRate, false, 1318.5, 0.26, 0.36, 0.22, 0.012);
-                break;
             case "classic":
                 addSoftNote(mix, sampleRate, true, 784.0, 0.00, 0.34, 0.27, 0.015);
                 addSoftNote(mix, sampleRate, true, 587.33, 0.36, 0.40, 0.25, 0.015);
                 break;
-            case "soft_bell":
+            case "rapid":
+                addSoftNote(mix, sampleRate, true, 880.0, 0.00, 0.12, 0.26, 0.008);
+                addSoftNote(mix, sampleRate, true, 1174.66, 0.15, 0.12, 0.26, 0.008);
+                addSoftNote(mix, sampleRate, true, 880.0, 0.30, 0.12, 0.26, 0.008);
+                addSoftNote(mix, sampleRate, true, 1174.66, 0.45, 0.14, 0.26, 0.008);
+                break;
+            case "high":
+                addSoftNote(mix, sampleRate, false, 1174.66, 0.00, 0.20, 0.24, 0.010);
+                addSoftNote(mix, sampleRate, false, 1567.98, 0.17, 0.22, 0.24, 0.010);
+                addSoftNote(mix, sampleRate, false, 1975.53, 0.34, 0.32, 0.22, 0.010);
+                break;
+            case "double_pulse":
+                addSoftNote(mix, sampleRate, true, 523.25, 0.00, 0.14, 0.26, 0.010);
+                addSoftNote(mix, sampleRate, true, 659.25, 0.15, 0.16, 0.26, 0.010);
+                addSoftNote(mix, sampleRate, true, 523.25, 0.56, 0.14, 0.26, 0.010);
+                addSoftNote(mix, sampleRate, true, 659.25, 0.71, 0.20, 0.26, 0.010);
+                break;
+            case "calm":
             default:
-                addSoftNote(mix, sampleRate, false, 880.0, 0.00, 0.46, 0.26, 0.014);
-                addSoftNote(mix, sampleRate, false, 1046.5, 0.24, 0.60, 0.25, 0.014);
+                addSoftNote(mix, sampleRate, false, 392.0, 0.00, 0.42, 0.21, 0.045);
+                addSoftNote(mix, sampleRate, false, 493.88, 0.28, 0.48, 0.21, 0.045);
+                addSoftNote(mix, sampleRate, false, 587.33, 0.58, 0.58, 0.20, 0.050);
                 break;
         }
 
@@ -475,6 +492,43 @@ public class CaptainService extends Service {
             try { alarmThread.interrupt(); } catch (Exception ignored) {}
             alarmThread = null;
         }
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+        boolean online = prefs.getBoolean("online", false);
+        String token = prefs.getString("token", "");
+        String serverUrl = prefs.getString("server_url", "");
+        if (online && token != null && !token.isEmpty() && serverUrl != null && !serverUrl.isEmpty()) {
+            try {
+                Intent restartIntent = new Intent(getApplicationContext(), CaptainService.class);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    flags |= PendingIntent.FLAG_IMMUTABLE;
+                }
+                PendingIntent pi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? PendingIntent.getForegroundService(getApplicationContext(), 1002, restartIntent, flags)
+                    : PendingIntent.getService(getApplicationContext(), 1002, restartIntent, flags);
+
+                AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                if (am != null && pi != null) {
+                    long triggerAt = SystemClock.elapsedRealtime() + 1000L;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (am.canScheduleExactAlarms()) {
+                            am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+                        } else {
+                            am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+                        }
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+                    } else {
+                        am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override
