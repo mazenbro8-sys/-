@@ -333,6 +333,33 @@ await runMigration('2026_11_wallet', async () => {
   await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_client_ref ON points_ledger(client_ref) WHERE client_ref IS NOT NULL');
 });
 
+// One-way notifications inbox (admin / zone_admin -> users). Text only; recipients cannot reply.
+await runMigration('2026_11_notifications', async () => {
+  await db.run(`CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER NOT NULL REFERENCES users(id),
+    zone_id INTEGER REFERENCES zones(id),
+    target_type TEXT NOT NULL CHECK (target_type IN ('all','zone','role','user')),
+    target_role TEXT CHECK (target_role IS NULL OR target_role IN ('admin','zone_admin','merchant','captain')),
+    target_user_id INTEGER REFERENCES users(id),
+    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+    body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 500),
+    created_at INTEGER NOT NULL,
+    CHECK (target_type != 'zone' OR zone_id IS NOT NULL),
+    CHECK (target_type != 'role' OR target_role IS NOT NULL),
+    CHECK (target_type != 'user' OR target_user_id IS NOT NULL)
+  )`);
+  await db.run('CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at DESC)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_notif_zone ON notifications(zone_id, created_at DESC)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(target_user_id) WHERE target_user_id IS NOT NULL');
+  await db.run(`CREATE TABLE IF NOT EXISTS notification_reads (
+    notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    read_at INTEGER NOT NULL,
+    PRIMARY KEY (notification_id, user_id)
+  )`);
+});
+
 /** Atomically append a ledger entry and update captain balance_points inside tx(). */
 export async function applyPointsEntry({
   captainId,

@@ -1223,6 +1223,174 @@ A.put('/settings/pickup-gps', requireSuperAdmin, wrap(async (req, res) => {
   res.json({ pickup_gps_required: val });
 }));
 
+// ---------- one-way notifications inbox (text only, no replies) ----------
+const NOTIF_TITLE_MAX = 80;
+const NOTIF_BODY_MAX = 500;
+const NOTIF_TARGET_TYPES = new Set(['all', 'zone', 'role', 'user']);
+const NOTIF_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin', 'admin'];
+const NOTIF_ZONE_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin'];
+const charLen = (s) => Array.from(s).length; // code points, matches SQLite length()
+
+/** Strip HTML and control characters; returns plain text only. */
+const stripHtml = (v) => String(v)
+  .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/<\/?[a-z!][^>]*>/gi, '')
+  .replace(/[<>]/g, '')
+  .replace(/\r\n?/g, '\n')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+
+const notifText = (v, name, max, { singleLine = false } = {}) => {
+  if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
+  let s = stripHtml(v);
+  s = singleLine ? s.replace(/\s+/g, ' ').trim() : s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const n = charLen(s);
+  if (n < 1 || n > max) throw bad(`${name}: يجب أن يكون بين 1 و ${max} حرفاً`);
+  return s;
+};
+
+// Same visibility rule used for inbox, unread count, read marking and WebSocket fan-out.
+const NOTIF_VISIBLE_SQL = `n.sender_id != ? AND (
+  n.target_type = 'all'
+  OR (n.target_type = 'zone' AND n.zone_id = ?)
+  OR (n.target_type = 'role' AND n.target_role = ? AND (n.zone_id IS NULL OR n.zone_id = ?))
+  OR (n.target_type = 'user' AND n.target_user_id = ?)
+)`;
+const notifVisibleArgs = (u) => [u.id, u.zone_id ?? null, u.role, u.zone_id ?? null, u.id];
+
+/** Active recipients of a stored notification (sender excluded). */
+async function notificationRecipientIds(n) {
+  const base = "SELECT id FROM users WHERE status='active' AND role IN ('admin','zone_admin','merchant','captain') AND id != ?";
+  let rows;
+  if (n.target_type === 'all') rows = await db.all(base, n.sender_id);
+  else if (n.target_type === 'zone') rows = await db.all(`${base} AND zone_id = ?`, n.sender_id, n.zone_id);
+  else if (n.target_type === 'role') {
+    rows = n.zone_id != null
+      ? await db.all(`${base} AND role = ? AND zone_id = ?`, n.sender_id, n.target_role, n.zone_id)
+      : await db.all(`${base} AND role = ?`, n.sender_id, n.target_role);
+  } else rows = await db.all(`${base} AND id = ?`, n.sender_id, n.target_user_id);
+  return rows.map((r) => r.id);
+}
+
+const notifyLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  limit: Number(process.env.NOTIFY_RATE_LIMIT) || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `notify:${req.user.id}`,
+  message: { error: 'تم تجاوز حد إرسال الإشعارات، حاول لاحقاً' },
+});
+
+A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
+  const b = req.body ?? {};
+  const zId = adminZone(req);
+  const targetType = String(b.target_type ?? '');
+  if (!NOTIF_TARGET_TYPES.has(targetType)) throw bad('نوع المستلمين غير صالح');
+  const title = notifText(b.title, 'العنوان', NOTIF_TITLE_MAX, { singleLine: true });
+  const body = notifText(b.body, 'نص الإشعار', NOTIF_BODY_MAX);
+
+  const optZone = async () => {
+    if (b.zone_id == null || b.zone_id === '') return null;
+    const z = int(b.zone_id, 'zone', 1, 2 ** 31);
+    if (zId != null && z !== zId) throw new HttpError(403, 'لا يمكنك الإرسال خارج منطقتك');
+    if (!(await db.get('SELECT 1 FROM zones WHERE id=?', z))) throw new HttpError(404, 'المنطقة غير موجودة');
+    return z;
+  };
+
+  let zoneId = null, targetRole = null, targetUserId = null;
+  if (targetType === 'all') {
+    if (zId != null) throw new HttpError(403, 'مدير المنطقة لا يمكنه الإرسال لجميع المستخدمين');
+  } else if (targetType === 'zone') {
+    zoneId = (await optZone()) ?? zId;
+    if (zoneId == null) throw bad('يرجى تحديد المنطقة');
+  } else if (targetType === 'role') {
+    targetRole = String(b.target_role ?? '');
+    if (!NOTIF_ADMIN_ROLES.includes(targetRole)) throw bad('الدور غير صالح');
+    if (zId != null && !NOTIF_ZONE_ADMIN_ROLES.includes(targetRole)) throw new HttpError(403, 'لا يمكنك الإرسال لهذا الدور');
+    zoneId = (await optZone()) ?? zId;
+  } else {
+    targetUserId = int(b.target_user_id, 'المستخدم', 1, 2 ** 31);
+    if (targetUserId === req.user.id) throw bad('لا يمكنك إرسال إشعار لنفسك');
+    const target = await db.get(
+      "SELECT id, zone_id FROM users WHERE id=? AND status!='deleted' AND role IN ('admin','zone_admin','merchant','captain')",
+      targetUserId
+    );
+    if (!target) throw new HttpError(404, 'المستخدم غير موجود');
+    if (zId != null) {
+      if (target.zone_id !== zId) throw new HttpError(403, 'لا يمكنك الإرسال لمستخدم خارج منطقتك');
+      zoneId = zId;
+    }
+  }
+
+  const now = Date.now();
+  const r = await db.run(
+    'INSERT INTO notifications(sender_id, zone_id, target_type, target_role, target_user_id, title, body, created_at) VALUES (?,?,?,?,?,?,?,?)',
+    req.user.id, zoneId, targetType, targetRole, targetUserId, title, body, now
+  );
+  const notification = {
+    id: r.lastInsertRowid, sender_id: req.user.id, zone_id: zoneId, target_type: targetType,
+    target_role: targetRole, target_user_id: targetUserId, title, body, created_at: now,
+  };
+  const recipients = await notificationRecipientIds(notification);
+  const push = {
+    type: 'notification',
+    notification: {
+      id: notification.id, title, body, created_at: now, target_type: targetType,
+      sender_name: req.user.name, sender_role: req.user.role, read: false, read_at: null,
+    },
+  };
+  for (const uid of recipients) sendTo(uid, push);
+  await audit(req.user.id, 'notification_send', { id: notification.id, target_type: targetType, target_role: targetRole, target_user_id: targetUserId, zone_id: zoneId, recipients: recipients.length });
+  res.status(201).json({ ...notification, recipients_count: recipients.length });
+}));
+
+A.get('/notifications', wrap(async (req, res) => {
+  const zId = adminZone(req);
+  const sql = `SELECT n.*, s.name AS sender_name, s.role AS sender_role, t.name AS target_user_name,
+      (SELECT COUNT(*) FROM notification_reads r WHERE r.notification_id = n.id) AS read_count
+    FROM notifications n
+    JOIN users s ON s.id = n.sender_id
+    LEFT JOIN users t ON t.id = n.target_user_id
+    ${zId != null ? 'WHERE n.zone_id = ?' : ''}
+    ORDER BY n.id DESC LIMIT 200`;
+  res.json(zId != null ? await db.all(sql, zId) : await db.all(sql));
+}));
+
+const N = express.Router();
+api.use('/notifications', auth(), N);
+
+N.get('/inbox', wrap(async (req, res) => {
+  const rows = await db.all(
+    `SELECT n.id, n.title, n.body, n.created_at, n.target_type, s.name AS sender_name, s.role AS sender_role, r.read_at
+     FROM notifications n
+     JOIN users s ON s.id = n.sender_id
+     LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = ?
+     WHERE ${NOTIF_VISIBLE_SQL}
+     ORDER BY n.id DESC LIMIT 100`,
+    req.user.id, ...notifVisibleArgs(req.user)
+  );
+  res.json(rows.map((n) => ({ ...n, read: n.read_at != null, read_at: n.read_at ?? null })));
+}));
+
+N.get('/unread-count', wrap(async (req, res) => {
+  const row = await db.get(
+    `SELECT COUNT(*) AS c FROM notifications n
+     WHERE ${NOTIF_VISIBLE_SQL}
+       AND NOT EXISTS (SELECT 1 FROM notification_reads r WHERE r.notification_id = n.id AND r.user_id = ?)`,
+    ...notifVisibleArgs(req.user), req.user.id
+  );
+  res.json({ unread_count: Number(row?.c ?? 0) });
+}));
+
+N.post('/:id/read', wrap(async (req, res) => {
+  const id = oid(req);
+  const visible = await db.get(`SELECT n.id FROM notifications n WHERE n.id = ? AND ${NOTIF_VISIBLE_SQL}`, id, ...notifVisibleArgs(req.user));
+  if (!visible) throw new HttpError(404, 'الإشعار غير موجود');
+  await db.run('INSERT OR IGNORE INTO notification_reads(notification_id, user_id, read_at) VALUES (?,?,?)', id, req.user.id, Date.now());
+  const r = await db.get('SELECT read_at FROM notification_reads WHERE notification_id=? AND user_id=?', id, req.user.id);
+  res.json({ ok: true, id, read: true, read_at: r.read_at });
+}));
+
 // ---------- errors ----------
 api.use((_req, res) => res.status(404).json({ error: 'غير موجود' }));
 api.use((err, _req, res, _next) => {
