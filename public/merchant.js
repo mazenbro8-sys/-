@@ -1,7 +1,9 @@
 import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner, getNotificationsController } from './shared.js?v=panther2026v27';
 
 authScreen('merchant', (user) => {
-  header('المنشأة', user);
+  header(user.business_name || user.name || 'المنشأة', user);
+  document.querySelector('.panther-header .hdr-user-chip')?.remove();
+  document.querySelector('.panther-header [data-install-app]')?.remove();
   const app = $('#app'); app.classList.remove('hide');
   app.innerHTML = `
   ${renderInstallBanner('merchant')}
@@ -19,6 +21,18 @@ authScreen('merchant', (user) => {
         <input name="customer_address" id="addrInput" placeholder="اكتب عنوان التوصيل هنا..." required minlength="2" maxlength="250" autocomplete="off">
         <button class="big" id="go">🛵 اطلب كابتن</button>
       </form>
+    </div>
+    <div class="card merchant-summary-card" id="merchantOrderSummary">
+      <div class="merchant-summary-row">
+        <div class="merchant-summary-status">
+          <span class="merchant-status-dot" id="merchSummaryDot" aria-hidden="true"></span>
+          <span id="merchStatusTxt">لا توجد طلبات نشطة الآن</span>
+        </div>
+        <div class="merchant-summary-today">
+          <span class="mut">طلبات اليوم:</span>
+          <b id="merchTodayCount">0</b>
+        </div>
+      </div>
     </div>
   </section>
   <section id="liveSection" class="tab-section hide">
@@ -127,6 +141,25 @@ authScreen('merchant', (user) => {
     const liveList = list.filter((o) => LIVE.includes(o.status));
     const liveBtn = $('#liveTabBtn');
     if (liveBtn) liveBtn.textContent = liveList.length ? `📡 الطلبات الحية (${liveList.length})` : '📡 الطلبات الحية';
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const todayMs = startOfToday.getTime();
+    const todayCount = list.filter((o) => Number(o.created_at) >= todayMs).length;
+    const summaryCard = $('#merchantOrderSummary');
+    const statusTxt = $('#merchStatusTxt');
+    const todayCountEl = $('#merchTodayCount');
+    const statusDot = $('#merchSummaryDot');
+    if (summaryCard && statusTxt && todayCountEl) {
+      todayCountEl.textContent = String(todayCount);
+      if (liveList.length === 0) {
+        statusTxt.textContent = 'لا توجد طلبات نشطة الآن';
+        statusDot?.classList.remove('is-live');
+      } else {
+        statusTxt.textContent = `يوجد ${liveList.length} طلب نشط حالياً`;
+        statusDot?.classList.add('is-live');
+      }
+    }
 
     $('#liveRows').innerHTML = liveList.map((o) => `
       <tr class="${selected === o.id ? 'is-selected-row' : ''}">
