@@ -42,16 +42,13 @@ authScreen('captain', (user) => {
     <section id="tab-home" class="cap-tab">
       <div class="card captain-hero-card" id="heroStatusCard">
         <div class="hero-status-top">
-          <div class="hero-radar-indicator" id="radarOrb">
-            <span class="radar-core">🛵</span>
-          </div>
+          <span class="hero-radar-indicator" id="radarOrb" aria-hidden="true"></span>
           <div class="hero-status-text">
-            <div class="hero-status-label">حالة المناوبة الميدانية</div>
-            <div class="hero-status-title" id="onl">⚪ أوفلاين (متوقف عن العمل)</div>
-            <div class="mut" id="gps" style="margin-top:4px">اضغط «ابدأ العمل» لاستقبال الطلبات الفورية</div>
+            <div class="hero-status-title" id="onl">أوفلاين</div>
           </div>
         </div>
-        <button type="button" id="tog" class="ok hero-tog-btn">🚀 ابدأ العمل الآن</button>
+        <div class="mut" id="gps">📍 GPS متوقف</div>
+        <button type="button" id="tog" class="ok hero-tog-btn" aria-pressed="false">بدء العمل</button>
       </div>
 
       <!-- Incoming Offer Alert (priority slot directly below status when present) -->
@@ -501,8 +498,9 @@ authScreen('captain', (user) => {
 
   function renderAll() {
     const allAct = st.activeOrders?.length ? st.activeOrders : (st.active ? [st.active] : []);
-    $('#onl').textContent = st.online ? '🟢 متصل (أونلاين) — جاهز للطلبات' : '⚪ أوفلاين (متوقف عن العمل)';
-    $('#tog').textContent = st.online ? '⏹️ إيقاف العمل (أوفلاين)' : '🚀 ابدأ العمل الآن';
+    $('#onl').textContent = st.online ? 'متصل' : 'أوفلاين';
+    $('#tog').textContent = st.online ? 'إيقاف العمل' : 'بدء العمل';
+    $('#tog').setAttribute('aria-pressed', st.online ? 'true' : 'false');
     $('#tog').className = (st.online ? 'bad' : 'ok') + ' hero-tog-btn' + (st.online ? ' is-online' : '');
     $('#heroStatusCard')?.classList.toggle('is-online', Boolean(st.online));
     $('#radarOrb')?.classList.toggle('is-online', Boolean(st.online));
@@ -875,16 +873,17 @@ authScreen('captain', (user) => {
 
   function startGps() {
     if (watchId != null) return;
-    if (!navigator.geolocation) { $('#gps').textContent = 'الجهاز لا يدعم تحديد الموقع GPS'; return; }
+    if (!navigator.geolocation) { $('#gps').textContent = '📍 GPS متوقف'; return; }
+    $('#gps').textContent = '📍 GPS نشط';
     watchId = navigator.geolocation.watchPosition(
       (p) => {
         pos = { lat: p.coords.latitude, lng: p.coords.longitude };
-        $('#gps').textContent = '📍 تحديد الموقع (GPS) متصل ويعمل بدقة ✓';
+        $('#gps').textContent = '📍 GPS نشط';
         showMe();
         maybeSend();
       },
       () => {
-        $('#gps').textContent = '⚠️ يرجى تفعيل صلاحية الموقع (GPS) في الهاتف';
+        $('#gps').textContent = '📍 GPS متوقف';
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
@@ -894,7 +893,7 @@ authScreen('captain', (user) => {
   function stopGps() {
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     wake?.release().catch(() => {}); wake = null;
-    $('#gps').textContent = 'اضغط «ابدأ العمل» لاستقبال الطلبات وتفعيل التتبع';
+    $('#gps').textContent = '📍 GPS متوقف';
     pos = null;
   }
 
