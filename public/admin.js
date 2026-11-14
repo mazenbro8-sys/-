@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, renderInstallBanner, isStandalone, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell } from './shared.js?v=panther2026v27';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 
 const toDtLocal = (ms) => {
@@ -54,13 +54,11 @@ authScreen('admin', (user) => {
           </div>
         </div>
         <div class="topbar-actions">
-          ${!isStandalone() ? '<button type="button" class="ok sm" data-install-app="admin">📲 تثبيت تطبيق الإدارة</button>' : ''}
           <button type="button" id="adminAddOrderTop" class="ok sm"><span class="lbl-desk">➕ إضافة طلب لكابتن</span><span class="lbl-mob">➕ طلب</span></button>
           <button type="button" id="adminSndBtn" class="bad sm" aria-label="صوت إنذار الطلبات"><span class="snd-ico">🔇</span><span class="lbl-desk"> تفعيل صوت إنذار الطلبات</span></button>
           <div class="clock"><b id="clk"></b><span id="dt"></span></div>
         </div>
       </div>
-      <div class="admin-install-slot">${renderInstallBanner('admin')}</div>
       <div id="shortageBox"></div>
       <div id="view" class="view"></div>
     </section>

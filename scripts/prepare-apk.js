@@ -10,12 +10,12 @@ const OUT = path.join(ROOT, 'android-captain', 'app', 'src', 'main', 'assets', '
 
 const flavor = ['captain', 'merchant', 'admin'].includes(process.argv[2]) ? process.argv[2] : 'captain';
 const FLAVOR_ASSETS = {
-  captain: ['captain.js', 'shared.js', 'design-tokens.css', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-captain.json'],
-  merchant: ['merchant.js', 'merchant.css', 'shared.js', 'design-tokens.css', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-merchant.json'],
-  admin: ['admin.js', 'admin.css', 'shared.js', 'design-tokens.css', 'app.css', 'logo.jpg', 'icon-192.png', 'icon-512.png', 'manifest-admin.json'],
+  captain: ['captain.js', 'shared.js', 'design-tokens.css', 'app.css', 'icon-192.png', 'icon-512.png', 'manifest-captain.json'],
+  merchant: ['merchant.js', 'merchant.css', 'shared.js', 'design-tokens.css', 'app.css', 'icon-192.png', 'icon-512.png', 'manifest-merchant.json'],
+  admin: ['admin.js', 'admin.css', 'shared.js', 'design-tokens.css', 'app.css', 'icon-192.png', 'icon-512.png', 'manifest-admin.json'],
 };
 
-const BRAND_FILES = ['panther-mark.png', 'panther-mark-reversed.png', 'panther-mark-mono.png'];
+const BRAND_FILES = ['panther-mark-reversed.png'];
 
 fs.mkdirSync(path.join(OUT, 'vendor', 'leaflet'), { recursive: true });
 fs.mkdirSync(path.join(OUT, 'brand'), { recursive: true });

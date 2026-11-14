@@ -254,6 +254,7 @@ export async function promptInstallApp(role = ROLE_KEY) {
 }
 
 export function renderInstallBanner(role = ROLE_KEY) {
+  if (role === 'admin') return '';
   const meta = APP_META[role] || APP_META.merchant;
   const wantInstall = new URLSearchParams(location.search).get('install') === '1';
   if (!wantInstall) return '';
@@ -567,7 +568,7 @@ function showAuthRetryBanner(_err, role) {
 
 export async function authScreen(role, onReady) {
   const root = $('#auth');
-  const wantInstall = new URLSearchParams(location.search).get('install') === '1';
+  const wantInstall = role !== 'admin' && new URLSearchParams(location.search).get('install') === '1';
   if (token) {
     try {
       const me = await api('/me');
@@ -669,7 +670,7 @@ export async function authScreen(role, onReady) {
 export function header(title, user, onLogout) {
   const h = document.createElement('header');
   h.className = 'panther-header';
-  const installBtn = !isStandalone()
+  const installBtn = !isStandalone() && ROLE_KEY !== 'admin'
     ? `<button type="button" class="ok sm" data-install-app="${esc(ROLE_KEY)}">📲 تثبيت</button>`
     : '';
   const srvBtn = (isNativeApk() || getServerUrl())
