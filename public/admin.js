@@ -2348,7 +2348,7 @@ authScreen('admin', (user) => {
             <p class="mut">التحقق من موقع الاستلام (100 م): <b>${esc(pgLabels[s.pickup_gps_required || 'grace'] || 'فترة سماح')}</b></p>
             ${s.points_cutover_at ? `<p class="mut" style="font-size:12px">تفعيل محفظة النقاط: ${time(s.points_cutover_at)}</p>` : ''}
           </div>
-          <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul></div></div>`;
+          <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)} — رقم دعم المنشآت: <b dir="ltr">${esc(z.support_phone || 'غير محدد')}</b></li>`).join('')}</ul></div></div>`;
         mountAdminSoundSettings(view().querySelector('.grid'));
         return;
       }
@@ -2369,12 +2369,43 @@ authScreen('admin', (user) => {
           </select>
           ${s.points_cutover_at ? `<p class="mut" style="font-size:12px;margin-top:12px">تفعيل نظام النقاط منذ: ${time(s.points_cutover_at)}</p>` : ''}
         </div>
-        <div class="card"><h3>المناطق</h3><ul>${zones.map((z) => `<li>${esc(z.name)}</li>`).join('')}</ul><div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div></div></div>`;
+        <div class="card">
+          <h3>المناطق وأرقام الدعم</h3>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+            ${zones.map((z) => `
+              <div style="display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--border-neutral);border-radius:var(--radius-sm);background:var(--bg-subtle)">
+                <div style="font-weight:800">${esc(z.name)}</div>
+                <div class="row" style="gap:8px;align-items:center;margin:0">
+                  <input type="tel" dir="ltr" inputmode="tel" maxlength="20" data-zone-phone="${z.id}" value="${esc(z.support_phone || '')}" placeholder="رقم دعم المنشآت (اختياري)" aria-label="رقم دعم المنشآت لمنطقة ${esc(z.name)}" style="margin:0;flex:1;min-width:140px">
+                  <button type="button" class="sec sm" data-save-zone-phone="${z.id}" style="min-height:var(--touch-min);flex:0 0 auto;white-space:nowrap">حفظ</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="row"><input id="zn" placeholder="اسم منطقة جديدة"><button type="button" id="za">إضافة</button></div>
+        </div></div>`;
       mountAdminSoundSettings(view().querySelector('.grid'));
       $('#ocpSave').onclick = () => act(() => api('/admin/settings/order-cost', 'PUT', { value: Number($('#ocp').value) }), 'تم حفظ تكلفة الطلب');
       $('#wenf').onchange = () => act(() => api('/admin/settings/wallet-enforcement', 'PUT', { enabled: $('#wenf').checked }), $('#wenf').checked ? 'تم تفعيل حجب الرصيد المنخفض' : 'تم إيقاف حجب الرصيد المنخفض');
       $('#pgps').onchange = () => act(() => api('/admin/settings/pickup-gps', 'PUT', { value: $('#pgps').value }), 'تم تحديث إعداد التحقق من الموقع');
-      $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); views.settings(); };
+      view().querySelectorAll('[data-save-zone-phone]').forEach((btn) => {
+        btn.onclick = async () => {
+          const zid = Number(btn.dataset.saveZonePhone);
+          const inp = view().querySelector(`[data-zone-phone="${zid}"]`);
+          const val = inp ? inp.value.trim() : '';
+          btn.disabled = true;
+          const updated = await act(
+            () => api(`/admin/zones/${zid}`, 'PATCH', { support_phone: val || null }),
+            'تم حفظ رقم دعم المنطقة'
+          );
+          btn.disabled = false;
+          if (updated) {
+            zones = await api('/admin/zones');
+            await views.settings();
+          }
+        };
+      });
+      $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); zones = await api('/admin/zones'); views.settings(); };
     },
 
     async messages() {

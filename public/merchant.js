@@ -34,6 +34,7 @@ authScreen('merchant', (user) => {
         </div>
       </div>
     </div>
+    <button type="button" class="sec merchant-support-btn" id="merchantSupportBtn" disabled>الدعم غير متوفر حالياً</button>
   </section>
   <section id="liveSection" class="tab-section hide">
     <div class="live-split-grid">
@@ -161,31 +162,201 @@ authScreen('merchant', (user) => {
       }
     }
 
-    $('#liveRows').innerHTML = liveList.map((o) => `
-      <tr class="${selected === o.id ? 'is-selected-row' : ''}">
-        <td dir="ltr"><b>${serialNo(o)}</b></td>
-        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${badge(o.status)}${o.delay_until && o.delay_until > Date.now() ? `<div class="mut">⏱️ مؤجل (${Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000))} د)</div>` : o.eta_minutes ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>` : ''}</td>
-        <td>${capLink(o)}</td>
-        <td>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:nowrap">
-            <button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع حي</button>
-            ${['searching', 'offered'].includes(o.status) ? `<button type="button" class="bad sm" data-cancel="${o.id}">✕ إلغاء</button>` : ''}
+    const renderOrderCard = (o, isLiveTab) => `
+      <tr class="merchant-order-card ${isLiveTab && selected === o.id ? 'is-selected-row' : ''}">
+        <td colspan="${isLiveTab ? 5 : 7}" class="merchant-order-card-cell">
+          <div class="merchant-order-card-head">
+            <div class="merchant-order-serial" dir="ltr"><b>${serialNo(o)}</b></div>
+            <div class="merchant-order-status">
+              ${badge(o.status)}
+              ${isLiveTab && o.delay_until && o.delay_until > Date.now()
+                ? `<div class="mut">⏱️ مؤجل (${Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000))} د)</div>`
+                : isLiveTab && o.eta_minutes
+                  ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>`
+                  : ''}
+            </div>
           </div>
+          <div class="merchant-order-addr">📍 ${esc(o.customer_address || '—')}</div>
+          ${!isLiveTab ? `<div class="merchant-order-times mut">الطلب: ${time(o.created_at)}${o.closed_at ? ` • الإغلاق: ${time(o.closed_at)}` : ''}</div>` : ''}
+          <div class="merchant-order-meta">
+            <div class="merchant-order-cap">${capLink(o)}</div>
+            <div class="merchant-order-inline-actions">
+              ${isLiveTab
+                ? `<button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع حي</button>`
+                : LIVE.includes(o.status)
+                  ? `<button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع</button>`
+                  : ''}
+              ${['searching', 'offered'].includes(o.status) ? `<button type="button" class="bad sm" data-cancel="${o.id}">✕ إلغاء</button>` : ''}
+            </div>
+          </div>
+          ${o.status === 'accepted' ? `<button type="button" class="bad merchant-cancel-order-btn" data-cancel-accepted="${o.id}">إلغاء الطلب</button>` : ''}
         </td>
-      </tr>`).join('') || '<tr><td colspan="5" class="mut">لا توجد طلبات حية حالياً</td></tr>';
+      </tr>`;
 
-    $('#rows').innerHTML = list.map((o) => `
-      <tr>
-        <td dir="ltr"><b>${serialNo(o)}</b></td>
-        <td><b>📍 ${esc(o.customer_address || '—')}</b></td>
-        <td>${badge(o.status)}</td>
-        <td>${capLink(o)}</td>
-        <td>${time(o.created_at)}</td>
-        <td>${o.closed_at ? time(o.closed_at) : '—'}</td>
-        <td>${LIVE.includes(o.status) ? `<button type="button" class="ghost sm" data-sel="${o.id}">🗺️ تتبع</button>` : ''}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات سابقة</td></tr>';
+    $('#liveRows').innerHTML = liveList.map((o) => renderOrderCard(o, true)).join('')
+      || '<tr><td colspan="5" class="mut merchant-orders-empty">لا توجد طلبات حية حالياً</td></tr>';
+
+    $('#rows').innerHTML = list.map((o) => renderOrderCard(o, false)).join('')
+      || '<tr><td colspan="7" class="mut merchant-orders-empty">لا توجد طلبات سابقة</td></tr>';
   }
+
+  const CANCEL_ACCEPTED_REASONS = [
+    { code: 'unavailable', label: 'المنتج غير متوفر' },
+    { code: 'customer_cancelled', label: 'الزبون ألغى الطلب' },
+    { code: 'order_error', label: 'خطأ في الطلب' },
+    { code: 'captain_late', label: 'تأخر الكابتن' },
+    { code: 'other', label: 'سبب آخر' },
+  ];
+
+  const cancelDlg = document.createElement('dialog');
+  cancelDlg.id = 'merchantCancelAcceptedDialog';
+  cancelDlg.className = 'merchant-cancel-dialog';
+  cancelDlg.setAttribute('aria-labelledby', 'merchantCancelAcceptedTitle');
+  cancelDlg.innerHTML = `
+    <form id="merchantCancelForm" class="merchant-cancel-body" novalidate>
+      <div class="merchant-cancel-head">
+        <h3 id="merchantCancelAcceptedTitle">إلغاء الطلب المقبول</h3>
+        <div class="mut merchant-cancel-order-ref" id="cancelAcceptedOrderRef"></div>
+      </div>
+      <fieldset class="cancel-reason-fieldset">
+        <legend class="cancel-reason-legend">اختر سبب إلغاء الطلب</legend>
+        <div class="cancel-reason-list">
+          ${CANCEL_ACCEPTED_REASONS.map((r) => `
+            <div class="cancel-reason-option">
+              <input type="radio" id="cancelReason_${r.code}" name="reason_code" value="${r.code}">
+              <label for="cancelReason_${r.code}" class="cancel-reason-label">${esc(r.label)}</label>
+            </div>
+          `).join('')}
+        </div>
+      </fieldset>
+      <div id="cancelReasonOtherWrap" class="cancel-reason-other hide">
+        <label for="cancelReasonOtherInput" class="cancel-reason-other-label">سبب الإلغاء (مطلوب، بحد أقصى 200 حرف)</label>
+        <textarea id="cancelReasonOtherInput" name="reason_text" rows="2" maxlength="200" placeholder="اكتب سبب الإلغاء هنا..." aria-describedby="cancelReasonCounter cancelReasonError"></textarea>
+        <div class="cancel-reason-meta">
+          <span id="cancelReasonError" class="cancel-reason-error" aria-live="polite"></span>
+          <span id="cancelReasonCounter" class="cancel-reason-counter mut" dir="ltr">0 / 200</span>
+        </div>
+      </div>
+      <div class="merchant-cancel-actions">
+        <button type="submit" class="bad" id="merchantCancelConfirmBtn" disabled>تأكيد الإلغاء</button>
+        <button type="button" class="sec" id="merchantCancelBackBtn">رجوع</button>
+      </div>
+    </form>`;
+  document.body.appendChild(cancelDlg);
+
+  let cancelTargetOrderId = null;
+  let cancelSubmitting = false;
+  let otherTouched = false;
+  const cancelForm = cancelDlg.querySelector('#merchantCancelForm');
+  const cancelOtherWrap = cancelDlg.querySelector('#cancelReasonOtherWrap');
+  const cancelOtherInput = cancelDlg.querySelector('#cancelReasonOtherInput');
+  const cancelCounterEl = cancelDlg.querySelector('#cancelReasonCounter');
+  const cancelErrorEl = cancelDlg.querySelector('#cancelReasonError');
+  const cancelConfirmBtn = cancelDlg.querySelector('#merchantCancelConfirmBtn');
+  const cancelBackBtn = cancelDlg.querySelector('#merchantCancelBackBtn');
+  const cancelOrderRefEl = cancelDlg.querySelector('#cancelAcceptedOrderRef');
+
+  function syncCancelDialogState() {
+    const selectedRadio = cancelForm.querySelector('input[name="reason_code"]:checked');
+    const code = selectedRadio?.value || '';
+    const isOther = code === 'other';
+    cancelOtherWrap.classList.toggle('hide', !isOther);
+    cancelOtherInput.required = isOther;
+
+    const rawText = cancelOtherInput.value || '';
+    const rawLen = Array.from(rawText).length;
+    const trimmed = rawText.trim();
+    const trimmedLen = Array.from(trimmed).length;
+    cancelCounterEl.textContent = `${rawLen} / 200`;
+    cancelCounterEl.classList.toggle('is-limit', rawLen >= 180);
+
+    let errMsg = '';
+    let valid = Boolean(code);
+    if (isOther) {
+      if (trimmedLen === 0) {
+        valid = false;
+        if (otherTouched) errMsg = 'يرجى كتابة سبب الإلغاء';
+      } else if (trimmedLen > 200) {
+        valid = false;
+        errMsg = 'يجب ألا يتجاوز سبب الإلغاء 200 حرف';
+      }
+    }
+    cancelErrorEl.textContent = errMsg;
+    cancelOtherInput.setAttribute('aria-invalid', errMsg ? 'true' : 'false');
+    cancelConfirmBtn.disabled = cancelSubmitting || !valid;
+  }
+
+  function openCancelAcceptedModal(orderId) {
+    const o = orders.get(orderId);
+    if (!o || o.status !== 'accepted') return;
+    cancelTargetOrderId = o.id;
+    cancelSubmitting = false;
+    otherTouched = false;
+    cancelForm.reset();
+    cancelConfirmBtn.textContent = 'تأكيد الإلغاء';
+    cancelOrderRefEl.innerHTML = `طلب <b dir="ltr">${esc(serialNo(o))}</b> — ${esc(o.customer_address || '—')}`;
+    syncCancelDialogState();
+    if (!cancelDlg.open) cancelDlg.showModal();
+  }
+
+  cancelForm.addEventListener('change', (e) => {
+    if (e.target.name === 'reason_code') {
+      syncCancelDialogState();
+      if (e.target.value === 'other') cancelOtherInput.focus();
+    }
+  });
+  cancelOtherInput.addEventListener('input', () => {
+    otherTouched = true;
+    syncCancelDialogState();
+  });
+  cancelOtherInput.addEventListener('blur', () => {
+    if (cancelForm.querySelector('input[name="reason_code"]:checked')?.value === 'other') {
+      otherTouched = true;
+      syncCancelDialogState();
+    }
+  });
+  cancelBackBtn.addEventListener('click', () => {
+    if (!cancelSubmitting && cancelDlg.open) cancelDlg.close();
+  });
+  cancelDlg.addEventListener('click', (e) => {
+    if (e.target === cancelDlg && !cancelSubmitting) cancelDlg.close();
+  });
+  cancelDlg.addEventListener('close', () => {
+    cancelTargetOrderId = null;
+    cancelSubmitting = false;
+  });
+  cancelForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (cancelSubmitting || cancelTargetOrderId == null) return;
+    const code = cancelForm.querySelector('input[name="reason_code"]:checked')?.value || '';
+    if (code === 'other') otherTouched = true;
+    syncCancelDialogState();
+    if (cancelConfirmBtn.disabled) return;
+
+    const payload = { reason_code: code };
+    if (code === 'other') payload.reason_text = cancelOtherInput.value.trim();
+
+    cancelSubmitting = true;
+    cancelConfirmBtn.disabled = true;
+    cancelConfirmBtn.textContent = 'جاري الإلغاء...';
+    cancelBackBtn.disabled = true;
+    try {
+      const targetId = cancelTargetOrderId;
+      const res = await act(() => api(`/merchant/orders/${targetId}/cancel-accepted`, 'POST', payload), 'تم إلغاء الطلب وإبلاغ الكابتن');
+      if (res) {
+        cancelSubmitting = false;
+        if (cancelDlg.open) cancelDlg.close();
+        await load();
+      } else {
+        await load();
+      }
+    } finally {
+      cancelSubmitting = false;
+      cancelBackBtn.disabled = false;
+      cancelConfirmBtn.textContent = 'تأكيد الإلغاء';
+      syncCancelDialogState();
+    }
+  });
 
   const onTbl = (e) => {
     const capEl = e.target.closest('[data-cap]');
@@ -194,6 +365,8 @@ authScreen('merchant', (user) => {
     if (selEl) { switchTab('live'); select(Number(selEl.dataset.sel)); return; }
     const canEl = e.target.closest('[data-cancel]');
     if (canEl && confirm('إلغاء الطلب؟')) act(() => api(`/merchant/orders/${canEl.dataset.cancel}/cancel`, 'POST'), 'تم الإلغاء');
+    const canAccEl = e.target.closest('[data-cancel-accepted]');
+    if (canAccEl) openCancelAcceptedModal(Number(canAccEl.dataset.cancelAccepted));
   };
   $('#rows').onclick = onTbl;
   $('#liveRows').onclick = onTbl;
@@ -237,6 +410,38 @@ authScreen('merchant', (user) => {
     if (pan) tm.panTo([lat, lng]);
   }
 
+  let supportPhone = null;
+  const supportBtn = $('#merchantSupportBtn');
+  const syncSupportBtn = (phoneVal) => {
+    supportPhone = phoneVal && String(phoneVal).trim() ? String(phoneVal).trim() : null;
+    if (!supportBtn) return;
+    if (supportPhone) {
+      const telUri = `tel:${supportPhone.replace(/\s+/g, '')}`;
+      supportBtn.disabled = false;
+      supportBtn.textContent = '📞 اتصل بالدعم';
+      supportBtn.dataset.tel = telUri;
+      supportBtn.setAttribute('href', telUri);
+    } else {
+      supportBtn.disabled = true;
+      supportBtn.textContent = 'الدعم غير متوفر حالياً';
+      supportBtn.dataset.tel = '';
+      supportBtn.removeAttribute('href');
+    }
+  };
+  supportBtn?.addEventListener('click', () => {
+    if (supportBtn.disabled || !supportPhone) return;
+    const telUri = `tel:${supportPhone.replace(/\s+/g, '')}`;
+    window.location.href = telUri;
+  });
+  const loadSupport = async () => {
+    try {
+      const s = await api('/merchant/support');
+      syncSupportBtn(s?.support_phone);
+    } catch {
+      syncSupportBtn(null);
+    }
+  };
+
   const load = async () => {
     const list = await api('/merchant/orders');
     list.forEach((o) => orders.set(o.id, o));
@@ -247,6 +452,7 @@ authScreen('merchant', (user) => {
     }
   };
   load();
+  loadSupport();
 
   connectWs((m) => {
     if (m.type === 'notification') {

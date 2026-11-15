@@ -171,6 +171,13 @@ body.mt .tabs button[data-tab].on:hover:not(:disabled) {
   color: var(--brand-primary);
   font-weight: var(--weight-black);
 }
+.merchant-support-btn {
+  width: 100%;
+  min-height: var(--touch-min);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-extrabold);
+  border-radius: var(--radius-md);
+}
 #of { display: flex; flex-direction: column; gap: var(--space-4); }
 #addrInput, #of input[name="customer_address"] {
   width: 100%;
@@ -195,25 +202,82 @@ body.mt .tabs button[data-tab].on:hover:not(:disabled) {
   background: var(--bg-elevated);
 }
 #go { min-height: var(--touch-jumbo); font-size: var(--text-lg); font-weight: var(--weight-black); border-radius: var(--radius-md); }
-body.mt table { width: 100%; min-width: 640px; border-collapse: collapse; text-align: right; font-size: var(--text-sm); }
-body.mt thead th {
-  padding: var(--space-3) var(--space-4);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-extrabold);
-  border-block-end: var(--border-w-thin) solid var(--border-neutral-strong);
-  white-space: nowrap;
+body.mt .tablewrap { overflow: visible; width: 100%; }
+body.mt table { display: block; width: 100%; min-width: 0; border-collapse: collapse; text-align: right; font-size: var(--text-sm); }
+body.mt thead { display: none; }
+body.mt tbody { display: flex; flex-direction: column; gap: var(--space-3); width: 100%; }
+#liveRows tr, #rows tr { display: block; width: 100%; box-sizing: border-box; }
+#liveRows tr.merchant-order-card, #rows tr.merchant-order-card {
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  overflow: visible;
+  height: auto;
+}
+#liveRows tr.merchant-order-card.is-selected-row {
+  border-color: var(--border-brand);
+  box-shadow: 0 0 0 1px var(--border-brand-soft);
 }
 #liveRows td, #rows td {
-  padding: var(--space-3) var(--space-4);
-  border-block-end: var(--border-w-thin) solid var(--border-neutral);
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border-block-end: none;
   color: var(--text-primary);
-  vertical-align: middle;
   font-variant-numeric: tabular-nums;
 }
-#liveRows tr:last-child td, #rows tr:last-child td { border-block-end: none; }
-#liveRows tr:hover td, #rows tr:hover td { background: var(--surface-hover); }
+#liveRows td.merchant-order-card-cell, #rows td.merchant-order-card-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.merchant-orders-empty {
+  padding: var(--space-4);
+  text-align: center;
+}
+.merchant-order-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.merchant-order-serial {
+  font-size: var(--text-base);
+  color: var(--brand-primary);
+}
+.merchant-order-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.merchant-order-addr {
+  font-size: var(--text-base);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  overflow-wrap: anywhere;
+}
+.merchant-order-times {
+  font-size: var(--text-xs);
+}
+.merchant-order-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.merchant-order-cap {
+  min-width: 0;
+}
+.merchant-order-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
 #trkinfo {
   padding: var(--space-3) var(--space-4);
   margin-block-end: var(--space-3);
@@ -225,7 +289,186 @@ body.mt thead th {
   font-weight: var(--weight-semibold);
 }
 #tmap { width: 100%; }
-button[data-cancel] { min-height: var(--touch-min); padding: var(--space-2) var(--space-3); margin-inline-start: var(--space-1); }
+button[data-cancel] { min-height: var(--touch-min); padding: var(--space-2) var(--space-3); white-space: nowrap; }
+button[data-cancel-accepted] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--touch-min);
+  padding: var(--space-2) var(--space-4);
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-extrabold);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+
+dialog.merchant-cancel-dialog {
+  width: min(440px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: 90dvh;
+  margin: auto;
+  padding: 0;
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg, 0 18px 42px rgba(0, 0, 0, 0.45));
+  overflow: auto;
+}
+dialog.merchant-cancel-dialog::backdrop {
+  background: var(--surface-overlay);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+.merchant-cancel-body {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
+.merchant-cancel-head h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+}
+.merchant-cancel-order-ref {
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.cancel-reason-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.cancel-reason-legend {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--text-secondary);
+  margin-block-end: var(--space-2);
+  padding: 0;
+}
+.cancel-reason-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cancel-reason-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  border-radius: var(--radius-md);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  background: var(--bg-subtle);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+              background-color var(--dur-fast) var(--ease-standard);
+}
+.cancel-reason-option:has(input:checked) {
+  border-color: var(--status-bad-border);
+  background: var(--status-bad-soft);
+}
+dialog.merchant-cancel-dialog .cancel-reason-option input[type="radio"] {
+  position: relative;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  margin: 0 var(--space-3);
+  flex-shrink: 0;
+  accent-color: var(--brand-primary);
+  cursor: pointer;
+}
+dialog.merchant-cancel-dialog label.cancel-reason-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  min-height: var(--touch-min);
+  padding-block: var(--space-1);
+  padding-inline-start: 0;
+  padding-inline-end: var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.cancel-reason-other {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cancel-reason-other.hide { display: none; }
+dialog.merchant-cancel-dialog label.cancel-reason-other-label {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--text-secondary);
+}
+#cancelReasonOtherInput {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 68px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: var(--border-w-thin) solid var(--border-neutral-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+#cancelReasonOtherInput:focus-visible {
+  outline: var(--focus-ring-w) solid var(--border-focus);
+  outline-offset: var(--focus-ring-offset);
+  border-color: var(--border-focus);
+}
+#cancelReasonOtherInput[aria-invalid="true"] {
+  border-color: var(--status-bad-border);
+}
+.cancel-reason-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+.cancel-reason-error {
+  color: var(--status-bad-text);
+  font-weight: var(--weight-bold);
+  min-height: 18px;
+}
+.cancel-reason-counter {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-bold);
+  margin-inline-start: auto;
+}
+.cancel-reason-counter.is-limit {
+  color: var(--brand-primary);
+}
+.merchant-cancel-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-block-start: var(--space-1);
+}
+.merchant-cancel-actions button {
+  min-height: var(--touch-min);
+  width: 100%;
+  font-size: var(--text-base);
+  font-weight: var(--weight-extrabold);
+  border-radius: var(--radius-md);
+}
 #mySection > .card { margin-block-end: var(--space-0); }
 [data-cap] {
   display: inline-flex;
