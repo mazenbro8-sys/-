@@ -1389,6 +1389,18 @@ const NOTIF_BODY_MAX = 500;
 const NOTIF_TARGET_TYPES = new Set(['all', 'zone', 'role', 'user']);
 const NOTIF_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin', 'admin'];
 const NOTIF_ZONE_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin'];
+const CATEGORY_ALIASES = new Map([
+  ['all', 'all'],
+  ['الكل', 'all'],
+  ['captain', 'captain'],
+  ['كباتن', 'captain'],
+  ['merchant', 'merchant'],
+  ['منشآت', 'merchant'],
+  ['admin', 'admin'],
+  ['مديرون', 'admin'],
+]);
+
+const normalizeCategory = (raw) => (typeof raw === 'string' ? (CATEGORY_ALIASES.get(raw.trim()) ?? null) : null);
 
 const notifText = (v, name, max, { singleLine = false } = {}) => {
   if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
@@ -1403,13 +1415,14 @@ const notifText = (v, name, max, { singleLine = false } = {}) => {
 const NOTIF_VISIBLE_SQL = `n.created_at > ? AND n.sender_id != ? AND (
   n.target_type = 'all'
   OR (n.target_type = 'zone' AND n.zone_id = ?)
-  OR (n.target_type = 'role' AND n.target_role = ? AND (n.zone_id IS NULL OR n.zone_id = ?))
+  OR (n.target_type = 'role' AND (n.target_role = ? OR (n.target_role = 'admin' AND ? = 'zone_admin')) AND (n.zone_id IS NULL OR n.zone_id = ?))
   OR (n.target_type = 'user' AND n.target_user_id = ?)
 )`;
 const notifVisibleArgs = (u, now = Date.now()) => [
   now - NOTIFICATION_RETENTION_MS,
   u.id,
   u.zone_id ?? null,
+  u.role,
   u.role,
   u.zone_id ?? null,
   u.id,
@@ -1422,9 +1435,11 @@ async function notificationRecipientIds(n) {
   if (n.target_type === 'all') rows = await db.all(base, n.sender_id);
   else if (n.target_type === 'zone') rows = await db.all(`${base} AND zone_id = ?`, n.sender_id, n.zone_id);
   else if (n.target_type === 'role') {
+    const roleClause = n.target_role === 'admin' ? "role IN ('admin','zone_admin')" : 'role = ?';
+    const roleArgs = n.target_role === 'admin' ? [] : [n.target_role];
     rows = n.zone_id != null
-      ? await db.all(`${base} AND role = ? AND zone_id = ?`, n.sender_id, n.target_role, n.zone_id)
-      : await db.all(`${base} AND role = ?`, n.sender_id, n.target_role);
+      ? await db.all(`${base} AND ${roleClause} AND zone_id = ?`, n.sender_id, ...roleArgs, n.zone_id)
+      : await db.all(`${base} AND ${roleClause}`, n.sender_id, ...roleArgs);
   } else rows = await db.all(`${base} AND id = ?`, n.sender_id, n.target_user_id);
   return rows.map((r) => r.id);
 }
@@ -1441,10 +1456,6 @@ const notifyLimiter = rateLimit({
 A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
   const b = req.body ?? {};
   const zId = adminZone(req);
-  const targetType = String(b.target_type ?? '');
-  if (!NOTIF_TARGET_TYPES.has(targetType)) throw bad('نوع المستلمين غير صالح');
-  const title = notifText(b.title, 'العنوان', NOTIF_TITLE_MAX, { singleLine: true });
-  const body = notifText(b.body, 'نص الإشعار', NOTIF_BODY_MAX);
 
   const optZone = async () => {
     if (b.zone_id == null || b.zone_id === '') return null;
@@ -1454,30 +1465,78 @@ A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
     return z;
   };
 
-  let zoneId = null, targetRole = null, targetUserId = null;
-  if (targetType === 'all') {
-    if (zId != null) throw new HttpError(403, 'مدير المنطقة لا يمكنه الإرسال لجميع المستخدمين');
-  } else if (targetType === 'zone') {
-    zoneId = (await optZone()) ?? zId;
-    if (zoneId == null) throw bad('يرجى تحديد المنطقة');
-  } else if (targetType === 'role') {
-    targetRole = String(b.target_role ?? '');
-    if (!NOTIF_ADMIN_ROLES.includes(targetRole)) throw bad('الدور غير صالح');
-    if (zId != null && !NOTIF_ZONE_ADMIN_ROLES.includes(targetRole)) throw new HttpError(403, 'لا يمكنك الإرسال لهذا الدور');
-    zoneId = (await optZone()) ?? zId;
-  } else {
-    targetUserId = int(b.target_user_id, 'المستخدم', 1, 2 ** 31);
-    if (targetUserId === req.user.id) throw bad('لا يمكنك إرسال إشعار لنفسك');
-    const target = await db.get(
-      "SELECT id, zone_id FROM users WHERE id=? AND status!='deleted' AND role IN ('admin','zone_admin','merchant','captain')",
-      targetUserId
-    );
-    if (!target) throw new HttpError(404, 'المستخدم غير موجود');
+  let targetType = '';
+  let zoneId = null;
+  let targetRole = null;
+  let targetUserId = null;
+  let category = null;
+
+  if (b.category !== undefined) {
+    category = normalizeCategory(b.category);
+    if (!category) throw bad('الفئة المستهدفة غير صالحة');
+    const rawZone = b.zone_id;
+    const isAllZonesReq = rawZone === null || rawZone === '' || rawZone === 'all';
     if (zId != null) {
-      if (target.zone_id !== zId) throw new HttpError(403, 'لا يمكنك الإرسال لمستخدم خارج منطقتك');
+      if (rawZone !== undefined) {
+        if (isAllZonesReq) throw new HttpError(403, 'مدير المنطقة لا يمكنه الإرسال لكل المناطق');
+        const reqZ = int(rawZone, 'zone', 1, 2 ** 31);
+        if (reqZ !== zId) throw new HttpError(403, 'لا يمكنك الإرسال خارج منطقتك');
+      }
+      if (category !== 'captain' && category !== 'merchant') {
+        throw new HttpError(403, 'لا يمكنك الإرسال لهذه الفئة');
+      }
       zoneId = zId;
+    } else if (rawZone === undefined || isAllZonesReq) {
+      zoneId = null;
+    } else {
+      zoneId = int(rawZone, 'zone', 1, 2 ** 31);
+      if (!(await db.get('SELECT 1 FROM zones WHERE id=?', zoneId))) {
+        throw new HttpError(404, 'المنطقة غير موجودة');
+      }
+    }
+    if (category === 'all') {
+      targetType = zoneId == null ? 'all' : 'zone';
+      targetRole = null;
+    } else {
+      targetType = 'role';
+      targetRole = category;
+    }
+  } else {
+    targetType = String(b.target_type ?? '');
+    if (!NOTIF_TARGET_TYPES.has(targetType)) throw bad('نوع المستلمين غير صالح');
+    if (targetType === 'all') {
+      if (zId != null) throw new HttpError(403, 'مدير المنطقة لا يمكنه الإرسال لجميع المستخدمين');
+    } else if (targetType === 'zone') {
+      zoneId = (await optZone()) ?? zId;
+      if (zoneId == null) throw bad('يرجى تحديد المنطقة');
+    } else if (targetType === 'role') {
+      targetRole = String(b.target_role ?? '');
+      if (!NOTIF_ADMIN_ROLES.includes(targetRole)) throw bad('الدور غير صالح');
+      if (zId != null && !NOTIF_ZONE_ADMIN_ROLES.includes(targetRole)) throw new HttpError(403, 'لا يمكنك الإرسال لهذا الدور');
+      zoneId = (await optZone()) ?? zId;
+    } else {
+      targetUserId = int(b.target_user_id, 'المستخدم', 1, 2 ** 31);
+      if (targetUserId === req.user.id) throw bad('لا يمكنك إرسال إشعار لنفسك');
+      const target = await db.get(
+        "SELECT id, zone_id FROM users WHERE id=? AND status!='deleted' AND role IN ('admin','zone_admin','merchant','captain')",
+        targetUserId
+      );
+      if (!target) throw new HttpError(404, 'المستخدم غير موجود');
+      if (zId != null) {
+        if (target.zone_id !== zId) throw new HttpError(403, 'لا يمكنك الإرسال لمستخدم خارج منطقتك');
+        zoneId = zId;
+      }
     }
   }
+
+  const title = notifText(b.title, 'العنوان', NOTIF_TITLE_MAX, { singleLine: true });
+  const body = notifText(b.body, 'نص الإشعار', NOTIF_BODY_MAX);
+
+  const resolvedCategory = category ?? (
+    targetType === 'role'
+      ? (targetRole === 'zone_admin' ? 'admin' : targetRole)
+      : ((targetType === 'all' || targetType === 'zone') ? 'all' : null)
+  );
 
   const now = Date.now();
   const r = await db.run(
@@ -1486,7 +1545,7 @@ A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
   );
   const notification = {
     id: r.lastInsertRowid, sender_id: req.user.id, zone_id: zoneId, target_type: targetType,
-    target_role: targetRole, target_user_id: targetUserId, title, body, created_at: now,
+    target_role: targetRole, target_user_id: targetUserId, category: resolvedCategory, title, body, created_at: now,
   };
   const recipients = await notificationRecipientIds(notification);
   const push = {
@@ -1497,7 +1556,7 @@ A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
     },
   };
   for (const uid of recipients) sendTo(uid, push);
-  await audit(req.user.id, 'notification_send', { id: notification.id, target_type: targetType, target_role: targetRole, target_user_id: targetUserId, zone_id: zoneId, recipients: recipients.length });
+  await audit(req.user.id, 'notification_send', { id: notification.id, target_type: targetType, target_role: targetRole, category: resolvedCategory, target_user_id: targetUserId, zone_id: zoneId, recipients: recipients.length });
   res.status(201).json({ ...notification, recipients_count: recipients.length });
 }));
 
