@@ -2258,21 +2258,33 @@ dialog::backdrop {
 .notif-bell-btn {
   position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-end;
+  justify-content: flex-end;
+  box-sizing: border-box;
   width: var(--touch-min);
   height: var(--touch-min);
   min-width: var(--touch-min);
   min-height: var(--touch-min);
-  padding: 0;
-  border-radius: var(--radius-pill);
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
   background: var(--bg-subtle);
   border: var(--border-w-thin) solid var(--border-neutral-strong);
   color: var(--text-primary);
-  font-size: 18px;
+  font-size: var(--text-base);
   line-height: 1;
   flex-shrink: 0;
-  margin: 0;
+  margin: var(--space-0);
+}
+
+.notif-bell-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-4);
+  height: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: 1;
+  pointer-events: none;
 }
 
 .notif-bell-btn:hover:not(:disabled) {
@@ -2287,33 +2299,49 @@ dialog::backdrop {
 
 .notif-unread-badge {
   position: absolute;
-  inset-block-start: 2px;
-  inset-inline-start: 2px;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
+  inset-block-start: var(--space-1);
+  inset-inline-start: var(--space-1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: var(--space-0) var(--space-1);
+  margin: var(--space-0);
   border-radius: var(--radius-pill);
   background: var(--status-bad);
   color: var(--text-on-bad);
-  border: 2px solid var(--bg-elevated);
-  font-size: 11px;
+  border: var(--border-w-thin) solid var(--bg-elevated);
+  font-size: 10px;
   font-weight: var(--weight-black);
-  line-height: 16px;
+  line-height: 1;
   text-align: center;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
 dialog.notif-inbox-dialog {
-  width: min(480px, calc(100vw - 16px));
-  max-width: calc(100vw - 16px);
-  max-height: 90dvh;
+  inline-size: min(480px, calc(100% - var(--space-4)));
+  max-inline-size: calc(100% - var(--space-4));
+  max-block-size: 85vh;
+  max-block-size: 85dvh;
   margin: auto;
-  padding: 0;
+  padding: var(--space-0);
   border: none;
   background: transparent;
   color: var(--text-primary);
-  overflow: visible;
+  overflow: hidden;
+}
+
+dialog.notif-inbox-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.notif-inbox-dialog::backdrop {
+  background: var(--surface-overlay);
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 dialog.notif-inbox-dialog[open] {
@@ -2350,7 +2378,7 @@ dialog.notif-inbox-dialog:focus {
   color: var(--text-secondary);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   margin-block-end: var(--space-2);
 }
 
@@ -2361,7 +2389,7 @@ dialog.notif-inbox-dialog:focus {
 
 .notif-offer-priority-actions > button {
   min-height: var(--touch-min);
-  margin: 0;
+  margin: var(--space-0);
 }
 
 #notifOfferAccBtn {
@@ -2376,11 +2404,12 @@ dialog.notif-inbox-dialog:focus {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin: 0;
+  margin: var(--space-0);
   padding: var(--space-4);
   min-height: 0;
   flex: 1 1 auto;
-  max-height: 82dvh;
+  max-block-size: 85vh;
+  max-block-size: 85dvh;
   overflow: hidden;
   background: var(--bg-elevated);
   border: var(--border-w-thin) solid var(--border-neutral-strong);
@@ -2391,60 +2420,68 @@ dialog.notif-inbox-dialog:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-3);
   flex-wrap: nowrap;
+  flex-shrink: 0;
+  padding-block-end: var(--space-3);
+  border-block-end: var(--border-w-thin) solid var(--border-neutral);
 }
 
 .notif-inbox-title-wrap {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-width: 0;
+  min-inline-size: 0;
   flex-wrap: wrap;
 }
 
 .notif-inbox-title-wrap h3 {
-  margin: 0;
+  margin: var(--space-0);
   font-size: var(--text-md);
 }
 
 .notif-inbox-close {
   min-width: var(--touch-min);
   min-height: var(--touch-min);
-  padding: 0 var(--space-3);
-  margin: 0;
+  padding: var(--space-0) var(--space-3);
+  margin: var(--space-0);
   flex-shrink: 0;
   white-space: nowrap;
 }
 
 .notif-inbox-status {
   font-size: var(--text-sm);
+  flex-shrink: 0;
 }
 
 .notif-inbox-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  min-height: 0;
-  padding-block-end: var(--space-1);
+  scrollbar-gutter: stable;
+  padding-block: var(--space-1);
+  margin: var(--space-0);
 }
 
 button.notif-item {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
+  gap: var(--space-2);
+  flex-shrink: 0;
   width: 100%;
-  min-height: var(--touch-jumbo);
-  padding: var(--space-3);
-  margin: 0;
+  min-height: var(--touch-min);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-0);
   border-radius: var(--radius-md);
   background: var(--bg-base);
   border: var(--border-w-thin) solid var(--border-neutral);
   color: var(--text-primary);
-  text-align: right;
+  text-align: start;
   font-weight: var(--weight-regular);
   cursor: pointer;
 }
@@ -2462,32 +2499,29 @@ button.notif-item:focus-visible {
 button.notif-item.is-unread {
   background: var(--bg-subtle);
   border-color: var(--border-brand-soft);
-  border-inline-start: 4px solid var(--brand-primary);
+  border-inline-start: var(--space-1) solid var(--brand-primary);
 }
 
 button.notif-item.is-read {
   opacity: 0.88;
 }
 
-.notif-item-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
 .notif-item-title {
+  display: block;
+  inline-size: 100%;
   font-size: var(--text-base);
   font-weight: var(--weight-extrabold);
+  line-height: var(--leading-tight);
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
 .notif-state-pill {
+  margin-inline-start: auto;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: var(--space-1);
+  padding: var(--space-0) var(--space-2);
   border-radius: var(--radius-pill);
   font-size: var(--text-xs);
   font-weight: var(--weight-bold);
@@ -2508,6 +2542,11 @@ button.notif-item.is-read {
 }
 
 .notif-item-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
   font-size: var(--text-sm);
   color: var(--text-secondary);
   line-height: var(--leading-normal);
@@ -2515,12 +2554,31 @@ button.notif-item.is-read {
   overflow-wrap: anywhere;
 }
 
+button.notif-item.is-expanded .notif-item-body {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+}
+
 .notif-item-meta {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  justify-content: space-between;
+  gap: var(--space-2);
+  inline-size: 100%;
   font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+
+.notif-item-byline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notif-empty {

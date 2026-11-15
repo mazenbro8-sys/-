@@ -9,12 +9,27 @@ body.mt .panther-header {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) var(--space-2) var(--space-0);
+  padding: var(--space-2);
 }
 body.mt .panther-header h1 {
   flex: 1 1 auto;
-  min-width: 0;
+  min-inline-size: 0;
   gap: var(--space-2);
+  overflow: hidden;
+}
+body.mt .panther-header .hdr-brand-stack {
+  flex: 0 1 auto;
+  align-items: flex-start;
+  min-inline-size: 0;
+  overflow: hidden;
+}
+body.mt .panther-header .brand-title-sm,
+body.mt .panther-header .hdr-role-tag {
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 body.mt .panther-header .hdr-role-tag {
   font-size: var(--text-xs);
@@ -26,19 +41,46 @@ body.mt .panther-header [data-install-app] {
   display: none !important;
 }
 body.mt .panther-header .hdr-right-actions {
-  display: flex;
-  flex-wrap: nowrap !important;
+  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--space-2) !important;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 body.mt .panther-header #notifBellBtn,
+body.mt .panther-header #merchantSupportBtn,
 body.mt .panther-header #lo {
   min-height: var(--touch-min);
   min-width: var(--touch-min);
+  margin: var(--space-0);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+body.mt .panther-header #merchantSupportBtn {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-0) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-extrabold);
+  border-radius: var(--radius-md);
 }
 body.mt .panther-header #lo {
-  padding-inline: var(--space-3);
+  padding: var(--space-0) var(--space-3);
+}
+@media (max-width: 420px) {
+  body.mt .panther-header .brand-logo-sm {
+    width: var(--space-10);
+    height: auto;
+  }
+  body.mt .panther-header .brand-delivery-sub {
+    display: none;
+  }
+  body.mt .panther-header .brand-title-sm {
+    font-size: var(--text-xs);
+  }
 }
 
 /* Uniform Tabs: bottom border + gold text for active, transparent neutral for inactive */
@@ -170,13 +212,6 @@ body.mt .tabs button[data-tab].on:hover:not(:disabled) {
 #merchTodayCount {
   color: var(--brand-primary);
   font-weight: var(--weight-black);
-}
-.merchant-support-btn {
-  width: 100%;
-  min-height: var(--touch-min);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-extrabold);
-  border-radius: var(--radius-md);
 }
 #of { display: flex; flex-direction: column; gap: var(--space-4); }
 #addrInput, #of input[name="customer_address"] {

@@ -4,6 +4,21 @@ authScreen('merchant', (user) => {
   header(user.business_name || user.name || 'المنشأة', user);
   document.querySelector('.panther-header .hdr-user-chip')?.remove();
   document.querySelector('.panther-header [data-install-app]')?.remove();
+  const hdrActions = document.querySelector('.panther-header .hdr-right-actions');
+  hdrActions?.removeAttribute('style');
+  const supportHdrBtn = document.createElement('button');
+  supportHdrBtn.type = 'button';
+  supportHdrBtn.id = 'merchantSupportBtn';
+  supportHdrBtn.className = 'sec sm merchant-support-btn';
+  supportHdrBtn.disabled = true;
+  supportHdrBtn.setAttribute('aria-label', 'الدعم غير متوفر حالياً');
+  supportHdrBtn.title = 'الدعم غير متوفر حالياً';
+  supportHdrBtn.innerHTML = '<span aria-hidden="true">📞</span><span>الدعم</span>';
+  const notifBellEl = document.getElementById('notifBellBtn');
+  if (hdrActions) {
+    if (notifBellEl) notifBellEl.after(supportHdrBtn);
+    else hdrActions.prepend(supportHdrBtn);
+  }
   const app = $('#app'); app.classList.remove('hide');
   app.innerHTML = `
   ${renderInstallBanner('merchant')}
@@ -34,7 +49,6 @@ authScreen('merchant', (user) => {
         </div>
       </div>
     </div>
-    <button type="button" class="sec merchant-support-btn" id="merchantSupportBtn" disabled>الدعم غير متوفر حالياً</button>
   </section>
   <section id="liveSection" class="tab-section hide">
     <div class="live-split-grid">
@@ -418,12 +432,16 @@ authScreen('merchant', (user) => {
     if (supportPhone) {
       const telUri = `tel:${supportPhone.replace(/\s+/g, '')}`;
       supportBtn.disabled = false;
-      supportBtn.textContent = '📞 اتصل بالدعم';
+      supportBtn.innerHTML = '<span aria-hidden="true">📞</span><span>الدعم</span>';
+      supportBtn.title = '📞 اتصل بالدعم';
+      supportBtn.setAttribute('aria-label', '📞 اتصل بالدعم');
       supportBtn.dataset.tel = telUri;
       supportBtn.setAttribute('href', telUri);
     } else {
       supportBtn.disabled = true;
-      supportBtn.textContent = 'الدعم غير متوفر حالياً';
+      supportBtn.innerHTML = '<span aria-hidden="true">📞</span><span>الدعم</span>';
+      supportBtn.title = 'الدعم غير متوفر حالياً';
+      supportBtn.setAttribute('aria-label', 'الدعم غير متوفر حالياً');
       supportBtn.dataset.tel = '';
       supportBtn.removeAttribute('href');
     }

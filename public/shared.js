@@ -1025,19 +1025,22 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
       itemBtn.className = `notif-item ${isRead ? 'is-read' : 'is-unread'}`;
       itemBtn.dataset.notifId = String(n.id);
       itemBtn.setAttribute('role', 'listitem');
+      itemBtn.setAttribute('aria-expanded', 'false');
       itemBtn.innerHTML = `
-        <div class="notif-item-top">
-          <strong class="notif-item-title">${esc(n.title || '')}</strong>
-          ${statePillHtml(isRead)}
-        </div>
+        <strong class="notif-item-title">${esc(n.title || '')}</strong>
         <div class="notif-item-body">${esc(n.body || '')}</div>
         <div class="notif-item-meta mut">
-          <span>${esc(n.sender_name || 'الإدارة')}</span>
-          <span aria-hidden="true">•</span>
-          <time>${esc(time(n.created_at))}</time>
+          <span class="notif-item-byline">
+            <span>${esc(n.sender_name || 'الإدارة')}</span>
+            <span aria-hidden="true">•</span>
+            <time>${esc(time(n.created_at))}</time>
+          </span>
+          ${statePillHtml(isRead)}
         </div>`;
 
       itemBtn.onclick = async () => {
+        const expanded = itemBtn.classList.toggle('is-expanded');
+        itemBtn.setAttribute('aria-expanded', String(expanded));
         if (itemBtn.classList.contains('is-read')) return;
         itemBtn.disabled = true;
         try {
