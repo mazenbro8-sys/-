@@ -9,6 +9,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -25,14 +26,24 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class CaptainService extends Service {
     private static final String CHANNEL_BG = "panther_bg_status";
     private static final String CHANNEL_ALERT = "panther_order_alert_v2";
+    private static final String CHANNEL_MSG = "panther_messages";
+    private static final String PREF_ALERTED_NOTIF_IDS = "alerted_notif_ids";
+    private static final int MAX_ALERTED_NOTIF_IDS = 50;
+    private static final long INBOX_POLL_INTERVAL_MS = 15_000L;
+    private static final long MSG_CHIME_COOLDOWN_MS = 10_000L;
     private static final int NOTIF_BG_ID = 101;
     private static final int NOTIF_OFFER_ID = 202;
+    private static final int NOTIF_MSG_SUMMARY_ID = 2999;
+    private static final int NOTIF_MSG_BASE_ID = 3000;
 
     private static volatile boolean alarmRunning = false;
     private static Thread alarmThread = null;
@@ -42,6 +53,8 @@ public class CaptainService extends Service {
     private volatile boolean serviceRunning = false;
     private Thread pollThread = null;
     private PowerManager.WakeLock wakeLock;
+    private long lastInboxCheckAt = 0L;
+    private long lastMsgChimeAt = 0L;
 
     @Override
     public void onCreate() {
@@ -109,6 +122,17 @@ public class CaptainService extends Service {
             alert.setVibrationPattern(new long[]{0, 400, 200, 400});
             alert.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             nm.createNotificationChannel(alert);
+
+            NotificationChannel msgChannel = new NotificationChannel(
+                CHANNEL_MSG,
+                "PANTHER Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            );
+            msgChannel.setDescription("اشعارات ورسائل الإدارة للكابتن");
+            msgChannel.enableVibration(true);
+            msgChannel.setVibrationPattern(new long[]{0, 200});
+            msgChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(msgChannel);
         }
     }
 
@@ -278,10 +302,215 @@ public class CaptainService extends Service {
             } else {
                 lastSeenActiveOrderId = 0;
             }
+
+            boolean offerRinging = alarmRunning || (offer != null && offerId > 0 && "offered".equals(offerStatus));
+            long nowMs = System.currentTimeMillis();
+            if (!offerRinging && (nowMs - lastInboxCheckAt) >= INBOX_POLL_INTERVAL_MS) {
+                lastInboxCheckAt = nowMs;
+                checkUnreadMessages(prefs, serverUrl, token);
+            }
         } catch (Exception ignored) {
         } finally {
             if (conn != null) conn.disconnect();
         }
+    }
+
+    private void checkUnreadMessages(SharedPreferences prefs, String serverUrl, String token) {
+        if (alarmRunning) return;
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(serverUrl + "/api/notifications/inbox");
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            conn.setRequestProperty("Accept", "application/json");
+
+            int code = conn.getResponseCode();
+            if (code != 200) return;
+
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+
+            JSONArray arr = new JSONArray(sb.toString());
+            LinkedHashSet<Integer> alertedIds = loadAlertedNotifIds(prefs);
+            List<JSONObject> unalerted = new ArrayList<>();
+            for (int i = arr.length() - 1; i >= 0; i--) {
+                JSONObject item = arr.optJSONObject(i);
+                if (item == null) continue;
+                int id = item.optInt("id", 0);
+                boolean isRead = item.optBoolean("read", false) || !item.isNull("read_at");
+                if (id > 0 && !isRead && !alertedIds.contains(id)) {
+                    unalerted.add(item);
+                }
+            }
+
+            if (unalerted.isEmpty() || alarmRunning) return;
+
+            long now = System.currentTimeMillis();
+            boolean canChime = (now - lastMsgChimeAt) >= MSG_CHIME_COOLDOWN_MS;
+            if (canChime) {
+                lastMsgChimeAt = now;
+                playMessageChime();
+                vibrateBrief(prefs, 200);
+                JSONObject first = unalerted.get(0);
+                int firstId = first.optInt("id", 0);
+                String firstTitle = first.optString("title", "رسالة إدارية");
+                String firstBody = first.optString("body", "");
+                showAdminMessageNotification(NOTIF_MSG_BASE_ID + (firstId % 1000), firstTitle, firstBody);
+                if (unalerted.size() > 1) {
+                    int restCount = unalerted.size() - 1;
+                    showAdminMessageNotification(
+                        NOTIF_MSG_SUMMARY_ID,
+                        "لديك " + restCount + " رسائل جديدة",
+                        "افتح التطبيق لقراءة جميع الرسائل الإدارية"
+                    );
+                }
+            } else {
+                vibrateBrief(prefs, 200);
+                showAdminMessageNotification(
+                    NOTIF_MSG_SUMMARY_ID,
+                    "لديك " + unalerted.size() + " رسائل جديدة",
+                    "افتح التطبيق لقراءة جميع الرسائل الإدارية"
+                );
+            }
+
+            for (JSONObject item : unalerted) {
+                int id = item.optInt("id", 0);
+                if (id > 0) alertedIds.add(id);
+            }
+            saveAlertedNotifIds(prefs, alertedIds);
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private LinkedHashSet<Integer> loadAlertedNotifIds(SharedPreferences prefs) {
+        LinkedHashSet<Integer> ids = new LinkedHashSet<>();
+        String raw = prefs.getString(PREF_ALERTED_NOTIF_IDS, "");
+        if (raw == null || raw.isEmpty()) return ids;
+        for (String part : raw.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) continue;
+            try {
+                int id = Integer.parseInt(trimmed);
+                if (id > 0) ids.add(id);
+            } catch (NumberFormatException ignored) {}
+        }
+        return ids;
+    }
+
+    private void saveAlertedNotifIds(SharedPreferences prefs, LinkedHashSet<Integer> ids) {
+        List<Integer> list = new ArrayList<>(ids);
+        if (list.size() > MAX_ALERTED_NOTIF_IDS) {
+            list = list.subList(list.size() - MAX_ALERTED_NOTIF_IDS, list.size());
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(list.get(i));
+        }
+        prefs.edit().putString(PREF_ALERTED_NOTIF_IDS, sb.toString()).apply();
+    }
+
+    private boolean canPostNotifications() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            return checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
+    }
+
+    private void showAdminMessageNotification(int notifId, String title, String body) {
+        if (!canPostNotifications()) return;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            PendingIntent pi = getLaunchPendingIntent();
+            Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, CHANNEL_MSG)
+                : new Notification.Builder(this);
+            String safeTitle = (title == null || title.trim().isEmpty()) ? "رسالة إدارية" : title;
+            String safeBody = body == null ? "" : body;
+            b.setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setContentTitle(safeTitle)
+                .setContentText(safeBody)
+                .setStyle(new Notification.BigTextStyle().bigText(safeBody))
+                .setAutoCancel(true)
+                .setContentIntent(pi);
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                b.setPriority(Notification.PRIORITY_HIGH);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                b.setVisibility(Notification.VISIBILITY_PUBLIC);
+            }
+            nm.notify(notifId, b.build());
+        } catch (Exception ignored) {}
+    }
+
+    private void vibrateBrief(SharedPreferences prefs, long durationMs) {
+        try {
+            if (!prefs.getBoolean("vibrate", true)) return;
+            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vib.vibrate(durationMs);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void playMessageChime() {
+        if (alarmRunning) return;
+        new Thread(() -> {
+            if (alarmRunning) return;
+            int sampleRate = 16000;
+            // Distinct two-note admin message chime: triangle 660 Hz (180ms) -> 40ms gap -> 880 Hz (180ms), peak 0.36
+            double totalSec = 0.42;
+            int totalSamples = Math.max(1, (int) (sampleRate * totalSec));
+            int[] mix = new int[totalSamples];
+            addTonePulse(mix, sampleRate, true, 660.0, 660.0, 660.0, 0.00, 0.18, 0.36, 0.008, 0.008);
+            addTonePulse(mix, sampleRate, true, 880.0, 880.0, 880.0, 0.22, 0.18, 0.36, 0.008, 0.008);
+
+            short[] chime = new short[totalSamples];
+            for (int i = 0; i < totalSamples; i++) {
+                int v = mix[i];
+                if (v > Short.MAX_VALUE) v = Short.MAX_VALUE;
+                else if (v < Short.MIN_VALUE) v = Short.MIN_VALUE;
+                chime[i] = (short) v;
+            }
+
+            AudioTrack track = null;
+            try {
+                int minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+                AudioFormat fmt = new AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build();
+                track = new AudioTrack(attrs, fmt, Math.max(minBuf, chime.length * 2), AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE);
+                track.play();
+                track.write(chime, 0, chime.length);
+                Thread.sleep(450);
+            } catch (Exception ignored) {
+            } finally {
+                if (track != null) {
+                    try {
+                        track.stop();
+                        track.release();
+                    } catch (Exception ignored) {}
+                }
+            }
+        }, "PantherMsgChimeThread").start();
     }
 
     public synchronized void startSiren(long maxDurationMs) {
