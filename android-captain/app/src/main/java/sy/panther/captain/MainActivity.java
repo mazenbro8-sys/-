@@ -69,8 +69,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void setTone(String tone) {
-            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
-            prefs.edit().putString("tone", tone != null ? tone : "soft_bell").apply();
+            // No-op: captain alarm uses the single fixed melody ("نغمة الطلب الجديد").
         }
 
         @JavascriptInterface

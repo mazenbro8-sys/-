@@ -236,8 +236,9 @@ public class CaptainService extends Service {
             }
 
             JSONObject offer = data.optJSONObject("offer");
-            if (offer != null) {
-                int offerId = offer.optInt("id", 0);
+            int offerId = offer != null ? offer.optInt("id", 0) : 0;
+            String offerStatus = offer != null ? offer.optString("status", "offered") : "";
+            if (offer != null && offerId > 0 && "offered".equals(offerStatus)) {
                 int serial = offer.optInt("serial_no", offerId);
                 JSONObject merch = offer.optJSONObject("merchant");
                 String mName = merch != null ? merch.optString("name", "منشأة") : "منشأة";
@@ -248,8 +249,9 @@ public class CaptainService extends Service {
                         "🔔 طلب توصيل جديد #" + String.format("%04d", serial),
                         "🏪 من: " + mName + "\n📍 العنوان: " + addr + "\nاضغط لفتح التطبيق وقبول الطلب فوراً"
                     );
+                    // Start siren only once when a new offer arrives, not on repeat polls for the same offer
+                    startSiren(60000);
                 }
-                startSiren(60000);
             } else {
                 if (lastNotifiedOfferId != -1) {
                     lastNotifiedOfferId = -1;
@@ -270,7 +272,6 @@ public class CaptainService extends Service {
                             "📦 تم إسناد طلب إليك #" + String.format("%04d", serial),
                             "📍 العنوان: " + addr + " — اضغط لمتابعة الطلب"
                         );
-                        playShortBeep();
                     }
                     lastSeenActiveOrderId = actId;
                 }
@@ -311,15 +312,9 @@ public class CaptainService extends Service {
 
                 Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
                 SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
-                String cachedTone = null;
-                short[] phraseBuf = null;
+                short[] phraseBuf = buildCaptainPcm(sampleRate, normalizeCaptainTone(null), true);
 
                 while (alarmRunning && (System.currentTimeMillis() - start) < maxDurationMs) {
-                    String tone = normalizeTone(prefs.getString("tone", "calm"));
-                    if (phraseBuf == null || !tone.equals(cachedTone)) {
-                        cachedTone = tone;
-                        phraseBuf = buildPhrasePcm(sampleRate, tone, true);
-                    }
                     boolean vibOn = prefs.getBoolean("vibrate", true);
                     if (vibOn && vib != null) {
                         try {
@@ -354,9 +349,7 @@ public class CaptainService extends Service {
         if (alarmRunning) return;
         new Thread(() -> {
             int sampleRate = 16000;
-            SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
-            String tone = normalizeTone(prefs.getString("tone", "calm"));
-            short[] phrase = buildPhrasePcm(sampleRate, tone, false);
+            short[] phrase = buildCaptainPcm(sampleRate, normalizeCaptainTone(null), false);
             AudioTrack track = null;
             try {
                 int minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -381,91 +374,44 @@ public class CaptainService extends Service {
         }).start();
     }
 
-    private static String normalizeTone(String rawTone) {
-        if (rawTone == null) return "calm";
-        switch (rawTone) {
-            case "classic":
-                return "classic";
-            case "rapid":
-                return "rapid";
-            case "high":
-                return "high";
-            case "pulse":
-            case "double_pulse":
-                return "double_pulse";
-            case "calm":
-            case "soft_bell":
-            case "marimba":
-            case "chime":
-            default:
-                return "calm";
-        }
+    private static String normalizeCaptainTone(String rawTone) {
+        return "order_melody";
     }
 
-    private short[] buildPhrasePcm(int sampleRate, String rawTone, boolean includePause) {
-        String tone = normalizeTone(rawTone);
-        double cycleSec;
-        switch (tone) {
-            case "classic":      cycleSec = includePause ? 1.85 : 0.80; break;
-            case "rapid":        cycleSec = includePause ? 1.35 : 0.62; break;
-            case "high":         cycleSec = includePause ? 1.70 : 0.70; break;
-            case "double_pulse": cycleSec = includePause ? 1.95 : 0.95; break;
-            case "calm":
-            default:
-                tone = "calm";
-                cycleSec = includePause ? 2.40 : 1.20;
-                break;
-        }
+    private short[] buildCaptainPcm(int sampleRate, String rawKey, boolean includePause) {
+        // Approved fixed melody ("نغمة الطلب الجديد"): 880->1100->1320->1760 Hz + 2nd harmonic (0.20), triangle, 8ms fade
+        double cycleSec = includePause ? 2.72 : 0.92;
         int totalSamples = Math.max(1, (int) (sampleRate * cycleSec));
         int[] mix = new int[totalSamples];
 
-        switch (tone) {
-            case "classic":
-                addSoftNote(mix, sampleRate, true, 784.0, 0.00, 0.34, 0.27, 0.015);
-                addSoftNote(mix, sampleRate, true, 587.33, 0.36, 0.40, 0.25, 0.015);
-                break;
-            case "rapid":
-                addSoftNote(mix, sampleRate, true, 880.0, 0.00, 0.12, 0.26, 0.008);
-                addSoftNote(mix, sampleRate, true, 1174.66, 0.15, 0.12, 0.26, 0.008);
-                addSoftNote(mix, sampleRate, true, 880.0, 0.30, 0.12, 0.26, 0.008);
-                addSoftNote(mix, sampleRate, true, 1174.66, 0.45, 0.14, 0.26, 0.008);
-                break;
-            case "high":
-                addSoftNote(mix, sampleRate, false, 1174.66, 0.00, 0.20, 0.24, 0.010);
-                addSoftNote(mix, sampleRate, false, 1567.98, 0.17, 0.22, 0.24, 0.010);
-                addSoftNote(mix, sampleRate, false, 1975.53, 0.34, 0.32, 0.22, 0.010);
-                break;
-            case "double_pulse":
-                addSoftNote(mix, sampleRate, true, 523.25, 0.00, 0.14, 0.26, 0.010);
-                addSoftNote(mix, sampleRate, true, 659.25, 0.15, 0.16, 0.26, 0.010);
-                addSoftNote(mix, sampleRate, true, 523.25, 0.56, 0.14, 0.26, 0.010);
-                addSoftNote(mix, sampleRate, true, 659.25, 0.71, 0.20, 0.26, 0.010);
-                break;
-            case "calm":
-            default:
-                addSoftNote(mix, sampleRate, false, 392.0, 0.00, 0.42, 0.21, 0.045);
-                addSoftNote(mix, sampleRate, false, 493.88, 0.28, 0.48, 0.21, 0.045);
-                addSoftNote(mix, sampleRate, false, 587.33, 0.58, 0.58, 0.20, 0.050);
-                break;
+        double[] freqs = { 880.0, 1100.0, 1320.0, 1760.0 };
+        double[] offsets = { 0.00, 0.20, 0.40, 0.60 };
+        double[] durs = { 0.16, 0.16, 0.16, 0.32 };
+        for (int i = 0; i < freqs.length; i++) {
+            addTonePulse(mix, sampleRate, true, freqs[i], freqs[i], freqs[i], offsets[i], durs[i], 0.42, 0.008, 0.008);
+            addTonePulse(mix, sampleRate, true, freqs[i] * 2.0, freqs[i] * 2.0, freqs[i] * 2.0, offsets[i], durs[i], 0.42 * 0.20, 0.008, 0.008);
         }
 
         short[] out = new short[totalSamples];
         for (int i = 0; i < totalSamples; i++) {
             int v = mix[i];
-            if (v > 11000) v = 11000;
-            else if (v < -11000) v = -11000;
+            if (v > Short.MAX_VALUE) v = Short.MAX_VALUE;
+            else if (v < Short.MIN_VALUE) v = Short.MIN_VALUE;
             out[i] = (short) v;
         }
         return out;
     }
 
-    private void addSoftNote(int[] mix, int sampleRate, boolean triangle, double freqHz, double offsetSec, double durSec, double peakGain, double attackSec) {
+    private void addTonePulse(int[] mix, int sampleRate, boolean triangle, double startFreqHz, double midFreqHz, double endFreqHz, double offsetSec, double durSec, double peakGain, double attackSec, double releaseSec) {
         int startIdx = (int) (offsetSec * sampleRate);
         int durSamples = (int) (durSec * sampleRate);
         if (durSamples <= 0 || startIdx >= mix.length) return;
         int atkSamples = Math.max(1, (int) (Math.min(attackSec, durSec * 0.4) * sampleRate));
-        double cappedGain = Math.min(peakGain, 0.28);
-        double maxAmp = 32767.0 * cappedGain;
+        int relSamples = Math.max(1, (int) (Math.min(releaseSec, durSec * 0.4) * sampleRate));
+        double maxAmp = 32767.0 * peakGain;
+        boolean hasSplitSweep = Math.abs(midFreqHz - endFreqHz) > 0.01;
+        int halfSamples = Math.max(1, durSamples / 2);
+        double phase = 0.0;
 
         for (int i = 0; i < durSamples; i++) {
             int idx = startIdx + i;
@@ -473,16 +419,29 @@ public class CaptainService extends Service {
             double env;
             if (i < atkSamples) {
                 env = (double) i / atkSamples;
+            } else if (i >= durSamples - relSamples) {
+                env = (double) (durSamples - 1 - i) / relSamples;
             } else {
-                double decayProgress = (double) (i - atkSamples) / Math.max(1, durSamples - atkSamples);
-                env = Math.exp(-5.0 * decayProgress);
+                env = 1.0;
             }
-            double phase = (i * freqHz) / sampleRate;
+
+            double freqHz;
+            if (hasSplitSweep) {
+                if (i < halfSamples) {
+                    freqHz = startFreqHz + (midFreqHz - startFreqHz) * ((double) i / halfSamples);
+                } else {
+                    freqHz = midFreqHz + (endFreqHz - midFreqHz) * ((double) (i - halfSamples) / Math.max(1, durSamples - halfSamples));
+                }
+            } else {
+                freqHz = startFreqHz + (endFreqHz - startFreqHz) * ((double) i / Math.max(1, durSamples - 1));
+            }
+
             double frac = phase - Math.floor(phase);
             double wave = triangle
                 ? (frac < 0.5 ? (4.0 * frac - 1.0) : (3.0 - 4.0 * frac))
                 : Math.sin(2.0 * Math.PI * frac);
-            mix[idx] += (int) (wave * maxAmp * env);
+            mix[idx] += (int) Math.round(wave * maxAmp * env);
+            phase += freqHz / sampleRate;
         }
     }
 
