@@ -51,6 +51,7 @@
   --border-brand:          #F5B700;
   --border-brand-soft:     rgba(245, 183, 0, 0.45);
   --border-focus:          #F5B700;
+  --focus-ring-cyan:       #22D3EE;
   --font-sans:             'Cairo', system-ui, -apple-system, sans-serif;
   --text-xs:               0.75rem;
   --text-sm:               0.875rem;

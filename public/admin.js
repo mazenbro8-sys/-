@@ -42,14 +42,15 @@ authScreen('admin', (user) => {
     settings: '⚙️ المناطق والإعدادات',
   };
   app.innerHTML = `<aside class="sb"><div class="logo"><img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25"><div style="line-height:1.15"><div lang="en" dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--brand-primary);letter-spacing:1.2px;display:block;font-weight:700"><span lang="en" dir="ltr">DELIVERY</span> • توصيل</small></div></div>
-    <nav class="nav tabs">${Object.entries(TABS).map(([k, v]) => `<button data-t="${k}">${v}</button>`).join('')}</nav>
-    <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button id="lo2">خروج</button></div></aside>
+    <nav class="nav tabs" aria-label="التنقل الجانبي">${Object.entries(TABS).map(([k, v]) => `<button type="button" data-t="${k}">${v}</button>`).join('')}</nav>
+    <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button type="button" id="lo2">خروج</button></div></aside>
     <section class="main">
       <div class="topbar2">
         <div class="topbar-brand">
           <img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm topbar-logo" width="46" height="24">
           <div class="topbar-title-stack">
             <span class="topbar-wordmark" lang="en" dir="ltr">PANTHER <span class="brand-delivery-sub">DELIVERY</span></span>
+            <span id="adminZoneCtx" class="topbar-context-pill"></span>
             <h2 id="ptitle"></h2>
           </div>
         </div>
@@ -68,8 +69,22 @@ authScreen('admin', (user) => {
       <button type="button" data-t="users"><span class="dock-ico">🏪</span><span class="dock-lbl">الحسابات</span></button>
       <button type="button" data-t="wallet"><span class="dock-ico">💰</span><span class="dock-lbl">المحفظة</span></button>
       <button type="button" data-t="messages"><span class="dock-ico">✉️</span><span class="dock-lbl">الرسائل</span></button>
-      <button type="button" data-t="settings"><span class="dock-ico">⚙️</span><span class="dock-lbl">المزيد</span></button>
-    </nav>`;
+      <button type="button" data-t="settings" id="adminMoreDockBtn" data-open-more-nav="1"><span class="dock-ico">☰</span><span class="dock-lbl">المزيد</span></button>
+    </nav>
+    <dialog id="adminMoreNavSheet" class="action-sheet" closedby="any" aria-labelledby="moreNavTitle">
+      <div class="sheet-grab-wrap"><span class="sheet-grab-handle" aria-hidden="true"></span></div>
+      <div class="sheet-header">
+        <div class="sheet-title-group">
+          <h3 id="moreNavTitle">☰ أقسام إضافية</h3>
+        </div>
+        <button type="button" class="ghost sm sheet-close-btn" id="closeMoreNavSheet" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="sheet-actions-list">
+        <button type="button" class="sec sheet-act-btn" data-more-go="dash"><span>📊 لوحة التحكم</span><span class="sheet-chevron" aria-hidden="true">›</span></button>
+        <button type="button" class="sec sheet-act-btn" data-more-go="settings"><span>⚙️ المناطق والإعدادات</span><span class="sheet-chevron" aria-hidden="true">›</span></button>
+        <button type="button" class="bad sheet-act-btn" id="mobMoreLogout"><span>🚪 تسجيل الخروج</span></button>
+      </div>
+    </dialog>`;
   const notifCtrl = mountNotificationsBell(app.querySelector('.topbar-actions'), {
     insertBefore: app.querySelector('#adminSndBtn'),
   });
@@ -363,7 +378,7 @@ authScreen('admin', (user) => {
     </div>
     <div class="mob-card-actions">
       ${mobPrimary}
-      <button type="button" class="mob-more-btn" data-open-sheet="${o.id}" data-sheet-mode="more" aria-label="المزيد من الإجراءات" title="المزيد من الإجراءات">⋯</button>
+      <button type="button" class="mob-more-btn" data-open-sheet="${o.id}" data-sheet-mode="more" aria-label="المزيد من الإجراءات" title="المزيد من الإجراءات"><span class="lbl-mob">⋯ خيارات إضافية (تحويل / تأخير / إلغاء)</span><span class="lbl-desk" aria-hidden="true">⋯</span></button>
     </div>`;
   }
 
@@ -825,9 +840,41 @@ authScreen('admin', (user) => {
     const btn = e.target.closest('[data-t]');
     if (btn) go(btn.dataset.t);
   };
+  const moreNavDlg = $('#adminMoreNavSheet');
+  const closeMoreNav = () => closeSheetDialog(moreNavDlg);
+  if (moreNavDlg) {
+    moreNavDlg.addEventListener('cancel', (ev) => {
+      ev.preventDefault();
+      closeMoreNav();
+    });
+    attachLightDismissFallback(moreNavDlg, closeMoreNav);
+    moreNavDlg.onclick = async (e) => {
+      if (e.target.closest('#closeMoreNavSheet')) return closeMoreNav();
+      const goBtn = e.target.closest('[data-more-go]');
+      if (goBtn) {
+        const nextTab = goBtn.dataset.moreGo;
+        await closeMoreNav();
+        await go(nextTab);
+        return;
+      }
+      if (e.target.closest('#mobMoreLogout')) {
+        await closeMoreNav();
+        $('#lo')?.click();
+      }
+    };
+  }
   $('.admin-bottom-dock').onclick = (e) => {
     const btn = e.target.closest('[data-t]');
-    if (btn) go(btn.dataset.t);
+    if (!btn) return;
+    if (btn.dataset.openMoreNav === '1' && moreNavDlg) {
+      moreNavDlg.removeAttribute('data-closing');
+      moreNavDlg.querySelectorAll('[data-more-go]').forEach((b) => {
+        b.classList.toggle('is-current', b.dataset.moreGo === tab);
+      });
+      if (!moreNavDlg.open) moreNavDlg.showModal();
+      return;
+    }
+    go(btn.dataset.t);
   };
 
   const syncMobileTableLabels = () => {
@@ -843,7 +890,7 @@ authScreen('admin', (user) => {
           if (td.querySelector('.cap-cell-wrap')) td.classList.add('td-cap-cell');
           if (td.querySelector('.user-more-btn')) td.classList.add('td-user-actions');
           if (td.querySelector('.mob-card-actions')) td.classList.add('td-actions', 'td-order-actions');
-          else if (td.querySelector('.order-action-bar, button[data-c], button[data-r]')) {
+          else if (td.querySelector('.order-action-bar, button[data-c], button[data-r], button[data-wcap]')) {
             td.classList.add('td-actions');
           }
         });
@@ -867,8 +914,13 @@ authScreen('admin', (user) => {
     if (routeLayers instanceof Map) routeLayers.clear();
     else routeLayers = new Map();
     document.body.classList.toggle('is-live-view', t === 'live');
-    $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
-    const dockTarget = t === 'dash' ? 'live' : t;
+    $$('.tabs button').forEach((b) => {
+      const isOn = b.dataset.t === t;
+      b.classList.toggle('on', isOn);
+      if (isOn) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
+    const dockTarget = (t === 'dash' || t === 'settings') ? 'settings' : t;
     $$('.admin-bottom-dock button[data-t]').forEach((b) => {
       const isAct = b.dataset.t === dockTarget;
       b.classList.toggle('active', isAct);
@@ -879,6 +931,10 @@ authScreen('admin', (user) => {
     const baseTitle = TABS[t].replace(/^\S+\s/, '');
     const myZoneName = isZoneAdmin ? (zones.find((z) => z.id === user.zone_id)?.name || '') : '';
     $('#ptitle').textContent = isZoneAdmin && myZoneName ? `${baseTitle} - ${myZoneName}` : baseTitle;
+    const zoneCtx = $('#adminZoneCtx');
+    if (zoneCtx) {
+      zoneCtx.textContent = isZoneAdmin && myZoneName ? `🛡️ منطقة: ${myZoneName}` : '👑 لوحة الإدارة';
+    }
     await views[t]();
     syncMobileTableLabels();
   }
@@ -927,51 +983,53 @@ authScreen('admin', (user) => {
       ];
 
       view().innerHTML = `
+        <div class="card admin-page-head">
+          <div class="page-head-main">
+            <div>
+              <h1 class="page-sec-title">📊 لوحة التحكم والأسطول</h1>
+              <p class="page-sec-desc">ملخص حي للطلبات النشطة وتوافر الكباتن والتحكم الفوري بالعمليات.</p>
+            </div>
+            <div class="page-action-bar">
+              <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
+              <button type="button" class="sec sm" data-go="live">📡 فتح غرفة العمليات</button>
+            </div>
+          </div>
+        </div>
+
         <div class="stats4">${cards.map(([i, n, l, to]) => `<div class="card sc" data-go="${to}" style="cursor:pointer"><div class="ic">${i}</div><div><div class="n">${n}</div><div class="mut">${l}</div></div></div>`).join('')}</div>
 
-        <div class="dgrid exec-bento-grid" style="margin-bottom:18px">
+        <div class="card">
+          <div class="page-head-main">
+            <h2 class="section-sub-title">${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 أحدث الطلبات المسجلة'}</h2>
+            <div class="page-action-bar">
+              <input id="dashOrderSearch" placeholder="🔍 بحث بالرقم التسلسلي (0001) أو المنشأة أو العنوان...">
+              <button type="button" class="sec sm" data-go="orders">كل الطلبات ⬅️</button>
+            </div>
+          </div>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th scope="col">الرقم التسلسلي</th><th scope="col">المنشأة</th><th scope="col">عنوان التوصيل</th><th scope="col">الحالة</th><th scope="col">إدارة الكابتن</th><th scope="col">الوقت</th><th scope="col">إجراءات</th></tr></thead>
+              <tbody id="dashOrderRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="dgrid exec-bento-grid">
           <div class="card exec-map-card">
             <div class="row-head">
-              <div>
-                <h3 style="margin:0">🗺️ نظرة تنفيذية حية على الأسطول</h3>
-                <div class="mut" style="font-size:12px">توزيع المنشآت والكباتن والطلبات النشطة</div>
-              </div>
+              <h2 class="section-sub-title">🗺️ خريطة الأسطول</h2>
               <div class="order-action-bar">
                 <button type="button" class="act-pill act-details" id="dashFit">🎯 إظهار الكل</button>
-                <button type="button" class="act-pill act-redispatch" data-go="live">📡 فتح غرفة العمليات</button>
               </div>
             </div>
             <div id="dashmap" class="map" style="height:370px"></div>
           </div>
           <div class="card exec-feed-card">
             <div class="row-head">
-              <div>
-                <h3 style="margin:0">⚡ سجل الأحداث الفوري</h3>
-                <div class="mut" style="font-size:12px">آخر التحديثات الميدانية المباشرة</div>
-              </div>
+              <h2 class="section-sub-title">⚡ سجل الأحداث الفوري</h2>
               <button type="button" class="act-pill act-details" id="dashRef">🔄 تحديث</button>
             </div>
             <ul class="feed">${feed.slice(0, 9).map((f) => `<li><span class="feed-dot"></span><div>${esc(f.t)}<small>${f.at}</small></div></li>`).join('') || '<li class="mut">لا نشاط جديد في هذه الجلسة بعد</li>'}</ul>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="row-head" style="flex-wrap:wrap;gap:10px">
-            <div>
-              <h3 style="margin:0">${liveOrders.length ? `📦 الطلبات الحية الجارية (${liveOrders.length})` : '📦 أحدث الطلبات المسجلة'}</h3>
-              <div class="mut" style="font-size:12px">تحكم سريع بالتعيين أو التدوير أو التفاصيل</div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end;min-width:240px;flex-wrap:wrap">
-              <input id="dashOrderSearch" placeholder="🔍 بحث بالرقم التسلسلي (مثال: 0001) أو المنشأة أو العنوان..." style="max-width:320px;margin:0">
-              <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
-              <button type="button" class="sec sm" data-go="orders">كل الطلبات ⬅️</button>
-            </div>
-          </div>
-          <div class="tablewrap">
-            <table>
-              <thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>الوقت</th><th>إجراءات</th></tr></thead>
-              <tbody id="dashOrderRows"></tbody>
-            </table>
           </div>
         </div>
 
@@ -1239,13 +1297,15 @@ authScreen('admin', (user) => {
       }[t] || '➕ إضافة حساب جديد');
 
       view().innerHTML = `
-        <div class="card users-header-card">
-          <div class="row-head">
+        <div class="card users-header-card admin-page-head">
+          <div class="page-head-main">
             <div>
-              <h3 class="users-view-title">إدارة الحسابات</h3>
-              <div class="mut" id="usersSummaryTxt">جارٍ تحميل الحسابات...</div>
+              <h1 class="page-sec-title">🏪 الحسابات والصلاحيات</h1>
+              <p class="page-sec-desc" id="usersSummaryTxt">إدارة حسابات المنشآت والكباتن ومديري المناطق.</p>
             </div>
-            <button type="button" class="ok sm" id="addb" aria-expanded="false" aria-controls="nu">${addBtnLabelForTab(usersTab)}</button>
+            <div class="page-action-bar">
+              <button type="button" class="ok sm" id="addb" aria-expanded="false" aria-controls="nu">${addBtnLabelForTab(usersTab)}</button>
+            </div>
           </div>
           <form id="nu" class="users-form hide" method="post" action="/api/admin/users">
             <div class="users-form-banner" id="nuHeading">إنشاء حساب جديد</div>
@@ -1313,8 +1373,8 @@ authScreen('admin', (user) => {
               <div id="nmap" class="map" role="region" aria-labelledby="nmapLabel"></div>
             </div>
             ${!isZoneAdmin ? `
-            <div id="capCostFields" class="hide" style="margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px">
-              <div style="font-weight:700;margin-bottom:8px">⚙️ تكلفة الطلب والإعفاء للكابتن (اختياري)</div>
+            <div id="capCostFields" class="hide cap-cost-fields-box">
+              <div class="cap-cost-fields-title">⚙️ تكلفة الطلب والإعفاء للكابتن (اختياري)</div>
               <div class="row">
                 <div>
                   <label for="nuCostOverride">تكلفة طلب مخصصة (نقطة)</label>
@@ -1683,7 +1743,7 @@ authScreen('admin', (user) => {
             <td>${esc(zname(u.zone_id))}</td>
             <td>${badge(u.status)}</td>
             <td class="td-user-actions">
-              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المنشأة ${esc(u.business_name || u.name)}</span></button>
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span class="lbl-mob">⚙️ إدارة الحساب (تعديل / إيقاف / حذف)</span><span class="lbl-desk" aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المنشأة ${esc(u.business_name || u.name)}</span></button>
             </td>
           </tr>`).join('') || '<tr><td colspan="6" class="mut">لا توجد منشآت مسجلة في هذا النطاق</td></tr>';
         } else if (role === 'captain') {
@@ -1706,7 +1766,7 @@ authScreen('admin', (user) => {
               ${renderCaptainLocDiag(u)}
             </td>
             <td class="td-user-actions">
-              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات الكابتن ${esc(u.name)}</span></button>
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span class="lbl-mob">⚙️ إدارة الحساب (تعديل / إيقاف / حذف)</span><span class="lbl-desk" aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات الكابتن ${esc(u.name)}</span></button>
             </td>
           </tr>`).join('') || '<tr><td colspan="5" class="mut">لا يوجد كباتن مسجلون في هذا النطاق</td></tr>';
         } else {
@@ -1718,7 +1778,7 @@ authScreen('admin', (user) => {
             <td>${u.role === 'admin' && !u.zone_id ? '<span class="mut">كل المناطق</span>' : esc(zname(u.zone_id))}</td>
             <td>${badge(u.status)}</td>
             <td class="td-user-actions">
-              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المسؤول ${esc(u.name)}</span></button>
+              <button type="button" class="user-more-btn" data-user-sheet="${u.id}"><span class="lbl-mob">⚙️ إدارة الحساب (تعديل / إيقاف / حذف)</span><span class="lbl-desk" aria-hidden="true">⋯</span><span class="visually-hidden">إجراءات المسؤول ${esc(u.name)}</span></button>
             </td>
           </tr>`).join('') || '<tr><td colspan="6" class="mut">لا يوجد مسؤولون في هذا النطاق</td></tr>';
         }
@@ -1990,16 +2050,23 @@ authScreen('admin', (user) => {
       const capList = d.captains || [];
       const statusOpts = ['searching', 'offered', 'accepted', 'picked_up', 'arrived', 'delivered', 'cancelled', 'failed', 'expired']
         .map((k) => `<option value="${k}">${esc(STATUS[k] || k)}</option>`).join('');
-      view().innerHTML = `<div class="card">
-        <div class="row-head" style="flex-wrap:wrap;gap:10px;margin-bottom:12px">
-          <h3 style="margin:0">📦 سجل وبحث الطلبات <span id="orderCount" class="mut" style="font-size:13px"></span></h3>
-          <div style="display:flex;gap:8px;flex:1;justify-content:flex-end;flex-wrap:wrap;min-width:260px">
-            <input id="orderSearch" placeholder="🔍 ابحث بالرقم التسلسلي للطلب (مثال: 0001 أو 1) أو المنشأة أو الكابتن أو العنوان..." style="max-width:400px;margin:0">
-            <select id="orderStatusFilter" style="max-width:190px;margin:0"><option value="">كل الحالات (${rows.length})</option>${statusOpts}</select>
+      view().innerHTML = `<div class="card admin-page-head">
+        <div class="page-head-main">
+          <div>
+            <h1 class="page-sec-title">📦 إدارة وسجل الطلبات <span id="orderCount" class="mut"></span></h1>
+            <p class="page-sec-desc">البحث الفوري وتعيين الكباتن ومتابعة حالات التوصيل.</p>
+          </div>
+          <div class="page-action-bar orders-action-bar">
+            <input id="orderSearch" placeholder="🔍 ابحث بالرقم التسلسلي (0001) أو المنشأة أو الكابتن أو العنوان...">
+            <select id="orderStatusFilter"><option value="">كل الحالات (${rows.length})</option>${statusOpts}</select>
             <button type="button" class="ok sm" data-add-order="">➕ إضافة طلب لكابتن</button>
           </div>
         </div>
-        <div class="tablewrap"><table><thead><tr><th>الرقم التسلسلي</th><th>المنشأة</th><th>عنوان التوصيل</th><th>الحالة</th><th>إدارة الكابتن</th><th>الوقت</th><th>إجراءات</th></tr></thead><tbody id="orderRows"></tbody></table></div></div><div id="detail"></div>`;
+      </div>
+      <div class="card">
+        <div class="tablewrap"><table><thead><tr><th scope="col">الرقم التسلسلي</th><th scope="col">المنشأة</th><th scope="col">عنوان التوصيل</th><th scope="col">الحالة</th><th scope="col">إدارة الكابتن</th><th scope="col">الوقت</th><th scope="col">إجراءات</th></tr></thead><tbody id="orderRows"></tbody></table></div>
+      </div>
+      <div id="detail"></div>`;
       const renderOrders = () => {
         const q = $('#orderSearch')?.value || '';
         const st = $('#orderStatusFilter')?.value || '';
@@ -2028,35 +2095,34 @@ authScreen('admin', (user) => {
       const caps = await api('/admin/users?role=captain');
       const kindLabel = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
       view().innerHTML = `
-        <div class="card">
-          <h3>💰 محفظة النقاط وشحن الكباتن</h3>
-          <search>
-            <form id="wTagForm" class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
-              <div style="flex:1;min-width:200px">
-                <label for="wTagQuery">بحث بكود الكابتن (مثال: K7Q3M أو #K7Q3M)</label>
-                <input id="wTagQuery" name="tag" required placeholder="#K7Q3M" autocorrect="off" autocapitalize="none" spellcheck="false" autocomplete="off">
-              </div>
-              <button type="submit" class="ok">🔍 فتح المحفظة</button>
-            </form>
-          </search>
+        <div class="card admin-page-head">
+          <div class="page-head-main">
+            <div>
+              <h1 class="page-sec-title">💰 محفظة النقاط وشحن الكباتن (${caps.length})</h1>
+              <p class="page-sec-desc">شحن أرصدة الكباتن ومراجعة سجل الحركات (1 نقطة = 0.01 دينار أردني — أرقام صحيحة فقط).</p>
+            </div>
+            <search class="wallet-search-wrap">
+              <form id="wTagForm" class="page-action-bar wallet-search-form">
+                <label for="wTagQuery" class="visually-hidden">بحث بكود الكابتن (مثال: K7Q3M)</label>
+                <input id="wTagQuery" name="tag" required placeholder="بحث بكود الكابتن (#K7Q3M)" autocorrect="off" autocapitalize="none" spellcheck="false" autocomplete="off">
+                <button type="submit" class="ok">🔍 فتح المحفظة</button>
+              </form>
+            </search>
+          </div>
         </div>
         <div class="card">
-          <div class="row-head">
-            <h3 style="margin:0">قائمة الكباتن والأرصدة (${caps.length})</h3>
-            <span class="mut" style="font-size:12px">1 نقطة = 0.01 دينار أردني (أرقام صحيحة فقط)</span>
-          </div>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>الكابتن</th><th>الكود</th><th>الهاتف</th><th>المنطقة</th><th>الرصيد</th><th>تكلفة الطلب</th><th>إجراء</th></tr></thead>
+              <thead><tr><th scope="col">الكابتن</th><th scope="col">الكود</th><th scope="col">الهاتف</th><th scope="col">المنطقة</th><th scope="col">الرصيد</th><th scope="col">تكلفة الطلب</th><th scope="col">إجراء</th></tr></thead>
               <tbody>
                 ${caps.map((u) => `<tr>
                   <td><b>🛵 ${esc(u.name)}</b></td>
                   <td dir="ltr">${u.tag ? `<code class="cap-tag-pill">#${esc(u.tag)}</code>` : '—'}</td>
                   <td dir="ltr">${esc(u.phone)}</td>
                   <td>${esc(zname(u.zone_id))}</td>
-                  <td><b style="color:${(u.balance_points ?? 0) < (u.effective_cost_points ?? 25) ? 'var(--bad)' : 'var(--ok)'}">${u.balance_points ?? 0} نقطة</b></td>
+                  <td><b style="color:${(u.balance_points ?? 0) < (u.effective_cost_points ?? 25) ? 'var(--status-bad-text)' : 'var(--status-ok-text)'}">${u.balance_points ?? 0} نقطة</b></td>
                   <td>${u.effective_cost_points ?? 25} نقطة</td>
-                  <td><button type="button" class="ok sm" data-wcap="${u.id}">⚡ شحن / السجل</button></td>
+                  <td class="td-actions"><button type="button" class="ok sm" data-wcap="${u.id}">⚡ شحن / السجل</button></td>
                 </tr>`).join('') || '<tr><td colspan="7" class="mut">لا يوجد كباتن</td></tr>'}
               </tbody>
             </table>
@@ -2143,15 +2209,15 @@ authScreen('admin', (user) => {
               <button type="submit" class="big ok" id="wmSubmit" style="flex:1">حفظ / تنفيذ العملية</button>
             </div>
           </form>
-          <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+          <hr class="wallet-modal-sep">
           <h4 style="margin:0 0 8px">📜 آخر الحركات المالية</h4>
           <div class="tablewrap">
             <table>
-              <thead><tr><th>النوع</th><th>النقاط</th><th>الرصيد بعد</th><th>البيان</th><th>الوقت</th></tr></thead>
+              <thead><tr><th scope="col">النوع</th><th scope="col">النقاط</th><th scope="col">الرصيد بعد</th><th scope="col">البيان</th><th scope="col">الوقت</th></tr></thead>
               <tbody>
                 ${(data.entries || []).map((e) => `<tr>
                   <td>${kindLabel(e.kind)}</td>
-                  <td dir="ltr"><b style="color:${e.amount >= 0 ? 'var(--ok)' : 'var(--bad)'}">${e.amount > 0 ? `+${e.amount}` : e.amount}</b></td>
+                  <td dir="ltr"><b style="color:${e.amount >= 0 ? 'var(--status-ok-text)' : 'var(--status-bad-text)'}">${e.amount > 0 ? `+${e.amount}` : e.amount}</b></td>
                   <td>${e.balance_after}</td>
                   <td>${esc(e.note || (e.order_id ? `طلب #${String(e.order_id).padStart(4, '0')}` : '—'))}</td>
                   <td>${time(e.at)}</td>
@@ -2339,8 +2405,16 @@ authScreen('admin', (user) => {
         on: 'إلزامي (GPS مطلوب + نطاق 100 م)',
         off: 'متوقف',
       };
+      const settingsPageHead = `<div class="card admin-page-head">
+        <div class="page-head-main">
+          <div>
+            <h1 class="page-sec-title">⚙️ المناطق وإعدادات النظام</h1>
+            <p class="page-sec-desc">ضبط تكلفة الطلب الافتراضية وقواعد الاستلام وأرقام دعم المناطق ونغمة التنبيه.</p>
+          </div>
+        </div>
+      </div>`;
       if (isZoneAdmin) {
-        view().innerHTML = `<div class="grid">
+        view().innerHTML = `${settingsPageHead}<div class="grid">
           <div class="card commission-card">
             <h3>🪙 إعدادات النقاط والطلبات</h3>
             <p class="mut">تكلفة الطلب الافتراضية: <b>${points(s.order_cost_points ?? 25)}</b> (تُحدّد من الإدارة العامة)</p>
@@ -2348,17 +2422,17 @@ authScreen('admin', (user) => {
             <p class="mut">التحقق من موقع الاستلام (100 م): <b>${esc(pgLabels[s.pickup_gps_required || 'grace'] || 'فترة سماح')}</b></p>
             ${s.points_cutover_at ? `<p class="mut" style="font-size:12px">تفعيل محفظة النقاط: ${time(s.points_cutover_at)}</p>` : ''}
           </div>
-          <div class="card"><h3>المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)} — رقم دعم المنشآت: <b dir="ltr">${esc(z.support_phone || 'غير محدد')}</b></li>`).join('')}</ul></div></div>`;
+          <div class="card"><h3>📍 المنطقة المخصصة</h3><ul>${zones.map((z) => `<li>${esc(z.name)} — رقم دعم المنشآت: <b dir="ltr">${esc(z.support_phone || 'غير محدد')}</b></li>`).join('')}</ul></div></div>`;
         mountAdminSoundSettings(view().querySelector('.grid'));
         return;
       }
-      view().innerHTML = `<div class="grid">
+      view().innerHTML = `${settingsPageHead}<div class="grid">
         <div class="card commission-card">
           <h3>🪙 إعدادات محفظة النقاط</h3>
           <label for="ocp">تكلفة الطلب الافتراضية (نقطة — القيمة 1 نقطة = 0.01 دينار أردني)</label>
           <div class="row"><input id="ocp" type="number" min="0" max="100000" step="1" value="${s.order_cost_points ?? 25}"><button type="button" id="ocpSave">حفظ</button></div>
-          <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer">
-            <input id="wenf" type="checkbox" style="width:auto;margin:0" ${s.wallet_enforcement === 'on' ? 'checked' : ''}>
+          <label class="settings-toggle-row" for="wenf">
+            <input id="wenf" type="checkbox" ${s.wallet_enforcement === 'on' ? 'checked' : ''}>
             <span>منع استقبال الطلبات تلقائياً عند عدم كفاية رصيد النقاط</span>
           </label>
           <label for="pgps" style="display:block;margin-top:14px">التحقق من موقع الكابتن عند الاستلام (نطاق 100 م حول المنشأة)</label>
@@ -2409,17 +2483,19 @@ authScreen('admin', (user) => {
     },
 
     async messages() {
-      const [sentList, usersList] = await Promise.all([
+      const [sentList, usersList, freshZones] = await Promise.all([
         api('/admin/notifications'),
         api('/admin/users'),
+        zones.length ? Promise.resolve(zones) : api('/admin/zones'),
       ]);
+      if (Array.isArray(freshZones) && freshZones.length) zones = freshZones;
       const selectableUsers = (usersList || []).filter((u) => u.id !== user.id);
 
       const ROLE_LABELS = {
-        captain: 'الكباتن',
-        merchant: 'المنشآت',
-        zone_admin: 'مديرو المناطق',
-        admin: 'الإدارة',
+        captain: 'كباتن',
+        merchant: 'منشآت',
+        zone_admin: 'مديرون',
+        admin: 'مديرون',
       };
       const USER_ROLE_TAG = {
         captain: 'كابتن',
@@ -2427,6 +2503,26 @@ authScreen('admin', (user) => {
         zone_admin: 'مدير منطقة',
         admin: 'مدير عام',
       };
+
+      const formatZonePhrase = (name) => {
+        const clean = String(name || '').trim();
+        if (!clean || clean === '—') return '—';
+        return clean.startsWith('منطقة') ? clean : `منطقة ${clean}`;
+      };
+
+      const zoneOptionsHtml = isZoneAdmin
+        ? `<option value="${user.zone_id}" selected>${esc(zname(Number(user.zone_id)))}</option>`
+        : `<option value="">كل المناطق</option>${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}`;
+
+      const categoryOptionsHtml = isZoneAdmin
+        ? `
+          <option value="captain">كباتن</option>
+          <option value="merchant">منشآت</option>`
+        : `
+          <option value="all">الكل</option>
+          <option value="captain">كباتن</option>
+          <option value="merchant">منشآت</option>
+          <option value="admin">مديرون</option>`;
 
       const targetTypeOptions = isZoneAdmin
         ? `
@@ -2438,53 +2534,52 @@ authScreen('admin', (user) => {
           <option value="role">👥 فئة / دور محدد</option>
           <option value="user">👤 مستخدم محدد</option>`;
 
-      const targetRoleOptions = isZoneAdmin
-        ? `
-          <option value="captain">🛵 كباتن منطقتي</option>
-          <option value="merchant">🏪 منشآت منطقتي</option>`
-        : `
-          <option value="captain">🛵 الكباتن</option>
-          <option value="merchant">🏪 المنشآت</option>
-          <option value="zone_admin">🛡️ مديرو المناطق</option>`;
-
-      const zoneFieldHtml = isZoneAdmin
-        ? ''
-        : `<div id="msgTargetZoneWrap" class="msg-field hide">
-            <label for="msgTargetZone">المنطقة المستهدفة</label>
-            <select id="msgTargetZone" name="zone_id">
-              ${zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join('')}
-            </select>
-          </div>`;
-
       const userOptionsHtml = selectableUsers.length
         ? selectableUsers.map((u) => `<option value="${u.id}">${esc(u.business_name || u.name)} — ${esc(USER_ROLE_TAG[u.role] || u.role)} (${esc(u.phone || '')})</option>`).join('')
         : '<option value="">لا يوجد مستخدمون متاحون</option>';
 
       view().innerHTML = `
+        <div class="card admin-page-head">
+          <div class="page-head-main">
+            <div>
+              <h1 class="page-sec-title">✉️ الرسائل والتنبيهات الإدارية</h1>
+              <p class="page-sec-desc">إرسال رسائل نصية فورية باتجاه واحد حسب المنطقة والفئة ومتابعة سجل القراءة.</p>
+            </div>
+          </div>
+        </div>
         <div class="admin-messages-grid">
           <form id="adminMsgForm" class="card msg-form-fields" novalidate>
-            <h3 style="margin:0">✉️ إرسال إشعار جديد</h3>
-            <p class="mut" style="margin:0;font-size:13px">رسائل نصية باتجاه واحد فقط إلى المستلمين المحددين (بدون ردود).</p>
+            <h2 class="section-sub-title">📝 إشعار جديد</h2>
 
-            <div class="msg-field">
-              <label for="msgTargetType">نطاق المستلمين</label>
-              <select id="msgTargetType" name="target_type">
-                ${targetTypeOptions}
+            <div id="msgTargetZoneWrap" class="msg-field">
+              <label for="msgTargetZone">المنطقة</label>
+              <select id="msgTargetZone" name="zone_id"${isZoneAdmin ? ' disabled' : ''}>
+                ${zoneOptionsHtml}
               </select>
             </div>
 
-            ${zoneFieldHtml}
+            <div id="msgTargetRoleWrap" class="msg-field">
+              <label for="msgTargetRole">الفئة</label>
+              <select id="msgTargetRole" name="category">
+                ${categoryOptionsHtml}
+              </select>
+            </div>
 
-            <div id="msgTargetRoleWrap" class="msg-field ${isZoneAdmin ? '' : 'hide'}">
-              <label for="msgTargetRole">الفئة المستهدفة</label>
-              <select id="msgTargetRole" name="target_role">
-                ${targetRoleOptions}
+            <div class="msg-field">
+              <span class="msg-summary-label">المستهدفون</span>
+              <div id="msgTargetSummary" class="msg-target-summary" aria-live="polite"></div>
+            </div>
+
+            <div class="msg-field hide">
+              <label for="msgTargetType">نطاق المستلمين</label>
+              <select id="msgTargetType" name="target_type" tabindex="-1" aria-hidden="true">
+                ${targetTypeOptions}
               </select>
             </div>
 
             <div id="msgTargetUserWrap" class="msg-field hide">
               <label for="msgTargetUser">المستخدم المستهدف</label>
-              <select id="msgTargetUser" name="target_user_id">
+              <select id="msgTargetUser" name="target_user_id" tabindex="-1" aria-hidden="true">
                 ${userOptionsHtml}
               </select>
             </div>
@@ -2521,12 +2616,9 @@ authScreen('admin', (user) => {
 
       const formEl = $('#adminMsgForm');
       const typeSel = $('#msgTargetType');
-      const zoneWrap = $('#msgTargetZoneWrap');
       const zoneSel = $('#msgTargetZone');
-      const roleWrap = $('#msgTargetRoleWrap');
       const roleSel = $('#msgTargetRole');
-      const userWrap = $('#msgTargetUserWrap');
-      const userSel = $('#msgTargetUser');
+      const summaryEl = $('#msgTargetSummary');
       const titleInp = $('#msgTitle');
       const bodyInp = $('#msgBody');
       const titleCountEl = $('#msgTitleCount');
@@ -2536,14 +2628,28 @@ authScreen('admin', (user) => {
       const sentListEl = $('#adminSentList');
       const sentTotalBadge = $('#msgSentTotalBadge');
 
-      const syncTargetVisibility = () => {
-        const t = typeSel.value;
-        if (zoneWrap) zoneWrap.classList.toggle('hide', t !== 'zone');
-        roleWrap.classList.toggle('hide', t !== 'role');
-        userWrap.classList.toggle('hide', t !== 'user');
+      const buildTargetSummary = (rawZoneVal, catVal) => {
+        const hasZone = rawZoneVal !== '' && rawZoneVal != null;
+        const zonePhrase = hasZone ? formatZonePhrase(zname(Number(rawZoneVal))) : 'كل المناطق';
+        if (catVal === 'captain') return `كباتن ${zonePhrase}`;
+        if (catVal === 'merchant') return `منشآت ${zonePhrase}`;
+        if (catVal === 'admin') return `مديرون في ${zonePhrase}`;
+        return `الكل في ${zonePhrase}`;
       };
-      typeSel.onchange = syncTargetVisibility;
-      syncTargetVisibility();
+
+      const syncTargetSummary = () => {
+        const rawZoneVal = isZoneAdmin ? String(user.zone_id) : (zoneSel ? zoneSel.value : '');
+        const catVal = roleSel ? roleSel.value : 'all';
+        if (summaryEl) {
+          summaryEl.textContent = `🎯 ${buildTargetSummary(rawZoneVal, catVal)}`;
+        }
+        if (typeSel) {
+          typeSel.value = catVal === 'all' ? (rawZoneVal === '' ? 'all' : 'zone') : 'role';
+        }
+      };
+      if (zoneSel && !isZoneAdmin) zoneSel.onchange = syncTargetSummary;
+      if (roleSel) roleSel.onchange = syncTargetSummary;
+      syncTargetSummary();
 
       const updateCounters = () => {
         const tLen = (titleInp.value || '').length;
@@ -2564,11 +2670,14 @@ authScreen('admin', (user) => {
       updateCounters();
 
       const formatTargetBadge = (n) => {
-        if (n.target_type === 'all') return '🌐 الجميع';
-        if (n.target_type === 'zone') return `📍 منطقة: ${zname(n.zone_id)}`;
+        if (n.target_type === 'all') return '🌐 الكل في كل المناطق';
+        if (n.target_type === 'zone') return `📍 الكل في ${formatZonePhrase(zname(n.zone_id))}`;
         if (n.target_type === 'role') {
           const rLbl = ROLE_LABELS[n.target_role] || n.target_role || '—';
-          return n.zone_id != null ? `👥 ${rLbl} (${zname(n.zone_id)})` : `👥 ${rLbl}`;
+          if (n.zone_id != null) {
+            return `👥 ${n.target_role === 'admin' ? `${rLbl} في ` : `${rLbl} `}${formatZonePhrase(zname(n.zone_id))}`;
+          }
+          return `👥 ${n.target_role === 'admin' ? `${rLbl} في كل المناطق` : `${rLbl} كل المناطق`}`;
         }
         return `👤 ${n.target_user_name || ('مستخدم #' + n.target_user_id)}`;
       };
@@ -2612,18 +2721,16 @@ authScreen('admin', (user) => {
       formEl.onsubmit = async (ev) => {
         ev.preventDefault();
         showFormError('');
-        const target_type = typeSel.value;
+        const category = roleSel ? roleSel.value : 'all';
+        const zone_id = isZoneAdmin
+          ? Number(user.zone_id)
+          : (zoneSel && zoneSel.value !== '' ? Number(zoneSel.value) : null);
         const payload = {
-          target_type,
+          zone_id,
+          category,
           title: titleInp.value,
           body: bodyInp.value,
         };
-        if (target_type === 'zone' && zoneSel) payload.zone_id = Number(zoneSel.value);
-        if (target_type === 'role') {
-          payload.target_role = roleSel.value;
-          if (isZoneAdmin && user.zone_id != null) payload.zone_id = Number(user.zone_id);
-        }
-        if (target_type === 'user') payload.target_user_id = userSel.value ? Number(userSel.value) : '';
 
         submitBtn.disabled = true;
         try {
