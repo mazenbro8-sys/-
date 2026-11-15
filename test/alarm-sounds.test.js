@@ -35,7 +35,8 @@ function createMockAudioContext(now = 10) {
         frequency: {
           value: 440,
           events: freqEvents,
-          setValueAtTime(v, t) { freqEvents.push({ v, t }); },
+          setValueAtTime(v, t) { freqEvents.push({ op: 'set', v, t }); },
+          linearRampToValueAtTime(v, t) { freqEvents.push({ op: 'linear', v, t }); },
         },
         connectedTo: [],
         startedAt: null,
@@ -67,32 +68,23 @@ function createMockAudioContext(now = 10) {
   };
 }
 
-test('ALARM_SOUNDS defines 5 distinct short Arabic alarm presets', () => {
+test('CAPTAIN_TONES defines the single approved order_melody preset while ALARM_SOUNDS stays intact for admin', () => {
   assert.equal(ALARM_SOUNDS.length, 5);
+  assert.equal(CAPTAIN_TONES.length, 1);
   assert.deepEqual(
-    ALARM_SOUNDS.map((s) => s.label),
-    ['كلاسيكي', 'سريع', 'عالي', 'نبضة مزدوجة', 'هادئ']
+    CAPTAIN_TONES.map((t) => ({ id: t.id, key: t.key, label: t.label, repeatMs: t.repeatMs })),
+    [{ id: 'order_melody', key: 'order_melody', label: 'نغمة الطلب الجديد', repeatMs: 2720 }]
   );
-  const ids = ALARM_SOUNDS.map((s) => s.id);
-  assert.equal(new Set(ids).size, 5);
-  assert.deepEqual(CAPTAIN_TONES, ids);
-  for (const s of ALARM_SOUNDS) {
-    assert.ok(s.repeatMs > 0 && s.repeatMs < 3000, `${s.id} cycle ${s.repeatMs}ms must be under 3000ms`);
-  }
 });
 
-test('normalizeCaptainTone maps legacy values and defaults invalid input cleanly', () => {
-  assert.equal(normalizeCaptainTone('classic'), 'classic');
-  assert.equal(normalizeCaptainTone('rapid'), 'rapid');
-  assert.equal(normalizeCaptainTone('high'), 'high');
-  assert.equal(normalizeCaptainTone('pulse'), 'double_pulse');
-  assert.equal(normalizeCaptainTone('double_pulse'), 'double_pulse');
-  assert.equal(normalizeCaptainTone('soft_bell'), 'calm');
-  assert.equal(normalizeCaptainTone('marimba'), 'calm');
-  assert.equal(normalizeCaptainTone('chime'), 'calm');
-  assert.equal(normalizeCaptainTone('calm'), 'calm');
-  assert.ok(CAPTAIN_TONES.includes(normalizeCaptainTone(null)));
-  assert.ok(CAPTAIN_TONES.includes(normalizeCaptainTone('unknown_tone')));
+test('normalizeCaptainTone always returns order_melody regardless of input', () => {
+  for (const anyKey of [
+    'order_melody', 'triple', 'rising', 'bell', 'sweep',
+    'classic', 'rapid', 'high', 'double_pulse', 'calm', 'soft_bell',
+    null, undefined, '', 'unknown',
+  ]) {
+    assert.equal(normalizeCaptainTone(anyKey), 'order_melody');
+  }
 });
 
 test('normalizeAdminTone defaults to "default" and supports all 5 library sounds', () => {
@@ -107,41 +99,48 @@ test('normalizeAdminTone defaults to "default" and supports all 5 library sounds
   assert.equal(normalizeAdminTone('soft_bell'), 'calm');
 });
 
-test('playCaptainTone synthesizes 5 distinct Web Audio patterns under 3 seconds and cleans up on stop()', () => {
-  const signatures = new Set();
-  for (const sound of ALARM_SOUNDS) {
+test('playCaptainTone synthesizes the fixed 4-note order_melody with 2nd harmonics, 40ms gaps, 1800ms rest, peak 0.42, and 8ms fades', () => {
+  const expectedNotes = [
+    { freq: 880, harmonic: 1760, start: 0.0, dur: 0.16 },
+    { freq: 1100, harmonic: 2200, start: 0.2, dur: 0.16 },
+    { freq: 1320, harmonic: 2640, start: 0.4, dur: 0.16 },
+    { freq: 1760, harmonic: 3520, start: 0.6, dur: 0.32 },
+  ];
+
+  for (const inputTone of [undefined, 'order_melody', 'triple', 'rising', 'invalid_tone']) {
     const actx = createMockAudioContext(10);
-    const phrase = playCaptainTone(actx, sound.id);
-    assert.ok(phrase && typeof phrase.stop === 'function');
-    assert.ok(phrase.repeatMs > 0 && phrase.repeatMs < 3000);
-    assert.ok(actx.oscillators.length >= 1, `${sound.id} must create oscillators`);
+    const phrase = playCaptainTone(actx, inputTone);
+    assert.equal(phrase.repeatMs, 2720);
+    assert.equal(phrase.repeatMs - 920, 1800, 'Silence after note 4 must be 1800 ms');
+    assert.equal(actx.oscillators.length, 8, '4 notes x (fundamental + 2nd harmonic) = 8 oscillators');
 
-    const sig = actx.oscillators.map((o) => ({
-      type: o.type,
-      start: Number((o.startedAt - 10).toFixed(3)),
-      dur: Number((o.stoppedAt - o.startedAt).toFixed(3)),
-      freqs: o.frequency.events.map((e) => Number(e.v.toFixed(2))),
-    }));
-    for (const o of actx.oscillators) {
-      assert.ok(o.startedAt >= 10);
-      assert.ok(o.stoppedAt > o.startedAt && o.stoppedAt - 10 < 3.0, `${sound.id} exceeds 3s cycle`);
-      assert.ok(o.frequency.events.length >= 1);
-    }
-    signatures.add(JSON.stringify(sig));
+    expectedNotes.forEach((note, nIdx) => {
+      const fundOsc = actx.oscillators[nIdx * 2];
+      const harmOsc = actx.oscillators[nIdx * 2 + 1];
+      const fundGain = actx.gains[nIdx * 2].gain.events;
+      const harmGain = actx.gains[nIdx * 2 + 1].gain.events;
 
+      assert.equal(fundOsc.type, 'triangle');
+      assert.equal(harmOsc.type, 'triangle');
+      assert.equal(Number((fundOsc.startedAt - 10).toFixed(3)), note.start);
+      assert.equal(Number((harmOsc.startedAt - 10).toFixed(3)), note.start);
+      assert.equal(Number((fundOsc.stoppedAt - fundOsc.startedAt).toFixed(3)), note.dur);
+      assert.equal(Number((harmOsc.stoppedAt - harmOsc.startedAt).toFixed(3)), note.dur);
+      assert.equal(fundOsc.frequency.events[0].v, note.freq);
+      assert.equal(harmOsc.frequency.events[0].v, note.harmonic);
+
+      assert.equal(Number((fundGain[1].t - fundOsc.startedAt).toFixed(3)), 0.008);
+      assert.equal(Number((fundOsc.stoppedAt - fundGain[2].t).toFixed(3)), 0.008);
+      assert.equal(Number(fundGain[1].v.toFixed(2)), 0.42);
+      assert.equal(Number((harmGain[1].t - harmOsc.startedAt).toFixed(3)), 0.008);
+      assert.equal(Number((harmOsc.stoppedAt - harmGain[2].t).toFixed(3)), 0.008);
+      assert.equal(Number(harmGain[1].v.toFixed(4)), Number((0.42 * 0.2).toFixed(4)));
+    });
     phrase.stop();
-    for (const o of actx.oscillators) {
-      assert.ok(o.stoppedCalls >= 1);
-      assert.equal(o.disconnectedCalls, 1);
-    }
-    for (const g of actx.gains) {
-      assert.equal(g.disconnectedCalls, 1);
-    }
   }
-  assert.equal(signatures.size, 5, 'All 5 Web Audio sounds must differ in pitch and/or rhythm');
 });
 
-test('playAdminTone preserves default siren and delegates library sounds cleanly', () => {
+test('playAdminTone preserves default siren and all 5 distinct library sounds cleanly', () => {
   const actxDefault = createMockAudioContext(5);
   const defPhrase = playAdminTone(actxDefault, 'default');
   assert.ok(defPhrase.repeatMs < 3000);
@@ -154,9 +153,20 @@ test('playAdminTone preserves default siren and delegates library sounds cleanly
   defPhrase.stop();
   assert.ok(actxDefault.oscillators.every((o) => o.stoppedCalls >= 1));
 
-  const actxCustom = createMockAudioContext(5);
-  const rapidPhrase = playAdminTone(actxCustom, 'rapid');
-  assert.equal(rapidPhrase.repeatMs, ALARM_SOUNDS.find((s) => s.id === 'rapid').repeatMs);
-  assert.ok(actxCustom.oscillators.length >= 3);
-  rapidPhrase.stop();
+  const signatures = new Set();
+  for (const sound of ALARM_SOUNDS) {
+    const actxCustom = createMockAudioContext(5);
+    const phrase = playAdminTone(actxCustom, sound.id);
+    assert.equal(phrase.repeatMs, sound.repeatMs);
+    assert.ok(actxCustom.oscillators.length >= 2);
+    const sig = actxCustom.oscillators.map((o) => ({
+      type: o.type,
+      start: Number((o.startedAt - 5).toFixed(3)),
+      dur: Number((o.stoppedAt - o.startedAt).toFixed(3)),
+      freqs: o.frequency.events.map((e) => Number(e.v.toFixed(2))),
+    }));
+    signatures.add(JSON.stringify(sig));
+    phrase.stop();
+  }
+  assert.equal(signatures.size, 5, 'Admin library must preserve 5 distinct sounds');
 });

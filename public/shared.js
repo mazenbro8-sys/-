@@ -723,15 +723,18 @@ export function captainModal(cap) {
   }
 }
 
-// ---------- Shared Web Audio Alarm Sound Library (Captain & Admin) ----------
+// ---------- Shared Web Audio Alarm Sound Library (Captain fixed melody & Admin library) ----------
+export const CAPTAIN_TONES = [
+  { id: 'order_melody', key: 'order_melody', label: 'نغمة الطلب الجديد', repeatMs: 2720 },
+];
+
 export const ALARM_SOUNDS = [
   { id: 'classic', label: 'كلاسيكي', repeatMs: 1850 },
   { id: 'rapid', label: 'سريع', repeatMs: 1350 },
   { id: 'high', label: 'عالي', repeatMs: 1700 },
-  { id: 'double_pulse', label: 'نبضة مزدوجة', repeatMs: 1950 },
+  { id: 'double_pulse', label: 'ثلاث نبضات - طلب جديد', repeatMs: 1920 },
   { id: 'calm', label: 'هادئ', repeatMs: 2400 },
 ];
-export const CAPTAIN_TONES = ALARM_SOUNDS.map((s) => s.id);
 
 const LEGACY_TONE_MAP = {
   classic: 'classic',
@@ -771,12 +774,12 @@ const ALARM_PATTERNS = {
     ],
   },
   double_pulse: {
-    repeatMs: 1950,
+    repeatMs: 1920,
+    maxGain: 0.42,
     steps: [
-      { type: 'triangle', freq: 523.25, offsetSec: 0, durSec: 0.14, peak: 0.26, attackSec: 0.01 },
-      { type: 'triangle', freq: 659.25, offsetSec: 0.15, durSec: 0.16, peak: 0.26, attackSec: 0.01 },
-      { type: 'triangle', freq: 523.25, offsetSec: 0.56, durSec: 0.14, peak: 0.26, attackSec: 0.01 },
-      { type: 'triangle', freq: 659.25, offsetSec: 0.71, durSec: 0.20, peak: 0.26, attackSec: 0.01 },
+      { type: 'triangle', freq: 1100, offsetSec: 0, durSec: 0.20, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1100, offsetSec: 0.31, durSec: 0.20, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1100, offsetSec: 0.62, durSec: 0.20, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
     ],
   },
   calm: {
@@ -789,8 +792,25 @@ const ALARM_PATTERNS = {
   },
 };
 
-export function normalizeCaptainTone(tone) {
-  return LEGACY_TONE_MAP[tone] || 'calm';
+const CAPTAIN_PATTERNS = {
+  order_melody: {
+    repeatMs: 2720,
+    maxGain: 0.42,
+    steps: [
+      { type: 'triangle', freq: 880, offsetSec: 0, durSec: 0.16, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1760, offsetSec: 0, durSec: 0.16, peak: 0.42 * 0.20, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1100, offsetSec: 0.20, durSec: 0.16, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 2200, offsetSec: 0.20, durSec: 0.16, peak: 0.42 * 0.20, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1320, offsetSec: 0.40, durSec: 0.16, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 2640, offsetSec: 0.40, durSec: 0.16, peak: 0.42 * 0.20, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 1760, offsetSec: 0.60, durSec: 0.32, peak: 0.42, attackSec: 0.008, releaseSec: 0.008 },
+      { type: 'triangle', freq: 3520, offsetSec: 0.60, durSec: 0.32, peak: 0.42 * 0.20, attackSec: 0.008, releaseSec: 0.008 },
+    ],
+  },
+};
+
+export function normalizeCaptainTone(_tone) {
+  return 'order_melody';
 }
 
 export function normalizeAdminTone(tone) {
@@ -809,8 +829,19 @@ function playOscillatorSteps(actx, steps, repeatMs, { maxGain = 0.28, hardSquare
     const tEnd = t0 + s.durSec;
     o.type = s.type;
     o.frequency.setValueAtTime(s.freq, t0);
+    for (const ramp of s.freqRamps || []) {
+      o.frequency.linearRampToValueAtTime(ramp.freq, t0 + ramp.offsetSec);
+    }
     if (hardSquare) {
       g.gain.setValueAtTime(s.peak, t0);
+    } else if (s.releaseSec) {
+      const peak = Math.min(s.peak, maxGain);
+      const tAtk = t0 + Math.min(s.attackSec || 0.008, s.durSec * 0.4);
+      const tRel = Math.max(tAtk, tEnd - Math.min(s.releaseSec, s.durSec * 0.4));
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(peak, tAtk);
+      g.gain.setValueAtTime(peak, tRel);
+      g.gain.linearRampToValueAtTime(0.0001, tEnd);
     } else {
       const tAtk = t0 + Math.min(s.attackSec || 0.012, s.durSec * 0.4);
       g.gain.setValueAtTime(0.0001, t0);
@@ -820,7 +851,7 @@ function playOscillatorSteps(actx, steps, repeatMs, { maxGain = 0.28, hardSquare
     o.connect(g);
     g.connect(actx.destination);
     o.start(t0);
-    o.stop(hardSquare ? tEnd : tEnd + 0.015);
+    o.stop(hardSquare || s.releaseSec ? tEnd : tEnd + 0.015);
     nodes.push({ o, g });
   }
 
@@ -837,13 +868,43 @@ function playOscillatorSteps(actx, steps, repeatMs, { maxGain = 0.28, hardSquare
 }
 
 /**
- * Plays one cycle of a synthesized Web Audio alarm sound (< 3s per cycle).
- * Returns { stop, repeatMs } so repeating alarms can cancel active oscillators cleanly.
+ * Plays one cycle of the captain's fixed alarm melody ('order_melody').
+ * Returns { stop, repeatMs }.
  */
-export function playCaptainTone(actx, rawTone = 'calm') {
-  const tone = normalizeCaptainTone(rawTone);
-  const spec = ALARM_PATTERNS[tone] || ALARM_PATTERNS.calm;
-  return playOscillatorSteps(actx, spec.steps, spec.repeatMs);
+export function playCaptainTone(actx, key = 'order_melody') {
+  const tone = normalizeCaptainTone(key);
+  const spec = CAPTAIN_PATTERNS[tone];
+  return playOscillatorSteps(actx, spec.steps, spec.repeatMs, { maxGain: spec.maxGain || 0.42 });
+}
+
+/**
+ * Gates the captain offer alarm so it starts only once when a new offered order appears
+ * (by offer ID), stays silent across refreshes or status updates, and stops when cleared or offline.
+ */
+export function createCaptainAlarmGate({ onStart, onStop } = {}) {
+  let lastAlarmOfferId = null;
+  return {
+    syncOffer(offer, { online = true } = {}) {
+      if (!online || !offer || offer.id == null || (offer.status && offer.status !== 'offered')) {
+        lastAlarmOfferId = null;
+        onStop?.();
+        return { started: false, stopped: true, lastAlarmOfferId: null };
+      }
+      if (offer.id !== lastAlarmOfferId) {
+        lastAlarmOfferId = offer.id;
+        onStart?.(offer);
+        return { started: true, stopped: false, lastAlarmOfferId };
+      }
+      return { started: false, stopped: false, lastAlarmOfferId };
+    },
+    reset() {
+      lastAlarmOfferId = null;
+      onStop?.();
+    },
+    getLastOfferId() {
+      return lastAlarmOfferId;
+    },
+  };
 }
 
 /**
@@ -863,7 +924,8 @@ export function playAdminTone(actx, rawTone = 'default') {
       { maxGain: 0.9, hardSquare: true }
     );
   }
-  return playCaptainTone(actx, tone);
+  const spec = ALARM_PATTERNS[tone] || ALARM_PATTERNS.calm;
+  return playOscillatorSteps(actx, spec.steps, spec.repeatMs, { maxGain: spec.maxGain || 0.28 });
 }
 
 // ---------- Shared One-Way Notifications Inbox (Bell + Modal Dialog) ----------

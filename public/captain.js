@@ -2,7 +2,7 @@ import {
   $, $$, esc, points, time, badge, api, act, toast, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, openServerConfigModal, ALARM_SOUNDS, normalizeCaptainTone, playCaptainTone, lStore,
+  setToken, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
   mountNotificationsBell
 } from './shared.js?v=panther2026v27';
 
@@ -181,61 +181,8 @@ authScreen('captain', (user) => {
           <input type="checkbox" id="vibToggle" class="accent-warn">
         </label>
         <div class="setting-row">
-          <div>
-            <div class="setting-title">نغمة التنبيه الصوتية</div>
-            <div class="setting-sub">اختر نمط صوت التنبيه عند وصول الطلب</div>
-          </div>
-          <div class="tone-picker-row">
-            <select id="toneSelect" aria-label="نغمة التنبيه الصوتية" style="width:auto;min-width:170px">
-              ${ALARM_SOUNDS.map((s) => `<option value="${s.id}">${s.label}</option>`).join('')}
-            </select>
-            <button type="button" id="toneTestBtn" class="sec sm">🔊 تجربة الصوت</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Map, Navigation & GPS Settings -->
-      <div class="card">
-        <h3>🗺️ إعدادات الخريطة والملاحة والـ GPS</h3>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title">تطبيق الملاحة الخارجي</div>
-            <div class="setting-sub">التطبيق المستخدم عند الضغط على «افتح الملاحة»</div>
-          </div>
-          <select id="navAppSelect" style="width:auto;min-width:150px;padding:7px 10px">
-            <option value="google">🗺️ خرائط قوقل (Google Maps)</option>
-            <option value="waze">🚗 ويز (Waze)</option>
-          </select>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title">مظهر الخريطة الافتراضي</div>
-            <div class="setting-sub">اختر شكل الخريطة داخل التطبيق</div>
-          </div>
-          <select id="mapStyleSelect" style="width:auto;min-width:150px;padding:7px 10px">
-            <option value="google">🗺️ خريطة قوقل العادية</option>
-            <option value="hybrid">🛰️ قمر صناعي (واقعي)</option>
-            <option value="dark">🌙 الوضع الليلي</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Server & Connection Settings -->
-      <div class="card">
-        <h3>🌐 إعدادات السيرفر والاتصال</h3>
-        <div class="setting-row">
-          <div style="min-width:0;flex:1">
-            <div class="setting-title">رابط السيرفر المتصل</div>
-            <div class="setting-sub" id="srvCurrentLbl" dir="ltr" style="word-break:break-all;text-align:right">${esc(getServerUrl() || location.origin)}</div>
-          </div>
-          <button type="button" class="sec sm" id="cfgSrvBtn">🌐 تعديل / فحص</button>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-title">مزامنة وتحديث البيانات</div>
-            <div class="setting-sub">إعادة جلب حالة الطلبات والسجل من السيرفر</div>
-          </div>
-          <button type="button" class="ghost sm" id="manualSyncBtn">🔄 تحديث الآن</button>
+          <div class="setting-title" id="fixedToneLabel">نغمة التنبيه: نغمة الطلب الجديد (ثابتة)</div>
+          <button type="button" id="toneTestBtn" class="sec sm" style="min-height:48px">🔊 تجربة</button>
         </div>
       </div>
 
@@ -384,17 +331,13 @@ authScreen('captain', (user) => {
   }
 
   let vibEnabled = lStore.getItem('panther_vibrate') !== '0';
-  let alarmTone = normalizeCaptainTone(lStore.getItem('panther_tone'));
-  let navApp = lStore.getItem('panther_nav_app') || 'google';
+  const alarmTone = normalizeCaptainTone();
+  const navApp = lStore.getItem('panther_nav_app') || 'google';
 
   $('#vibToggle').checked = vibEnabled;
-  $('#toneSelect').value = alarmTone;
   try {
-    window.PantherNative?.setTone?.(alarmTone);
     window.PantherNative?.setVibrate?.(vibEnabled);
   } catch {}
-  $('#navAppSelect').value = navApp;
-  $('#mapStyleSelect').value = lStore.getItem('mashwar_map_style') || 'google';
 
   $('#vibToggle').onchange = (e) => {
     vibEnabled = e.target.checked;
@@ -402,19 +345,7 @@ authScreen('captain', (user) => {
     try { window.PantherNative?.setVibrate?.(vibEnabled); } catch {}
     toast(vibEnabled ? '✅ تم تفعيل الاهتزاز' : 'تم إيقاف الاهتزاز');
   };
-  $('#toneSelect').onchange = (e) => {
-    alarmTone = normalizeCaptainTone(e.target.value);
-    lStore.setItem('panther_tone', alarmTone);
-    try { window.PantherNative?.setTone?.(alarmTone); } catch {}
-    testSound();
-  };
   $('#toneTestBtn').onclick = () => testSound();
-  $('#navAppSelect').onchange = (e) => {
-    navApp = e.target.value;
-    lStore.setItem('panther_nav_app', navApp);
-    renderActive();
-    toast('✅ تم حفظ تطبيق الملاحة المفضل');
-  };
 
   // ---------- Tab Navigation ----------
   function switchTab(tabName) {
@@ -429,9 +360,6 @@ authScreen('captain', (user) => {
     }
     if (tabName === 'active') setTimeout(() => map?.invalidateSize(), 60);
     if (tabName === 'wallet') loadCaptainWallet();
-    if (tabName === 'settings') {
-      $('#srvCurrentLbl').textContent = getServerUrl() || location.origin;
-    }
   }
 
   $$('#bottomNav button[data-tab]').forEach((btn) => {
@@ -456,13 +384,6 @@ authScreen('captain', (user) => {
   const initCenter = user.lat != null && user.lng != null ? [user.lat, user.lng] : DAMASCUS;
   const idleMap = makeMap('imap', initCenter, 13);
 
-  $('#mapStyleSelect').onchange = (e) => {
-    const style = e.target.value;
-    idleMap?.setMapStyle?.(style);
-    map?.setMapStyle?.(style);
-    toast('✅ تم تغيير مظهر الخريطة');
-  };
-
   // ---------- Audio & Notification Chimes ----------
   let actx = null, alarmTimer = null, alarmStopTimer = null, activePhrase = null, previewPhrase = null;
   const unlockAudio = () => {
@@ -476,7 +397,6 @@ authScreen('captain', (user) => {
   function testSound() {
     unlockAudio();
     if (!actx) return;
-    alarmTone = normalizeCaptainTone($('#toneSelect')?.value || alarmTone);
     try { previewPhrase?.stop(); } catch {}
     previewPhrase = playCaptainTone(actx, alarmTone);
     if (vibEnabled) navigator.vibrate?.([140]);
@@ -540,6 +460,16 @@ authScreen('captain', (user) => {
     activePhrase = null;
     navigator.vibrate?.(0);
   }
+
+  const offerAlarmGate = createCaptainAlarmGate({
+    onStart(o) {
+      notifyOffer(o);
+      startAlarm();
+    },
+    onStop() {
+      stopAlarm();
+    },
+  });
 
   function setCaptainBalance(pts) {
     const val = pts ?? 0;
@@ -697,7 +627,7 @@ authScreen('captain', (user) => {
       box.innerHTML = '';
       homeTab?.classList.remove('home-compact');
       lastAutoShownOfferId = null;
-      stopAlarm();
+      offerAlarmGate.syncOffer(null, { online: st.online !== false });
       notifCtrl?.syncCaptainOffer(null);
       return;
     }
@@ -708,8 +638,7 @@ authScreen('captain', (user) => {
       lastAutoShownOfferId = o.id;
       if (currentTab !== 'home') switchTab('home');
     }
-    notifyOffer(o);
-    startAlarm();
+    offerAlarmGate.syncOffer(o, { online: st.online !== false });
     const acceptCurrentOffer = async () => {
       await act(() => api(`/captain/offers/${o.id}/accept`, 'POST'), '✅ تم قبول الطلب');
       selectedActiveId = o.id;
@@ -956,15 +885,6 @@ authScreen('captain', (user) => {
   };
 
   // ---------- Settings Actions ----------
-  $('#cfgSrvBtn').onclick = () => {
-    openServerConfigModal((newUrl) => {
-      $('#srvCurrentLbl').textContent = newUrl || location.origin;
-      refresh();
-    });
-  };
-  $('#manualSyncBtn').onclick = async () => {
-    await act(refresh, '✅ تم تحديث ومزامنة البيانات');
-  };
   $('#pwForm').onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -1081,8 +1001,13 @@ authScreen('captain', (user) => {
   setInterval(maybeSend, 3000);
 
   $('#tog').onclick = async () => {
-    const r = await act(() => api('/captain/online', 'POST', { online: !st.online }));
-    if (r) { lastSent = 0; await refresh(); }
+    const nextOnline = !st.online;
+    const r = await act(() => api('/captain/online', 'POST', { online: nextOnline }));
+    if (r) {
+      if (!nextOnline) offerAlarmGate.reset();
+      lastSent = 0;
+      await refresh();
+    }
   };
   $('#capWalletRefBtn').onclick = () => loadCaptainWallet();
 
@@ -1091,14 +1016,12 @@ authScreen('captain', (user) => {
       notifCtrl?.handleWsNotification(m);
       if (m.notification?.requires_ack && !m.notification.read && !m.notification.read_at) {
         enqueueAckNotifications([m.notification]);
-        testSound();
         refresh();
       }
     } else if (m.type === 'balance') {
       toast('💳 تم تحديث رصيد محفظتك');
       refresh();
     } else if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {
-      if (m.type === 'order') testSound();
       refresh();
     }
   });
