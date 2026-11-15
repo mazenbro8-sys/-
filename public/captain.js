@@ -20,15 +20,12 @@ authScreen('captain', (user) => {
       <div class="hdr-brand-stack">
         <span class="brand-title-sm" lang="en" dir="ltr">PANTHER <span class="brand-delivery-sub">DELIVERY</span></span>
         <span class="hdr-role-tag">الكابتن ${esc(user.name)}${user.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(user.tag)}</code>` : ''}</span>
+        <span class="hdr-zone-line hide" id="capZoneName"></span>
       </div>
     </h1>
-    <div id="hdrRightActions" class="hdr-right-actions" style="display:flex;gap:8px;align-items:center">
-      <span id="hdrStatusBadge" class="badge b-cancelled">⚪ أوفلاين</span>
-    </div>`;
+    <div id="hdrRightActions" class="hdr-right-actions"></div>`;
   document.body.prepend(topHeader);
-  const notifCtrl = mountNotificationsBell(topHeader.querySelector('#hdrRightActions'), {
-    insertBefore: topHeader.querySelector('#hdrStatusBadge'),
-  });
+  const notifCtrl = mountNotificationsBell(topHeader.querySelector('#hdrRightActions'));
 
   const bottomNav = $('#bottomNav');
   bottomNav.classList.remove('hide');
@@ -42,13 +39,16 @@ authScreen('captain', (user) => {
     <section id="tab-home" class="cap-tab">
       <div class="card captain-hero-card" id="heroStatusCard">
         <div class="hero-status-top">
-          <span class="hero-radar-indicator" id="radarOrb" aria-hidden="true"></span>
-          <div class="hero-status-text">
+          <div class="hero-status-row">
+            <span class="hero-radar-indicator" id="radarOrb" aria-hidden="true"></span>
             <div class="hero-status-title" id="onl">أوفلاين</div>
           </div>
+          <div class="mut" id="gps">GPS متوقف</div>
         </div>
-        <div class="mut" id="gps">📍 GPS متوقف</div>
-        <button type="button" id="tog" class="ok hero-tog-btn" aria-pressed="false">بدء العمل</button>
+        <div class="hero-balance-row">
+          <b id="capBalVal"><span class="hero-bal-num">0</span> <span class="hero-bal-unit">نقطة</span></b>
+        </div>
+        <button type="button" id="tog" class="hero-tog-btn is-offline" aria-pressed="false">بدء العمل</button>
       </div>
 
       <!-- Incoming Offer Alert (priority slot directly below status when present) -->
@@ -65,15 +65,21 @@ authScreen('captain', (user) => {
       <!-- Compact Today Stats -->
       <div class="stats4">
         <div class="card bento-stat-card bento-primary">
-          <div class="bento-label">طلبات اليوم المسلّمة</div>
-          <div class="bento-value" id="stDelivered">0</div>
-          <div class="bento-sub" id="stTotalAll">إجمالي الكلي: 0 طلب</div>
-          <div class="bento-sub" id="stDeductedToday">خصم اليوم: 0 نقطة</div>
+          <div class="bento-stat-head">
+            <div class="bento-label">طلبات اليوم المسلّمة</div>
+            <div class="bento-value" id="stDelivered">0</div>
+          </div>
+          <div class="bento-meta">
+            <div class="bento-sub" id="stTotalAll">إجمالي الكلي: 0 طلب</div>
+            <div class="bento-sub" id="stDeductedToday">خصم اليوم: 0 نقطة</div>
+          </div>
         </div>
-        <div class="card bento-stat-card bento-accent" id="homeActCard" role="button" tabindex="0">
-          <div class="bento-label">الطلبات النشطة حالياً</div>
-          <div class="bento-value" id="stActiveCount">0</div>
-          <div class="bento-action-link">إدارة الطلبات النشطة ⬅️</div>
+        <div class="card bento-stat-card bento-accent" id="homeActCard">
+          <div class="bento-stat-head">
+            <div class="bento-label">الطلبات النشطة حالياً</div>
+            <div class="bento-value" id="stActiveCount">0</div>
+          </div>
+          <button type="button" class="bento-action-btn" id="homeOpenActiveBtn">إدارة الطلبات النشطة</button>
         </div>
       </div>
 
@@ -81,13 +87,21 @@ authScreen('captain', (user) => {
       <details class="card bento-map-card" id="idleMapCard">
         <summary class="map-disclosure-summary">
           <span class="map-summary-label">📡 رادار الموقع الحي</span>
-          <span class="coord-pill" id="coordTxt" dir="ltr">33.5138, 36.2765</span>
         </summary>
         <div class="map-disclosure-body">
-          <div class="mut" style="font-size:12px;margin-bottom:8px">تتبع موقعك الميداني المباشر</div>
+          <div class="map-disclosure-meta">
+            <span class="mut">تتبع موقعك الميداني المباشر</span>
+            <span class="coord-pill" id="coordTxt" dir="ltr">33.5138, 36.2765</span>
+          </div>
           <div id="imap" class="map" style="height:220px"></div>
         </div>
       </details>
+
+      <!-- Compact Last Update Card (shown only when idle) -->
+      <div class="card home-last-update-card" id="homeLastUpdateCard">
+        <div class="last-update-head">آخر تحديث</div>
+        <div class="last-update-body" id="homeLastUpdateTxt">لا توجد طلبات مسلّمة اليوم بعد</div>
+      </div>
     </section>
 
     <!-- TAB 2: ACTIVE ORDERS (Dedicated exclusively to active orders) -->
@@ -107,7 +121,7 @@ authScreen('captain', (user) => {
           <button type="button" class="sec sm" id="capWalletRefBtn">🔄 تحديث</button>
         </div>
         <div style="display:flex;gap:14px;flex-wrap:wrap;margin:10px 0">
-          <div>الرصيد الحالي: <b id="capBalVal">0 نقطة</b></div>
+          <div>الرصيد الحالي: <b id="capWalletBalVal">0 نقطة</b></div>
           <div>تكلفة الطلب: <b id="capCostVal">25 نقطة</b></div>
           <div>المتاح: <b id="capAvailVal">0 نقطة</b></div>
         </div>
@@ -258,6 +272,117 @@ authScreen('captain', (user) => {
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
 
+  // ---------- Blocking Cancellation Acknowledgement Dialog ----------
+  const ackDlg = document.createElement('dialog');
+  ackDlg.id = 'captainAckDialog';
+  ackDlg.className = 'captain-ack-dialog';
+  ackDlg.setAttribute('aria-labelledby', 'captainAckTitle');
+  ackDlg.setAttribute('closedby', 'none');
+  ackDlg.innerHTML = `
+    <div class="captain-ack-card">
+      <div class="captain-ack-head">
+        <span class="captain-ack-badge">⚠️ إشعار إلغاء طلب</span>
+        <h3 id="captainAckTitle">تم إلغاء الطلب</h3>
+      </div>
+      <p id="captainAckBody" class="captain-ack-body"></p>
+      <div id="captainAckMeta" class="captain-ack-meta mut"></div>
+      <div class="captain-ack-actions">
+        <button type="button" class="ok" id="capAckOkBtn">موافق</button>
+        <button type="button" class="sec" id="capAckDoneBtn">تم</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ackDlg);
+
+  const ackTitleEl = ackDlg.querySelector('#captainAckTitle');
+  const ackBodyEl = ackDlg.querySelector('#captainAckBody');
+  const ackMetaEl = ackDlg.querySelector('#captainAckMeta');
+  const ackOkBtn = ackDlg.querySelector('#capAckOkBtn');
+  const ackDoneBtn = ackDlg.querySelector('#capAckDoneBtn');
+  let pendingAckQueue = [];
+  let currentAck = null;
+  let ackBusy = false;
+
+  ackDlg.addEventListener('cancel', (e) => {
+    e.preventDefault();
+  });
+  ackDlg.addEventListener('close', () => {
+    if (currentAck && !ackDlg.open) {
+      queueMicrotask(() => {
+        if (currentAck && !ackDlg.open) {
+          try { ackDlg.showModal(); } catch {}
+        }
+      });
+    }
+  });
+
+  function showNextAckDialog() {
+    if (currentAck) {
+      if (!ackDlg.open) ackDlg.showModal();
+      return;
+    }
+    if (!pendingAckQueue.length) {
+      if (ackDlg.open) ackDlg.close();
+      return;
+    }
+    currentAck = pendingAckQueue.shift();
+    ackTitleEl.textContent = currentAck.title || 'تم إلغاء الطلب';
+    ackBodyEl.textContent = currentAck.body || '';
+    ackMetaEl.textContent = [
+      currentAck.sender_name || '',
+      currentAck.created_at ? time(currentAck.created_at) : '',
+    ].filter(Boolean).join(' • ');
+    ackOkBtn.disabled = false;
+    ackDoneBtn.disabled = false;
+    if (!ackDlg.open) ackDlg.showModal();
+  }
+
+  function enqueueAckNotifications(items) {
+    if (!Array.isArray(items) || !items.length) return;
+    for (const item of items) {
+      if (!item || !item.requires_ack || item.read || item.read_at) continue;
+      if (currentAck?.id === item.id) continue;
+      if (pendingAckQueue.some((q) => q.id === item.id)) continue;
+      pendingAckQueue.push(item);
+    }
+    showNextAckDialog();
+  }
+
+  async function acknowledgeCurrent() {
+    if (!currentAck || ackBusy) return;
+    ackBusy = true;
+    ackOkBtn.disabled = true;
+    ackDoneBtn.disabled = true;
+    try {
+      await api(`/notifications/${currentAck.id}/read`, 'POST');
+      currentAck = null;
+      notifCtrl?.refreshUnreadCount();
+      if (pendingAckQueue.length > 0) {
+        showNextAckDialog();
+      } else if (ackDlg.open) {
+        ackDlg.close();
+      }
+    } catch (e) {
+      toast(e?.message || 'تعذر تأكيد الإشعار، حاول مجدداً');
+    } finally {
+      ackBusy = false;
+      ackOkBtn.disabled = false;
+      ackDoneBtn.disabled = false;
+    }
+  }
+
+  ackOkBtn.addEventListener('click', acknowledgeCurrent);
+  ackDoneBtn.addEventListener('click', acknowledgeCurrent);
+
+  async function checkPendingAckNotifications() {
+    try {
+      const inbox = await api('/notifications/inbox');
+      const unacked = (inbox || [])
+        .filter((n) => n && n.requires_ack && !n.read && !n.read_at)
+        .sort((a, b) => a.id - b.id);
+      if (unacked.length) enqueueAckNotifications(unacked);
+    } catch {}
+  }
+
   let vibEnabled = lStore.getItem('panther_vibrate') !== '0';
   let alarmTone = normalizeCaptainTone(lStore.getItem('panther_tone'));
   let navApp = lStore.getItem('panther_nav_app') || 'google';
@@ -313,12 +438,10 @@ authScreen('captain', (user) => {
     btn.onclick = () => switchTab(btn.dataset.tab);
   });
   $('#homeActCard').onclick = () => switchTab('active');
-  $('#homeActCard').onkeydown = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      switchTab('active');
-    }
-  };
+  $('#homeOpenActiveBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    switchTab('active');
+  });
   $('#goWalletFromWarnBtn')?.addEventListener('click', () => switchTab('wallet'));
   $('#idleMapCard')?.addEventListener('toggle', () => {
     if ($('#idleMapCard')?.open) {
@@ -418,6 +541,34 @@ authScreen('captain', (user) => {
     navigator.vibrate?.(0);
   }
 
+  function setCaptainBalance(pts) {
+    const val = pts ?? 0;
+    const homeBal = $('#capBalVal');
+    if (homeBal) {
+      homeBal.innerHTML = `<span class="hero-bal-num">${esc(String(val))}</span> <span class="hero-bal-unit">نقطة</span>`;
+    }
+    const walletBal = $('#capWalletBalVal');
+    if (walletBal) walletBal.textContent = `${val} نقطة`;
+  }
+
+  function renderHomeLastUpdate() {
+    const card = $('#homeLastUpdateCard');
+    const txt = $('#homeLastUpdateTxt');
+    if (!card || !txt) return;
+    const allAct = st.activeOrders?.length ? st.activeOrders : (st.active ? [st.active] : []);
+    if (allAct.length > 0 || st.offer) {
+      card.classList.add('hide');
+      return;
+    }
+    card.classList.remove('hide');
+    const last = allHistory.find((o) => o.status === 'delivered');
+    if (!last) {
+      txt.textContent = 'لا توجد طلبات مسلّمة اليوم بعد';
+      return;
+    }
+    txt.textContent = `🏪 ${last.merchant?.name || '—'} • ${time(last.closed_at || last.created_at)}`;
+  }
+
   // ---------- Data Refresh & Rendering ----------
   async function refresh() {
     st = await api('/captain/state');
@@ -430,10 +581,23 @@ authScreen('captain', (user) => {
     $('#stDelivered').textContent = s.delivered ?? 0;
     $('#stTotalAll').textContent = `إجمالي الكلي: ${s.total_delivered ?? s.delivered ?? 0} طلب`;
     $('#stDeductedToday').textContent = `خصم اليوم: ${points(s.deducted_today ?? 0)}`;
+    if (s.balance_points !== undefined) setCaptainBalance(s.balance_points);
+    const zoneEl = $('#capZoneName');
+    if (zoneEl) {
+      if (s.zone_name) {
+        zoneEl.textContent = `📍 ${s.zone_name}`;
+        zoneEl.classList.remove('hide');
+      } else {
+        zoneEl.textContent = '';
+        zoneEl.classList.add('hide');
+      }
+    }
 
     allHistory = await api('/captain/history');
+    renderHomeLastUpdate();
     renderHistory();
     await loadCaptainWallet();
+    await checkPendingAckNotifications();
   }
 
   function syncLowBalWarn(isLow) {
@@ -454,7 +618,7 @@ authScreen('captain', (user) => {
     try {
       const w = await api('/captain/wallet');
       const kindLbl = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
-      $('#capBalVal').textContent = `${w.balance_points ?? 0} نقطة`;
+      setCaptainBalance(w.balance_points);
       $('#capCostVal').textContent = `${w.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = formatAvailablePoints(w);
       syncLowBalWarn(w.low_balance);
@@ -491,29 +655,23 @@ authScreen('captain', (user) => {
       <div class="home-active-stage">${stageTxt}</div>
       <div style="margin-top:8px"><b>🏪 ${esc(o.merchant?.name || '—')}</b></div>
       <div class="home-active-addr">📍 ${esc(o.customer_address || '—')}</div>
-      <button type="button" class="ok big" id="homeOpenActiveBtn">🛵 متابعة الطلب النشط</button>
+      <button type="button" class="ok big" id="homeActiveSummaryBtn">🛵 متابعة الطلب النشط</button>
     </div>`;
-    $('#homeOpenActiveBtn').onclick = () => switchTab('active');
+    $('#homeActiveSummaryBtn').onclick = () => switchTab('active');
   }
 
   function renderAll() {
     const allAct = st.activeOrders?.length ? st.activeOrders : (st.active ? [st.active] : []);
-    $('#onl').textContent = st.online ? 'متصل' : 'أوفلاين';
+    $('#onl').textContent = st.online ? 'أونلاين' : 'أوفلاين';
     $('#tog').textContent = st.online ? 'إيقاف العمل' : 'بدء العمل';
     $('#tog').setAttribute('aria-pressed', st.online ? 'true' : 'false');
-    $('#tog').className = (st.online ? 'bad' : 'ok') + ' hero-tog-btn' + (st.online ? ' is-online' : '');
+    $('#tog').className = 'hero-tog-btn ' + (st.online ? 'is-online' : 'is-offline');
     $('#heroStatusCard')?.classList.toggle('is-online', Boolean(st.online));
     $('#radarOrb')?.classList.toggle('is-online', Boolean(st.online));
 
-    const hdrBadge = $('#hdrStatusBadge');
-    if (hdrBadge) {
-      hdrBadge.textContent = st.online ? '🟢 أونلاين' : '⚪ أوفلاين';
-      hdrBadge.className = 'badge ' + (st.online ? 'b-active' : 'b-cancelled');
-    }
-
     $('#stActiveCount').textContent = allAct.length;
     if (st.balance_points !== undefined) {
-      $('#capBalVal').textContent = `${st.balance_points} نقطة`;
+      setCaptainBalance(st.balance_points);
       $('#capCostVal').textContent = `${st.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = formatAvailablePoints(st);
       syncLowBalWarn(st.low_balance);
@@ -526,6 +684,7 @@ authScreen('captain', (user) => {
 
     renderOffer();
     renderHomeActiveSummary(allAct);
+    renderHomeLastUpdate();
     renderActive();
     st.online ? startGps() : stopGps();
   }
@@ -690,9 +849,6 @@ authScreen('captain', (user) => {
           ${o.merchant.phone
             ? `<a id="qaMerchCallBtn" class="btn-nav qa-call" href="tel:${esc(o.merchant.phone)}">📞 <span>اتصال منشأة</span></a>`
             : `<button type="button" id="qaMerchCallBtn" class="btn-nav qa-call">📞 <span>اتصال منشأة</span></button>`}
-          ${o.customer_phone
-            ? `<a id="qaCustCallBtn" class="btn-nav qa-call qa-cust" href="tel:${esc(o.customer_phone)}">📞 <span>اتصال زبون</span></a>`
-            : `<button type="button" id="qaCustCallBtn" class="btn-nav qa-call qa-cust">📞 <span>اتصال زبون</span></button>`}
         </div>
 
         <button type="button" class="big ok" id="nx">${n[1]}</button>
@@ -704,9 +860,6 @@ authScreen('captain', (user) => {
     }
     if (!o.merchant.phone) {
       $('#qaMerchCallBtn')?.addEventListener('click', () => toast('رقم المنشأة غير متوفر'));
-    }
-    if (!o.customer_phone) {
-      $('#qaCustCallBtn')?.addEventListener('click', () => toast('📄 رقم الزبون مدوّن على فاتورة المنشأة عند الاستلام'));
     }
 
     box.querySelectorAll('[data-act-id]').forEach((btn) => {
@@ -873,17 +1026,33 @@ authScreen('captain', (user) => {
 
   function startGps() {
     if (watchId != null) return;
-    if (!navigator.geolocation) { $('#gps').textContent = '📍 GPS متوقف'; return; }
-    $('#gps').textContent = '📍 GPS نشط';
+    const gpsEl = $('#gps');
+    if (!navigator.geolocation) {
+      if (gpsEl) {
+        gpsEl.textContent = 'GPS متوقف';
+        gpsEl.classList.remove('is-active');
+      }
+      return;
+    }
+    if (gpsEl) {
+      gpsEl.textContent = 'GPS نشط';
+      gpsEl.classList.add('is-active');
+    }
     watchId = navigator.geolocation.watchPosition(
       (p) => {
         pos = { lat: p.coords.latitude, lng: p.coords.longitude };
-        $('#gps').textContent = '📍 GPS نشط';
+        if (gpsEl) {
+          gpsEl.textContent = 'GPS نشط';
+          gpsEl.classList.add('is-active');
+        }
         showMe();
         maybeSend();
       },
       () => {
-        $('#gps').textContent = '📍 GPS متوقف';
+        if (gpsEl) {
+          gpsEl.textContent = 'GPS متوقف';
+          gpsEl.classList.remove('is-active');
+        }
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
@@ -893,7 +1062,11 @@ authScreen('captain', (user) => {
   function stopGps() {
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     wake?.release().catch(() => {}); wake = null;
-    $('#gps').textContent = '📍 GPS متوقف';
+    const gpsEl = $('#gps');
+    if (gpsEl) {
+      gpsEl.textContent = 'GPS متوقف';
+      gpsEl.classList.remove('is-active');
+    }
     pos = null;
   }
 
@@ -916,6 +1089,11 @@ authScreen('captain', (user) => {
   connectWs((m) => {
     if (m.type === 'notification') {
       notifCtrl?.handleWsNotification(m);
+      if (m.notification?.requires_ack && !m.notification.read && !m.notification.read_at) {
+        enqueueAckNotifications([m.notification]);
+        testSound();
+        refresh();
+      }
     } else if (m.type === 'balance') {
       toast('💳 تم تحديث رصيد محفظتك');
       refresh();
