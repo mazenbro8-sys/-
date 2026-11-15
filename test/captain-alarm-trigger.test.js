@@ -187,6 +187,35 @@ test('captain web & Android alarm triggers stay silent on status presses and rep
     'CaptainService startSiren must be gated inside offerId != lastNotifiedOfferId'
   );
 
+  // Admin message background delivery assertions in CaptainService.java & version 1.4.3 (versionCode 9)
+  assert.match(javaSvc, /CHANNEL_MSG\s*=\s*"panther_messages"/, 'CaptainService must define CHANNEL_MSG');
+  assert.match(javaSvc, /"PANTHER Messages"/, 'CaptainService must create PANTHER Messages notification channel');
+  assert.match(javaSvc, /PREF_ALERTED_NOTIF_IDS\s*=\s*"alerted_notif_ids"/, 'CaptainService must track alerted_notif_ids');
+  assert.match(javaSvc, /MAX_ALERTED_NOTIF_IDS\s*=\s*50\b/, 'CaptainService must retain up to 50 alerted notification IDs');
+  assert.match(javaSvc, /INBOX_POLL_INTERVAL_MS\s*=\s*15_000L/, 'CaptainService must poll /api/notifications/inbox every 15s');
+  assert.match(javaSvc, /MSG_CHIME_COOLDOWN_MS\s*=\s*10_000L/, 'CaptainService must rate-limit message chime to every 10s');
+  assert.match(javaSvc, /\/api\/notifications\/inbox/, 'CaptainService must fetch /api/notifications/inbox');
+  assert.match(javaSvc, /if\s*\(!offerRinging\s*&&\s*\(nowMs\s*-\s*lastInboxCheckAt\)\s*>=\s*INBOX_POLL_INTERVAL_MS\)/, 'CaptainService must skip inbox check when offer is ringing');
+  assert.match(javaSvc, /addTonePulse\(mix,\s*sampleRate,\s*true,\s*660\.0,\s*660\.0,\s*660\.0,\s*0\.00,\s*0\.18,\s*0\.36,\s*0\.008,\s*0\.008\)/, 'Message chime note 1 must be 660Hz triangle 180ms at 0.36 peak');
+  assert.match(javaSvc, /addTonePulse\(mix,\s*sampleRate,\s*true,\s*880\.0,\s*880\.0,\s*880\.0,\s*0\.22,\s*0\.18,\s*0\.36,\s*0\.008,\s*0\.008\)/, 'Message chime note 2 must be 880Hz triangle 180ms at 0.36 peak');
+  assert.match(javaSvc, /vibrateBrief\(prefs,\s*200\)/, 'Message alert must vibrate for 200ms');
+  assert.match(javaSvc, /POST_NOTIFICATIONS/, 'CaptainService must check POST_NOTIFICATIONS on Android 13+');
+  assert.match(javaSvc, /"لديك "\s*\+[\s\S]*?" رسائل جديدة"/, 'CaptainService must summarize queued unread messages');
+
+  const manifestXml = fs.readFileSync(
+    path.join(process.cwd(), 'android-captain', 'app', 'src', 'main', 'AndroidManifest.xml'),
+    'utf8'
+  );
+  assert.match(manifestXml, /android:versionCode="9"/, 'AndroidManifest versionCode must be 9');
+  assert.match(manifestXml, /android:versionName="1\.4\.3"/, 'AndroidManifest versionName must be 1.4.3');
+
+  const buildGradle = fs.readFileSync(
+    path.join(process.cwd(), 'android-captain', 'app', 'build.gradle'),
+    'utf8'
+  );
+  assert.match(buildGradle, /versionCode\s+9\b/, 'build.gradle versionCode must be 9');
+  assert.match(buildGradle, /versionName\s+"1\.4\.3"/, 'build.gradle versionName must be 1.4.3');
+
   // End-to-end server flow
   let alarmStartCount = 0;
   let alarmStopCount = 0;
