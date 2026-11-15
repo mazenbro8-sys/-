@@ -1,7 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag } from './db.js';
+import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag, NOTIFICATION_RETENTION_MS } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
 import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
@@ -64,6 +64,25 @@ const phone = (v) => {
   if (!/^\d{9,15}$/.test(p)) throw bad('رقم الهاتف غير صالح');
   return p;
 };
+const parseSupportPhone = (raw) => {
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) return null;
+  if (typeof raw !== 'string') throw bad('رقم الدعم غير صالح');
+  const s = toEnDigits(raw).trim();
+  if (s.length > 20) throw bad('رقم الدعم يجب ألا يتجاوز 20 حرفاً');
+  if (!/^[0-9+\-\s()]{3,20}$/.test(s)) throw bad('رقم الدعم غير صالح');
+  return s;
+};
+const charLen = (s) => Array.from(s).length; // code points, matches SQLite length()
+
+/** Strip HTML and control characters; returns plain text only. */
+const stripHtml = (v) => String(v)
+  .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/<\/?[a-z!][^>]*>/gi, '')
+  .replace(/[<>]/g, '')
+  .replace(/\r\n?/g, '\n')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+
 const oid = (req) => int(req.params.id, 'id', 1, 2 ** 31);
 
 const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phone, zone_id: u.zone_id, status: u.status, business_name: u.business_name, address: u.address, lat: u.lat, lng: u.lng, online: !!u.online, tag: u.tag ?? null });
@@ -71,6 +90,22 @@ const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phon
 const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'محاولات كثيرة، حاول لاحقاً' } });
 const registerLimiter = rateLimit({ windowMs: 60 * 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'طلبات تسجيل كثيرة، حاول لاحقاً' } });
 const orderLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'طلبات كثيرة، تمهل قليلاً' } });
+const cancelAcceptedLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  limit: Number(process.env.CANCEL_ACCEPTED_RATE_LIMIT) || 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `merch-cancel-acc:${req.user.id}`,
+  message: { error: 'تم تجاوز حد إلغاء الطلبات، حاول لاحقاً' },
+});
+
+const MERCHANT_CANCEL_REASONS = {
+  unavailable: 'المنتج غير متوفر',
+  customer_cancelled: 'الزبون ألغى الطلب',
+  order_error: 'خطأ في الطلب',
+  captain_late: 'تأخر الكابتن',
+  other: 'سبب آخر',
+};
 
 // ---------- public / auth ----------
 api.get('/zones', wrap(async (_req, res) => res.json(await db.all('SELECT id,name FROM zones WHERE active=1 ORDER BY name'))));
@@ -281,12 +316,121 @@ M.post('/orders/:id/cancel', wrap(async (req, res) => {
   await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason: 'merchant_cancelled' });
   res.json({ ok: true });
 }));
+
+M.post('/orders/:id/cancel-accepted', cancelAcceptedLimiter, wrap(async (req, res) => {
+  const o = await ownOrder(req);
+  if (o.status !== 'accepted') {
+    throw new HttpError(409, 'لا يمكن إلغاء الطلب إلا عندما تكون حالته مقبولاً قبل الاستلام');
+  }
+  const b = req.body ?? {};
+  const reasonCode = String(b.reason_code ?? '').trim();
+  if (!Object.hasOwn(MERCHANT_CANCEL_REASONS, reasonCode)) {
+    throw bad('يرجى اختيار سبب صالح لإلغاء الطلب');
+  }
+
+  let customText = null;
+  if (reasonCode === 'other') {
+    if (typeof b.reason_text !== 'string') throw bad('يرجى كتابة سبب الإلغاء');
+    const cleaned = stripHtml(b.reason_text).replace(/\s+/g, ' ').trim();
+    const len = charLen(cleaned);
+    if (len < 1 || len > 200) throw bad('سبب الإلغاء يجب أن يكون بين 1 و 200 حرف');
+    customText = cleaned;
+  } else if (b.reason_text != null && String(b.reason_text).trim() !== '') {
+    const cleaned = stripHtml(String(b.reason_text)).replace(/\s+/g, ' ').trim();
+    if (charLen(cleaned) > 200) throw bad('سبب الإلغاء يجب ألا يتجاوز 200 حرف');
+    if (cleaned) customText = cleaned;
+  }
+
+  const reasonLabel = reasonCode === 'other' ? customText : MERCHANT_CANCEL_REASONS[reasonCode];
+  const prevCaptainId = o.captain_id;
+  const merchantName = req.user.business_name || req.user.name || 'منشأة';
+  const serial = `#${String(o.id).padStart(4, '0')}`;
+  const notifTitle = 'تم إلغاء الطلب';
+  const notifBody = `تم إلغاء الطلب ${serial} من قِبل ${merchantName} — السبب: ${reasonLabel}`;
+  const now = Date.now();
+  let notifId = null;
+
+  await tx(async () => {
+    const curr = await db.get('SELECT * FROM orders WHERE id=?', o.id);
+    if (!curr || curr.status !== 'accepted') {
+      throw new HttpError(409, 'لا يمكن إلغاء الطلب إلا عندما تكون حالته مقبولاً قبل الاستلام');
+    }
+    await db.run(
+      `UPDATE orders SET status='cancelled', closed_at=?, day=?, close_reason=?, commission=0, liability=0, liability_reason=?, captain_id=NULL, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?`,
+      now,
+      dayOf(now),
+      reasonCode,
+      reasonLabel,
+      o.id
+    );
+    await addEvent(o.id, 'cancelled', req.user.id, {
+      reason: 'merchant_cancelled_accepted',
+      reason_code: reasonCode,
+      reason_text: reasonLabel,
+      captain_id: prevCaptainId,
+    });
+    if (prevCaptainId) {
+      const ins = await db.run(
+        'INSERT INTO notifications(sender_id, zone_id, target_type, target_role, target_user_id, title, body, requires_ack, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+        req.user.id,
+        o.zone_id ?? null,
+        'user',
+        null,
+        prevCaptainId,
+        notifTitle,
+        notifBody,
+        1,
+        now
+      );
+      notifId = Number(ins.lastInsertRowid);
+    }
+  });
+
+  await notifyOrder(o.id);
+  if (prevCaptainId) {
+    const cancelledView = await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', o.id), 'captain');
+    sendTo(prevCaptainId, { type: 'order', order: cancelledView });
+    if (notifId != null) {
+      sendTo(prevCaptainId, {
+        type: 'notification',
+        notification: {
+          id: notifId,
+          title: notifTitle,
+          body: notifBody,
+          created_at: now,
+          target_type: 'user',
+          sender_name: merchantName,
+          sender_role: 'merchant',
+          requires_ack: 1,
+          read: false,
+          read_at: null,
+        },
+      });
+    }
+  }
+
+  res.json({
+    ok: true,
+    order: await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', o.id), 'merchant'),
+    notification_id: notifId,
+  });
+}));
 M.get('/captain/:id/location', wrap(async (req, res) => {
   const cid = int(req.params.id, 'id', 1, 2 ** 31);
   const o = await db.get("SELECT 1 FROM orders WHERE merchant_id=? AND captain_id=? AND status IN ('accepted','picked_up','arrived')", req.user.id, cid);
   if (!o) throw new HttpError(404, 'غير متاح');
   const c = await db.get('SELECT last_lat lat,last_lng lng,last_loc_at at FROM users WHERE id=?', cid);
   res.json(c);
+}));
+M.get('/support', wrap(async (req, res) => {
+  const z = req.user.zone_id != null
+    ? await db.get('SELECT name, support_phone FROM zones WHERE id=?', req.user.zone_id)
+    : null;
+  const supportPhone = z?.support_phone && String(z.support_phone).trim() ? String(z.support_phone).trim() : null;
+  res.json({
+    zone_name: z?.name ?? null,
+    support_phone: supportPhone,
+  });
 }));
 
 // ---------- captain ----------
@@ -504,12 +648,13 @@ C.post('/orders/:id/status', wrap(async (req, res) => {
 C.get('/summary', wrap(async (req, res) => {
   const day = dayOf();
   const since = Date.now() - 48 * 3600_000;
-  const [delRow, failRow, totRow, ledgerRows, wallet] = await Promise.all([
+  const [delRow, failRow, totRow, ledgerRows, wallet, zoneRow] = await Promise.all([
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='delivered'", req.user.id, day),
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND day=? AND status='failed'", req.user.id, day),
     db.get("SELECT COUNT(*) n FROM orders WHERE captain_id=? AND status='delivered'", req.user.id),
     db.all("SELECT amount, at FROM points_ledger WHERE captain_id=? AND kind='deduction' AND at>=?", req.user.id, since),
     captainWalletSummary(req.user),
+    req.user.zone_id != null ? db.get('SELECT name FROM zones WHERE id=?', req.user.zone_id) : null,
   ]);
   const deductedToday = ledgerRows.reduce((s, row) => (dayOf(row.at) === day ? s + Math.abs(row.amount) : s), 0);
   res.json({
@@ -521,6 +666,7 @@ C.get('/summary', wrap(async (req, res) => {
     balance_points: wallet.balance_points,
     required_cost: wallet.effective_cost_points,
     exempt: wallet.exempt,
+    zone_name: zoneRow?.name ?? null,
   });
 }));
 C.get('/history', wrap(async (req, res) => {
@@ -868,13 +1014,27 @@ A.get('/zones', wrap(async (req, res) => {
 A.post('/zones', wrap(async (req, res) => {
   if (req.user.role === 'zone_admin') throw new HttpError(403, 'ليس لديك صلاحية لإضافة مناطق جديدة');
   const name = str(req.body?.name, 'اسم المنطقة', 2, 60);
+  const supportPhone = parseSupportPhone(req.body?.support_phone);
   try {
-    const r = await db.run('INSERT INTO zones(name) VALUES(?)', name);
-    res.status(201).json({ id: Number(r.lastInsertRowid), name });
+    const r = await db.run('INSERT INTO zones(name, support_phone) VALUES(?,?)', name, supportPhone);
+    res.status(201).json({ id: Number(r.lastInsertRowid), name, support_phone: supportPhone });
   } catch {
     throw new HttpError(409, 'المنطقة موجودة مسبقاً');
   }
 }));
+const updateZoneSupportPhone = wrap(async (req, res) => {
+  if (req.user.role !== 'admin') throw new HttpError(403, 'تعديل رقم الدعم متاح للمدير العام فقط');
+  const id = oid(req);
+  const z = await db.get('SELECT * FROM zones WHERE id=?', id);
+  if (!z) throw new HttpError(404, 'المنطقة غير موجودة');
+  const supportPhone = parseSupportPhone(req.body?.support_phone);
+  await db.run('UPDATE zones SET support_phone=? WHERE id=?', supportPhone, id);
+  await audit(req.user.id, 'zone_support_phone', { zone_id: id, support_phone: supportPhone });
+  res.json({ ...z, support_phone: supportPhone });
+});
+A.patch('/zones/:id', updateZoneSupportPhone);
+A.put('/zones/:id', updateZoneSupportPhone);
+A.put('/zones/:id/support-phone', updateZoneSupportPhone);
 
 A.get('/orders', wrap(async (req, res) => {
   const st = req.query.status;
@@ -1229,16 +1389,6 @@ const NOTIF_BODY_MAX = 500;
 const NOTIF_TARGET_TYPES = new Set(['all', 'zone', 'role', 'user']);
 const NOTIF_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin', 'admin'];
 const NOTIF_ZONE_ADMIN_ROLES = ['captain', 'merchant', 'zone_admin'];
-const charLen = (s) => Array.from(s).length; // code points, matches SQLite length()
-
-/** Strip HTML and control characters; returns plain text only. */
-const stripHtml = (v) => String(v)
-  .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
-  .replace(/<!--[\s\S]*?-->/g, '')
-  .replace(/<\/?[a-z!][^>]*>/gi, '')
-  .replace(/[<>]/g, '')
-  .replace(/\r\n?/g, '\n')
-  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 
 const notifText = (v, name, max, { singleLine = false } = {}) => {
   if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
@@ -1250,13 +1400,20 @@ const notifText = (v, name, max, { singleLine = false } = {}) => {
 };
 
 // Same visibility rule used for inbox, unread count, read marking and WebSocket fan-out.
-const NOTIF_VISIBLE_SQL = `n.sender_id != ? AND (
+const NOTIF_VISIBLE_SQL = `n.created_at > ? AND n.sender_id != ? AND (
   n.target_type = 'all'
   OR (n.target_type = 'zone' AND n.zone_id = ?)
   OR (n.target_type = 'role' AND n.target_role = ? AND (n.zone_id IS NULL OR n.zone_id = ?))
   OR (n.target_type = 'user' AND n.target_user_id = ?)
 )`;
-const notifVisibleArgs = (u) => [u.id, u.zone_id ?? null, u.role, u.zone_id ?? null, u.id];
+const notifVisibleArgs = (u, now = Date.now()) => [
+  now - NOTIFICATION_RETENTION_MS,
+  u.id,
+  u.zone_id ?? null,
+  u.role,
+  u.zone_id ?? null,
+  u.id,
+];
 
 /** Active recipients of a stored notification (sender excluded). */
 async function notificationRecipientIds(n) {
@@ -1336,7 +1493,7 @@ A.post('/notifications', notifyLimiter, wrap(async (req, res) => {
     type: 'notification',
     notification: {
       id: notification.id, title, body, created_at: now, target_type: targetType,
-      sender_name: req.user.name, sender_role: req.user.role, read: false, read_at: null,
+      sender_name: req.user.name, sender_role: req.user.role, requires_ack: 0, read: false, read_at: null,
     },
   };
   for (const uid of recipients) sendTo(uid, push);
@@ -1361,7 +1518,7 @@ api.use('/notifications', auth(), N);
 
 N.get('/inbox', wrap(async (req, res) => {
   const rows = await db.all(
-    `SELECT n.id, n.title, n.body, n.created_at, n.target_type, s.name AS sender_name, s.role AS sender_role, r.read_at
+    `SELECT n.id, n.title, n.body, n.created_at, n.target_type, n.requires_ack, COALESCE(NULLIF(s.business_name, ''), s.name) AS sender_name, s.role AS sender_role, r.read_at
      FROM notifications n
      JOIN users s ON s.id = n.sender_id
      LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = ?
@@ -1369,7 +1526,7 @@ N.get('/inbox', wrap(async (req, res) => {
      ORDER BY n.id DESC LIMIT 100`,
     req.user.id, ...notifVisibleArgs(req.user)
   );
-  res.json(rows.map((n) => ({ ...n, read: n.read_at != null, read_at: n.read_at ?? null })));
+  res.json(rows.map((n) => ({ ...n, requires_ack: n.requires_ack ? 1 : 0, read: n.read_at != null, read_at: n.read_at ?? null })));
 }));
 
 N.get('/unread-count', wrap(async (req, res) => {

@@ -360,6 +360,44 @@ await runMigration('2026_11_notifications', async () => {
   )`);
 });
 
+// Zone support phone for merchants (nullable, text, max 20 chars enforced on API)
+await runMigration('2026_11_zone_support_phone', async () => {
+  const zoneCols = await db.all('PRAGMA table_info(zones)');
+  if (!zoneCols.some((c) => c.name === 'support_phone')) {
+    await db.run('ALTER TABLE zones ADD COLUMN support_phone TEXT');
+  }
+});
+
+// Notifications requiring blocking captain acknowledgement
+await runMigration('2026_11_notification_requires_ack', async () => {
+  const notifCols = await db.all('PRAGMA table_info(notifications)');
+  if (!notifCols.some((c) => c.name === 'requires_ack')) {
+    await db.run('ALTER TABLE notifications ADD COLUMN requires_ack INTEGER NOT NULL DEFAULT 0');
+  }
+});
+
+export const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+export const NOTIFICATION_CLEANUP_INTERVAL_MS =
+  Number(process.env.NOTIFICATION_CLEANUP_INTERVAL_MS) || 10 * 60 * 1000;
+
+/** Hard-delete notifications older than 24 hours and their read receipts. */
+export async function cleanupExpiredNotifications(now = Date.now()) {
+  const cutoff = now - NOTIFICATION_RETENTION_MS;
+  return tx(async () => {
+    await db.run(
+      'DELETE FROM notification_reads WHERE notification_id IN (SELECT id FROM notifications WHERE created_at <= ?)',
+      cutoff
+    );
+    const res = await db.run('DELETE FROM notifications WHERE created_at <= ?', cutoff);
+    return { deleted: res.changes, cutoff };
+  });
+}
+
+await cleanupExpiredNotifications();
+setInterval(() => {
+  cleanupExpiredNotifications().catch((e) => console.error('notification cleanup', e));
+}, NOTIFICATION_CLEANUP_INTERVAL_MS).unref();
+
 /** Atomically append a ledger entry and update captain balance_points inside tx(). */
 export async function applyPointsEntry({
   captainId,
