@@ -1353,6 +1353,164 @@ A.get('/captains/:id/ledger', wrap(async (req, res) => {
   res.json({ captain: { ...cap, effective_cost_points: rc.cost_points, cost_source: rc.cost_source }, entries });
 }));
 
+const parsePaginationParam = (raw, defaultVal, name, min, max) => {
+  if (raw === undefined) return defaultVal;
+  if (typeof raw !== 'string' && typeof raw !== 'number') throw bad(`قيمة غير صالحة: ${name}`);
+  const s = toEnDigits(String(raw)).trim();
+  if (!/^-?\d+$/.test(s)) throw bad(`قيمة غير صالحة: ${name}`);
+  const n = Number(s);
+  if (!Number.isSafeInteger(n) || n < min || n > max) throw bad(`قيمة غير صالحة: ${name}`);
+  return n;
+};
+
+async function loadAdminScopedCaptain(req) {
+  const cid = int(req.params.id, 'id', 1, 2 ** 31);
+  const cap = await db.get(
+    `SELECT u.id, u.role, u.name, u.phone, u.tag, u.zone_id, z.name AS zone_name,
+            u.status, u.online, u.balance_points, u.cost_override,
+            u.exempt_from, u.exempt_until,
+            u.last_lat, u.last_lng, u.last_loc_at, u.last_loc_vis, u.created_at
+     FROM users u
+     LEFT JOIN zones z ON z.id = u.zone_id
+     WHERE u.id = ? AND u.role = 'captain' AND u.status != 'deleted'`,
+    cid
+  );
+  if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
+  const zId = adminZone(req);
+  if (zId != null && cap.zone_id !== zId) {
+    throw new HttpError(403, 'ليس لديك صلاحية لعرض كابتن خارج منطقتك');
+  }
+  return cap;
+}
+
+const CAPTAIN_HISTORY_STATUS_SQL = "status IN ('delivered','failed','cancelled','expired')";
+
+async function fetchCaptainHistoryPage(cap, { offset = 0, limit = 20 }, baseUserMap = null) {
+  const [totalRow, rows] = await Promise.all([
+    db.get(`SELECT COUNT(*) AS c FROM orders WHERE captain_id=? AND ${CAPTAIN_HISTORY_STATUS_SQL}`, cap.id),
+    db.all(`SELECT * FROM orders WHERE captain_id=? AND ${CAPTAIN_HISTORY_STATUS_SQL} ORDER BY id DESC LIMIT ? OFFSET ?`, cap.id, limit, offset),
+  ]);
+  const total = Number(totalRow?.c ?? 0);
+  const userMap = baseUserMap || new Map([[cap.id, cap]]);
+  const orders = await viewOrdersBatch(rows, 'admin', userMap);
+  return {
+    orders,
+    total,
+    offset,
+    limit,
+    has_more: offset + orders.length < total,
+  };
+}
+
+A.get('/captains/:id/details', wrap(async (req, res) => {
+  const cap = await loadAdminScopedCaptain(req);
+  const now = Date.now();
+  const day = dayOf(now);
+  const [defaultCost, todayOrdRow, ledgerRows, activeRaw, historyTotalRow, historyRaw] = await Promise.all([
+    orderCostPoints(),
+    db.get(
+      "SELECT COUNT(*) AS delivered_count, COALESCE(SUM(CASE WHEN cost_points > 0 THEN cost_points ELSE 0 END), 0) AS delivered_cost FROM orders WHERE captain_id=? AND day=? AND status='delivered'",
+      cap.id,
+      day
+    ),
+    db.all(
+      "SELECT amount, at, order_id FROM points_ledger WHERE captain_id=? AND kind='deduction' AND at>=?",
+      cap.id,
+      now - 48 * 3600_000
+    ),
+    db.all(
+      "SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id DESC",
+      cap.id
+    ),
+    db.get(`SELECT COUNT(*) AS c FROM orders WHERE captain_id=? AND ${CAPTAIN_HISTORY_STATUS_SQL}`, cap.id),
+    db.all(
+      `SELECT * FROM orders WHERE captain_id=? AND ${CAPTAIN_HISTORY_STATUS_SQL} ORDER BY id DESC LIMIT 20 OFFSET 0`,
+      cap.id
+    ),
+  ]);
+
+  const baseUserMap = new Map([[cap.id, cap]]);
+  const combinedViews = await viewOrdersBatch([...activeRaw, ...historyRaw], 'admin', baseUserMap);
+  const active_orders = combinedViews.slice(0, activeRaw.length);
+  const historyOrders = combinedViews.slice(activeRaw.length);
+
+  const rc = resolveOrderCost(cap, defaultCost, now);
+  const exemption_status = rc.cost_source === 'exempt_permanent'
+    ? 'permanent'
+    : rc.cost_source === 'exempt_temporary'
+      ? 'temporary'
+      : 'none';
+  const ledgerTodaySum = ledgerRows.reduce((sum, row) => (dayOf(row.at) === day ? sum + Math.abs(row.amount) : sum), 0);
+  const pointsDeductedToday = Math.max(ledgerTodaySum, Number(todayOrdRow?.delivered_cost ?? 0));
+
+  const profile = {
+    id: cap.id,
+    role: cap.role,
+    name: cap.name,
+    phone: cap.phone,
+    tag: cap.tag ?? null,
+    hashtag: cap.tag ? `#${cap.tag}` : null,
+    zone_id: cap.zone_id,
+    zone_name: cap.zone_name ?? null,
+    status: cap.status,
+    online: Boolean(cap.online),
+    busy: active_orders.length > 0,
+    balance_points: Number(cap.balance_points ?? 0),
+    effective_cost_points: rc.cost_points,
+    cost_override: cap.cost_override ?? null,
+    cost_source: rc.cost_source,
+    exempt_from: cap.exempt_from ?? null,
+    exempt_until: cap.exempt_until ?? null,
+    lat: cap.last_lat ?? null,
+    lng: cap.last_lng ?? null,
+    last_lat: cap.last_lat ?? null,
+    last_lng: cap.last_lng ?? null,
+    last_loc_at: cap.last_loc_at ?? null,
+    last_loc_vis: cap.last_loc_vis ?? null,
+    created_at: cap.created_at,
+  };
+  const wallet = {
+    balance_points: Number(cap.balance_points ?? 0),
+    effective_cost_points: rc.cost_points,
+    default_cost_points: defaultCost,
+    cost_override: cap.cost_override ?? null,
+    cost_source: rc.cost_source,
+    exempt: exemption_status !== 'none',
+    exemption_status,
+    exempt_from: cap.exempt_from ?? null,
+    exempt_until: cap.exempt_until ?? null,
+  };
+  const today = {
+    day,
+    delivered_count: Number(todayOrdRow?.delivered_count ?? 0),
+    delivered: Number(todayOrdRow?.delivered_count ?? 0),
+    points_deducted: pointsDeductedToday,
+    deducted_today: pointsDeductedToday,
+  };
+  const totalHistory = Number(historyTotalRow?.c ?? 0);
+  res.json({
+    captain: profile,
+    profile,
+    wallet,
+    today,
+    active_orders,
+    history: {
+      orders: historyOrders,
+      total: totalHistory,
+      offset: 0,
+      limit: 20,
+      has_more: historyOrders.length < totalHistory,
+    },
+  });
+}));
+
+A.get('/captains/:id/orders', wrap(async (req, res) => {
+  const cap = await loadAdminScopedCaptain(req);
+  const offset = parsePaginationParam(req.query.offset, 0, 'offset', 0, 1_000_000);
+  const limit = parsePaginationParam(req.query.limit, 20, 'limit', 1, 50);
+  res.json(await fetchCaptainHistoryPage(cap, { offset, limit }));
+}));
+
 A.post('/captains/:id/topup', wrap(async (req, res) => {
   const cid = int(req.params.id, 'id', 1, 2 ** 31);
   const zId = adminZone(req);

@@ -404,6 +404,11 @@ await runMigration('2026_11_perf_indexes', async () => {
   await db.run('CREATE INDEX IF NOT EXISTS idx_orders_zone_id_desc ON orders(zone_id, id DESC)');
 });
 
+// Index to serve paginated captain order history in newest-first order without temp B-tree sort
+await runMigration('2026_11_captain_orders_index', async () => {
+  await db.run('CREATE INDEX IF NOT EXISTS idx_orders_captain_id_desc ON orders(captain_id, id DESC)');
+});
+
 export const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const NOTIFICATION_CLEANUP_INTERVAL_MS =
   Number(process.env.NOTIFICATION_CLEANUP_INTERVAL_MS) || 10 * 60 * 1000;
