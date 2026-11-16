@@ -2380,6 +2380,45 @@ body.ad.is-live-view #view {
   animation: none;
 }
 
+.dash-cap-pin {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+}
+
+.dash-cap-emoji {
+  font-size: 26px;
+  line-height: 26px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
+.ops-pin-age {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(20, 20, 23, 0.92);
+  border: 1px solid var(--border-neutral);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+}
+
+.ops-pin-age.is-stale {
+  color: var(--status-warn);
+  border-color: var(--status-warn);
+  font-weight: var(--weight-extrabold);
+}
+
 /* ---------- Transfer Confirmation Native <dialog> ---------- */
 dialog.live-transfer-dialog {
   width: min(440px, calc(100vw - 24px));

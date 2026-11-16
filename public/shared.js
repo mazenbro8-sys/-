@@ -491,19 +491,71 @@ export function pickLocation(map, onPick) {
   return { setMarker, clearMarker };
 }
 
-export async function makeRoute(map, from, to) {
-  const directUrl = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
-  const proxyUrl = `${getServerUrl()}/api/route?from=${encodeURIComponent(from[0] + ',' + from[1])}&to=${encodeURIComponent(to[0] + ',' + to[1])}`;
-  for (const url of [directUrl, proxyUrl]) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.code === 'Ok' && data.routes?.length) {
-        const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
-        return L.polyline(coords, { color: '#F5B700', weight: 5, opacity: 0.92 }).addTo(map);
+const ROUTE_CACHE_TTL_MS = 60_000;
+const ROUTE_CACHE_MAX = 250;
+const OSRM_TIMEOUT_MS = 6_000;
+const routeCache = new Map();
+const roundCoord4 = (n) => Number(n).toFixed(4);
+
+/** Compute the OSRM route cache key rounded to 4 decimals + travel mode. */
+export const makeRouteCacheKey = (from, to, mode = 'driving') =>
+  `${mode}:${roundCoord4(from[0])},${roundCoord4(from[1])}->${roundCoord4(to[0])},${roundCoord4(to[1])}`;
+
+/** Clear the browser OSRM route cache (testing helper). */
+export const clearRouteCache = () => routeCache.clear();
+
+async function fetchWithTimeout(url, ms = OSRM_TIMEOUT_MS) {
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timer;
+  if (ac) {
+    timer = setTimeout(() => ac.abort(), ms);
+    timer.unref?.();
+  }
+  try {
+    return await fetch(url, ac ? { signal: ac.signal } : undefined);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function makeRoute(map, from, to, mode = 'driving') {
+  const safeMode = encodeURIComponent(mode || 'driving');
+  const key = makeRouteCacheKey(from, to, mode || 'driving');
+  const now = Date.now();
+  const cached = routeCache.get(key);
+  if (cached?.coords && cached.expiresAt > now) {
+    return L.polyline(cached.coords, { color: '#F5B700', weight: 5, opacity: 0.92 }).addTo(map);
+  }
+
+  let coordsPromise = cached?.inFlight;
+  if (!coordsPromise) {
+    const directUrl = `https://router.project-osrm.org/route/v1/${safeMode}/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
+    const proxyUrl = `${getServerUrl()}/api/route?from=${encodeURIComponent(from[0] + ',' + from[1])}&to=${encodeURIComponent(to[0] + ',' + to[1])}`;
+
+    coordsPromise = (async () => {
+      for (const url of [directUrl, proxyUrl]) {
+        try {
+          const res = await fetchWithTimeout(url, OSRM_TIMEOUT_MS);
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (data.code === 'Ok' && data.routes?.length) {
+            const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
+            if (routeCache.size >= ROUTE_CACHE_MAX) routeCache.delete(routeCache.keys().next().value);
+            routeCache.set(key, { coords, expiresAt: Date.now() + ROUTE_CACHE_TTL_MS });
+            return coords;
+          }
+        } catch {}
       }
-    } catch {}
+      routeCache.delete(key);
+      return null;
+    })();
+    if (routeCache.size >= ROUTE_CACHE_MAX) routeCache.delete(routeCache.keys().next().value);
+    routeCache.set(key, { inFlight: coordsPromise, expiresAt: now + ROUTE_CACHE_TTL_MS });
+  }
+
+  const coords = await coordsPromise;
+  if (coords) {
+    return L.polyline(coords, { color: '#F5B700', weight: 5, opacity: 0.92 }).addTo(map);
   }
   return L.polyline([from, to], { color: '#F5B700', weight: 4, opacity: 0.8, dashArray: '10 8' }).addTo(map);
 }

@@ -177,9 +177,10 @@ authScreen('admin', (user) => {
 
   const isZoneAdmin = user.role === 'zone_admin';
   const feed = [];
-  let tab = 'dash', zones = [], liveMap = null, liveFitted = false, liveStageObs = null;
+  let tab = 'dash', zones = [], zonesLoaded = false, zonesInFlight = null;
+  let liveMap = null, liveFitted = false, liveStageObs = null, dashMap = null;
   let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
-  let capMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
+  let capMarkers = new Map(), dashCapMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
   let liveSelection = null;
   let liveFilters = {
@@ -198,6 +199,27 @@ authScreen('admin', (user) => {
   const ordersIndex = new Map();
   const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
   let refreshTimer;
+  const WS_TAB_REFRESH_MS = 3000;
+  const wsTabRefreshTimers = { dash: null, orders: null };
+  function clearWsTabRefreshTimers() {
+    for (const k of Object.keys(wsTabRefreshTimers)) {
+      if (wsTabRefreshTimers[k]) {
+        clearTimeout(wsTabRefreshTimers[k]);
+        wsTabRefreshTimers[k] = null;
+      }
+    }
+  }
+  function scheduleWsTabRefresh(targetTab) {
+    if (targetTab !== 'dash' && targetTab !== 'orders') return;
+    if (wsTabRefreshTimers[targetTab]) return;
+    wsTabRefreshTimers[targetTab] = setTimeout(async () => {
+      wsTabRefreshTimers[targetTab] = null;
+      if (tab === targetTab) {
+        await views[targetTab]();
+        syncMobileTableLabels();
+      }
+    }, WS_TAB_REFRESH_MS);
+  }
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
 
   function computeCaptainLocDiag(ts, vis, busy, now = Date.now()) {
@@ -252,6 +274,40 @@ authScreen('admin', (user) => {
     </div>`;
   }
 
+  const CAPTAIN_STALE_MS = 180_000;
+
+  function formatCaptainLastUpdate(c, now = Date.now()) {
+    const ts = Number(c?.last_loc_at ?? c?.at) || 0;
+    if (!ts) {
+      return {
+        text: 'آخر تحديث غير متوفر',
+        displayText: '⚠️ آخر تحديث غير متوفر',
+        isStale: true,
+        ts: 0,
+      };
+    }
+    const ageMs = Math.max(0, now - ts);
+    const ageSec = Math.floor(ageMs / 1000);
+    const isStale = ageMs > CAPTAIN_STALE_MS;
+    const text = ageSec < 60
+      ? `آخر تحديث منذ ${enDigits(ageSec)} ثانية`
+      : `آخر تحديث منذ ${enDigits(Math.floor(ageSec / 60))} دقيقة`;
+    return {
+      text,
+      displayText: isStale ? `⚠️ ${text}` : text,
+      isStale,
+      ts,
+    };
+  }
+
+  function applyCaptainLastUpdateEl(el, c, now = Date.now()) {
+    if (!el) return;
+    const upd = formatCaptainLastUpdate(c, now);
+    if (el.dataset.locAt !== String(upd.ts || '')) el.dataset.locAt = String(upd.ts || '');
+    if (el.textContent !== upd.displayText) el.textContent = upd.displayText;
+    el.classList.toggle('is-stale', upd.isStale);
+  }
+
   function tickCaptainLocAges() {
     const now = Date.now();
     document.querySelectorAll('[data-loc-cap]').forEach((el) => {
@@ -268,6 +324,9 @@ authScreen('admin', (user) => {
       if (visEl && visEl.textContent !== d.visLabel) {
         visEl.textContent = d.visLabel;
       }
+    });
+    document.querySelectorAll('[data-cap-upd]').forEach((el) => {
+      applyCaptainLastUpdateEl(el, { last_loc_at: el.dataset.locAt }, now);
     });
   }
 
@@ -899,18 +958,50 @@ authScreen('admin', (user) => {
   };
   new MutationObserver(syncMobileTableLabels).observe($('#view'), { childList: true, subtree: true });
 
+  function syncTopbarTitle(t) {
+    const baseTitle = TABS[t].replace(/^\S+\s/, '');
+    const myZoneName = isZoneAdmin ? (zones.find((z) => z.id === user.zone_id)?.name || '') : '';
+    $('#ptitle').textContent = isZoneAdmin && myZoneName ? `${baseTitle} - ${myZoneName}` : baseTitle;
+    const zoneCtx = $('#adminZoneCtx');
+    if (zoneCtx) {
+      zoneCtx.textContent = isZoneAdmin && myZoneName ? `🛡️ منطقة: ${myZoneName}` : '👑 لوحة الإدارة';
+    }
+  }
+
+  function ensureZonesLoaded({ force = false } = {}) {
+    if (!force && zonesLoaded) return Promise.resolve(zones);
+    if (!force && zonesInFlight) return zonesInFlight;
+    zonesInFlight = api('/admin/zones')
+      .then((list) => {
+        if (Array.isArray(list)) {
+          zones = list;
+          zonesLoaded = true;
+          syncTopbarTitle(tab);
+        }
+        return zones;
+      })
+      .catch(() => zones)
+      .finally(() => {
+        zonesInFlight = null;
+      });
+    return zonesInFlight;
+  }
+
   async function go(t) {
     tab = t;
     clearTimeout(refreshTimer);
+    clearWsTabRefreshTimers();
     if (view()) view().onclick = null;
     liveStageObs?.disconnect();
     liveStageObs = null;
     if (liveMap) { try { liveMap.remove(); } catch {} }
     liveMap = null; liveFitted = false;
+    if (dashMap) { try { dashMap.remove(); } catch {} }
+    dashMap = null;
     liveSelection = null;
     if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
     liveHintOverride = null;
-    capMarkers.clear(); merchMarkers.clear(); orderMarkers.clear();
+    capMarkers.clear(); dashCapMarkers.clear(); merchMarkers.clear(); orderMarkers.clear();
     if (routeLayers instanceof Map) routeLayers.clear();
     else routeLayers = new Map();
     document.body.classList.toggle('is-live-view', t === 'live');
@@ -927,15 +1018,9 @@ authScreen('admin', (user) => {
       if (isAct) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
     });
-    zones = await api('/admin/zones');
-    const baseTitle = TABS[t].replace(/^\S+\s/, '');
-    const myZoneName = isZoneAdmin ? (zones.find((z) => z.id === user.zone_id)?.name || '') : '';
-    $('#ptitle').textContent = isZoneAdmin && myZoneName ? `${baseTitle} - ${myZoneName}` : baseTitle;
-    const zoneCtx = $('#adminZoneCtx');
-    if (zoneCtx) {
-      zoneCtx.textContent = isZoneAdmin && myZoneName ? `🛡️ منطقة: ${myZoneName}` : '👑 لوحة الإدارة';
-    }
-    await views[t]();
+    syncTopbarTitle(t);
+    const zonesPromise = ensureZonesLoaded({ force: zonesLoaded });
+    await views[t](zonesPromise);
     syncMobileTableLabels();
   }
   const view = () => $('#view');
@@ -961,9 +1046,67 @@ authScreen('admin', (user) => {
     return '<span class="badge">⚪ أوفلاين</span>';
   }
 
+  function buildDashCaptainIcon(c, upd = formatCaptainLastUpdate(c)) {
+    const coreHtml = c.busy
+      ? '<div class="dash-cap-emoji" aria-hidden="true">🛵</div>'
+      : `<div class="pulsing-dot" style="background:${c.online ? '#10B981' : '#94A3B8'}"></div>`;
+    return L.divIcon({
+      html: `${coreHtml}<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`,
+      className: 'dash-cap-pin',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+  }
+
+  function upsertDashCaptainMarker(c, { animate = false } = {}) {
+    if (!dashMap || c == null) return;
+    const existing = dashCapMarkers.get(c.id);
+    if (c.lat == null || c.lng == null) {
+      if (existing) {
+        existing.remove();
+        dashCapMarkers.delete(c.id);
+      }
+      return;
+    }
+    const stateKey = c.busy ? 'busy' : c.online ? 'online' : 'offline';
+    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
+    const upd = formatCaptainLastUpdate(c);
+    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const coords = `${c.lat},${c.lng}`;
+
+    let mk = existing;
+    if (!mk) {
+      mk = L.marker([c.lat, c.lng], { icon: buildDashCaptainIcon(c, upd) })
+        .addTo(dashMap)
+        .bindTooltip(tip)
+        .bindPopup(renderCaptainPopupHtml(c));
+      mk.on('popupopen', tickCaptainLocAges);
+      mk._dashStateKey = stateKey;
+      mk._dashCoords = coords;
+      dashCapMarkers.set(c.id, mk);
+    } else {
+      if (mk._dashCoords !== coords) {
+        if (animate && dashMap.hasLayer(mk)) animateMarker(mk, [c.lat, c.lng]);
+        else mk.setLatLng([c.lat, c.lng]);
+        mk._dashCoords = coords;
+      }
+      if (mk._dashStateKey !== stateKey) {
+        mk.setIcon(buildDashCaptainIcon(c, upd));
+        mk._dashStateKey = stateKey;
+      } else {
+        const updEl = mk.getElement?.()?.querySelector('[data-cap-upd]');
+        applyCaptainLastUpdateEl(updEl, c);
+      }
+      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+      mk.setPopupContent?.(renderCaptainPopupHtml(c));
+      if (mk.isPopupOpen?.()) tickCaptainLocAges();
+    }
+  }
+
   const views = {
     async dash() {
       const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
+      if (tab !== 'dash') return;
       liveCache = d;
       if (d.intervals) locIntervals = d.intervals;
       rememberOrders(d.orders);
@@ -981,6 +1124,9 @@ authScreen('admin', (user) => {
         ['🛵', `${s.online}/${capList.length || s.captains}`, 'الكباتن (أونلاين / الكل)', 'users'],
         ['✅', s.deliveredToday, 'طلبات اليوم المسلّمة', 'orders'],
       ];
+
+      if (dashMap) { try { dashMap.remove(); } catch {} }
+      dashCapMarkers.clear();
 
       view().innerHTML = `
         <div class="card admin-page-head">
@@ -1035,7 +1181,7 @@ authScreen('admin', (user) => {
 
         <div id="detail"></div>`;
 
-      const dashMap = makeMap('dashmap', DAMASCUS, 12);
+      dashMap = makeMap('dashmap', DAMASCUS, 12);
       merchList.forEach((m) => {
         if (m.lat != null && m.lng != null) {
           L.marker([m.lat, m.lng], { icon: emoji('🏪') })
@@ -1043,17 +1189,7 @@ authScreen('admin', (user) => {
             .bindTooltip(`🏪 ${m.business_name || m.name}`);
         }
       });
-      capList.forEach((c) => {
-        if (c.lat != null && c.lng != null) {
-          const icon = c.busy ? emoji('🛵') : c.online ? createPulsingDot('#10B981') : createPulsingDot('#94A3B8');
-          const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
-          const mk = L.marker([c.lat, c.lng], { icon })
-            .addTo(dashMap)
-            .bindTooltip(`🛵 ${c.name} — ${stTxt}`)
-            .bindPopup(renderCaptainPopupHtml(c));
-          mk.on('popupopen', tickCaptainLocAges);
-        }
-      });
+      capList.forEach((c) => upsertDashCaptainMarker(c));
       liveOrders.forEach((o) => {
         if (o.customer_lat != null && o.customer_lng != null) {
           L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') })
@@ -1115,12 +1251,15 @@ authScreen('admin', (user) => {
     },
 
     async live() {
-      const s = await api('/admin/stats');
-      updateShortageBanner(s.shortage);
       liveLegendCollapsed = window.innerWidth <= 767;
       liveSelection = null;
       if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
       liveHintOverride = null;
+
+      const initOrders = (liveCache.orders || []).length;
+      const initCaps = (liveCache.captains || []).length;
+      const initOnline = (liveCache.captains || []).filter((c) => c.online).length;
+      const initMerch = (liveCache.merchants || []).length;
 
       view().innerHTML = `
         <div class="live-ops-stage">
@@ -1139,9 +1278,9 @@ authScreen('admin', (user) => {
               </div>
               <div id="liveLegendBody" class="live-legend-body">
                 <div class="live-legend-kpis" id="lstats">
-                  <div class="live-kpi-pill"><b id="lkLiveOrders">${s.live}</b><span>طلبات حية</span></div>
-                  <div class="live-kpi-pill"><b id="lkOnlineCaps">${s.online}/${s.captains}</b><span>أونلاين</span></div>
-                  <div class="live-kpi-pill"><b id="lkMerchants">${s.merchants}</b><span>منشآت</span></div>
+                  <div class="live-kpi-pill"><b id="lkLiveOrders">${initOrders}</b><span>طلبات حية</span></div>
+                  <div class="live-kpi-pill"><b id="lkOnlineCaps">${initOnline}/${initCaps}</b><span>أونلاين</span></div>
+                  <div class="live-kpi-pill"><b id="lkMerchants">${initMerch}</b><span>منشآت</span></div>
                 </div>
                 <div class="live-legend-group-title">طبقات الخريطة</div>
                 <label class="live-filter-row" for="lfMerchants">
@@ -1241,10 +1380,17 @@ authScreen('admin', (user) => {
       dlg?.addEventListener('close', () => { dlg.returnValue = ''; });
 
       renderLiveHint();
-      await loadLive();
+      const [s] = await Promise.all([
+        api('/admin/stats').catch(() => null),
+        loadLive(),
+      ]);
+      if (tab === 'live' && s) {
+        updateShortageBanner(liveCache.shortage || s.shortage);
+      }
     },
 
-    async users() {
+    async users(zonesPromise = ensureZonesLoaded()) {
+      if (!zonesLoaded) await zonesPromise;
       if (isZoneAdmin && usersTab === 'admin') usersTab = 'merchant';
 
       const wirePwToggle = (btn, inp) => {
@@ -2091,8 +2237,11 @@ authScreen('admin', (user) => {
       };
     },
 
-    async wallet() {
-      const caps = await api('/admin/users?role=captain');
+    async wallet(zonesPromise = ensureZonesLoaded()) {
+      const [caps] = await Promise.all([
+        api('/admin/users?role=captain'),
+        zonesLoaded ? Promise.resolve(zones) : zonesPromise,
+      ]);
       const kindLabel = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
       view().innerHTML = `
         <div class="card admin-page-head">
@@ -2360,7 +2509,11 @@ authScreen('admin', (user) => {
       };
     },
 
-    async settings() {
+    async settings(zonesPromise = ensureZonesLoaded()) {
+      const [s] = await Promise.all([
+        api('/admin/stats'),
+        zonesLoaded ? Promise.resolve(zones) : zonesPromise,
+      ]);
       const mountAdminSoundSettings = (gridEl) => {
         if (!gridEl) return;
         adminTone = normalizeAdminTone(lStore.getItem('panther_admin_tone'));
@@ -2399,7 +2552,6 @@ authScreen('admin', (user) => {
           };
         }
       };
-      const s = await api('/admin/stats');
       const pgLabels = {
         grace: 'فترة سماح (فحص 100 م عند توفر GPS)',
         on: 'إلزامي (GPS مطلوب + نطاق 100 م)',
@@ -2482,11 +2634,11 @@ authScreen('admin', (user) => {
       $('#za').onclick = async () => { await act(() => api('/admin/zones', 'POST', { name: $('#zn').value }), 'تمت الإضافة'); zones = await api('/admin/zones'); views.settings(); };
     },
 
-    async messages() {
+    async messages(zonesPromise = ensureZonesLoaded()) {
       const [sentList, usersList, freshZones] = await Promise.all([
         api('/admin/notifications'),
         api('/admin/users'),
-        zones.length ? Promise.resolve(zones) : api('/admin/zones'),
+        zonesLoaded ? Promise.resolve(zones) : zonesPromise,
       ]);
       if (Array.isArray(freshZones) && freshZones.length) zones = freshZones;
       const selectableUsers = (usersList || []).filter((u) => u.id !== user.id);
@@ -2990,7 +3142,7 @@ authScreen('admin', (user) => {
     renderLiveHint();
   }
 
-  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, glyph, badgeCount }) {
+  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, glyph, badgeCount, ageHtml = '' }) {
     const classes = ['ops-marker', kindClass, stateClass];
     if (selected) classes.push('is-selected');
     if (validTarget) classes.push('is-valid-target');
@@ -2998,7 +3150,7 @@ authScreen('admin', (user) => {
     const badgeHtml = badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
     return L.divIcon({
       className: classes.join(' '),
-      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}`,
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}${ageHtml}`,
       iconSize: [48, 48],
       iconAnchor: [24, 24],
     });
@@ -3136,7 +3288,9 @@ authScreen('admin', (user) => {
     const shouldShow = liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey);
     const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
     const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
-    const tip = `🛵 ${c.name} — ${st.busy ? `${st.label} (${actCount})` : st.label}`;
+    const upd = formatCaptainLastUpdate(c);
+    const tip = `🛵 ${c.name} — ${st.busy ? `${st.label} (${actCount})` : st.label} • ${upd.displayText}`;
+    const ageHtml = `<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`;
     const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}`;
 
     let mk = existing;
@@ -3149,6 +3303,7 @@ authScreen('admin', (user) => {
         dimmed,
         glyph: '🛵',
         badgeCount: actCount,
+        ageHtml,
       });
       mk = L.marker([c.lat, c.lng], { icon });
       mk._opsSig = sig;
@@ -3171,6 +3326,7 @@ authScreen('admin', (user) => {
           dimmed,
           glyph: '🛵',
           badgeCount: actCount,
+          ageHtml,
         }));
         mk._opsSig = sig;
       }
@@ -3179,6 +3335,7 @@ authScreen('admin', (user) => {
 
     if (shouldShow) {
       if (!liveMap.hasLayer(mk)) mk.addTo(liveMap);
+      applyCaptainLastUpdateEl(mk.getElement?.()?.querySelector('[data-cap-upd]'), c);
     } else if (liveMap.hasLayer(mk)) {
       mk.remove();
     }
@@ -3592,15 +3749,19 @@ authScreen('admin', (user) => {
     if (lbl) {
       feed.unshift({ t: lbl, at: new Date().toLocaleTimeString('en-GB') });
       feed.length = Math.min(feed.length, 20);
-      if (tab === 'dash') views.dash();
-      else if (tab === 'orders') views.orders();
+      if (tab === 'dash') scheduleWsTabRefresh('dash');
+      else if (tab === 'orders') scheduleWsTabRefresh('orders');
     }
     if (m.type === 'loc') {
       const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
       if (capInCache) {
         capInCache.lat = m.lat;
         capInCache.lng = m.lng;
-        if (m.at) capInCache.last_loc_at = m.at;
+        capInCache.online = true;
+        if (m.at) {
+          capInCache.last_loc_at = m.at;
+          capInCache.at = m.at;
+        }
         if (m.vis) capInCache.last_loc_vis = m.vis;
         if (m.busy !== undefined) capInCache.busy = m.busy;
         if (m.active_order_id !== undefined) capInCache.active_order_id = m.active_order_id;
@@ -3622,17 +3783,35 @@ authScreen('admin', (user) => {
         if (m.vis) el.dataset.locVis = m.vis;
         if (m.busy !== undefined) el.dataset.locBusy = m.busy ? '1' : '0';
       });
-      tickCaptainLocAges();
       if (tab === 'live' && liveMap) {
         if (capInCache) {
           upsertCaptainMarker(capInCache, { animate: true });
         } else {
-          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, null);
+          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, {
+            at: m.at || Date.now(),
+            last_loc_at: m.at || Date.now(),
+            last_loc_vis: m.vis,
+          });
         }
         (liveCache.orders || [])
           .filter((o) => o.captain_id === m.captain_id && ['accepted', 'picked_up', 'arrived'].includes(o.status))
           .forEach((o) => syncOrderOverlay(o));
+      } else if (tab === 'dash' && dashMap) {
+        const dashTarget = capInCache || {
+          id: m.captain_id,
+          name: `#${m.captain_id}`,
+          lat: m.lat,
+          lng: m.lng,
+          at: m.at || Date.now(),
+          last_loc_at: m.at || Date.now(),
+          last_loc_vis: m.vis,
+          busy: Boolean(m.busy),
+          online: true,
+          active_order_id: m.active_order_id ?? null,
+        };
+        upsertDashCaptainMarker(dashTarget, { animate: true });
       }
+      tickCaptainLocAges();
     } else if (m.type === 'balance') {
       const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
       if (capInCache && m.balance_points != null) capInCache.balance_points = m.balance_points;
