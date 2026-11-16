@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag, NOTIFICATION_RETENTION_MS } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
-import { ACTIVE, viewOrder, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
+import { ACTIVE, viewOrder, viewOrdersBatch, hydrateAdminOrders, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
 import { resolveAndParseGoogleMapsLink, GeoParseError } from './geo.js';
 
 export const api = express.Router();
@@ -294,7 +294,7 @@ M.post('/orders', orderLimiter, wrap(async (req, res) => {
 
 M.get('/orders', wrap(async (req, res) => {
   const rows = await db.all('SELECT * FROM orders WHERE merchant_id=? ORDER BY id DESC LIMIT 200', req.user.id);
-  res.json(await Promise.all(rows.map((o) => viewOrder(o, 'merchant'))));
+  res.json(await viewOrdersBatch(rows, 'merchant'));
 }));
 
 const ownOrder = async (req) => {
@@ -521,18 +521,23 @@ C.post('/location', wrap(async (req, res) => {
   const primaryAct = acts[0] || null;
   const minGap = (acts.length ? config.activeLocIntervalMs : config.idleLocIntervalMs) * 0.8;
   if (now - (lastPing.get(u.id) ?? 0) < minGap) return res.status(204).end();
-  lastPing.set(u.id, now);
-  // basic anti-teleport sanity (>200 km/h between pings is ignored)
+  // Anti-teleport check (>200 km/h): reject unrealistic jumps within 120s, but allow coarse-to-precise GPS recovery after >120s
   if (u.last_lat != null && u.last_loc_at) {
-    const hrs = (now - u.last_loc_at) / 3.6e6;
-    if (hrs > 0 && haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) return res.status(204).end();
+    const elapsedMs = now - Number(u.last_loc_at);
+    const hrs = elapsedMs / 3.6e6;
+    if (elapsedMs <= 120_000 && hrs > 0 && haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) {
+      return res.status(204).end();
+    }
   }
   await db.run('UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, last_loc_vis=? WHERE id=?', lat, lng, now, vis, u.id);
   await db.run('INSERT INTO locations(captain_id,lat,lng,order_id,at) VALUES(?,?,?,?,?)', u.id, lat, lng, primaryAct?.id ?? null, now);
-  for (const act of acts) {
-    const m = { type: 'loc', order_id: act.id, lat, lng, at: now };
-    const v = await viewOrder(act, 'merchant');
-    sendTo(act.merchant_id, { ...m, eta_minutes: v.eta_minutes });
+  lastPing.set(u.id, now);
+  if (acts.length > 0) {
+    const actViews = await viewOrdersBatch(acts, 'merchant');
+    for (let i = 0; i < acts.length; i++) {
+      const act = acts[i];
+      sendTo(act.merchant_id, { type: 'loc', order_id: act.id, lat, lng, at: now, eta_minutes: actViews[i].eta_minutes });
+    }
   }
   sendToAdmins({
     type: 'loc',
@@ -671,7 +676,7 @@ C.get('/summary', wrap(async (req, res) => {
 }));
 C.get('/history', wrap(async (req, res) => {
   const rows = await db.all("SELECT * FROM orders WHERE captain_id=? AND status IN ('delivered','failed') ORDER BY id DESC LIMIT 100", req.user.id);
-  res.json(await Promise.all(rows.map((o) => viewOrder(o, 'captain'))));
+  res.json(await viewOrdersBatch(rows, 'captain'));
 }));
 
 // ---------- admin & zone_admin RBAC ----------
@@ -695,75 +700,105 @@ const A = express.Router();
 api.use('/admin', requireAdmin, A);
 
 A.get('/stats', wrap(async (req, res) => {
-  const one = async (q, ...a) => (await db.get(q, ...a)).n;
   const day = dayOf();
   const zId = adminZone(req);
-  const [merchants, captains, online, pending, live, deliveredToday, cutoverAt, orderCost, enforced, pickupGps, shortage] = zId != null
-    ? await Promise.all([
-        one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active' AND zone_id=?", zId),
-        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active' AND zone_id=?", zId),
-        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND online=1 AND zone_id=?", zId),
-        one("SELECT COUNT(*) n FROM users WHERE status='pending' AND zone_id=?", zId),
-        one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=?", zId),
-        one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered' AND zone_id=?", day, zId),
-        pointsCutoverAt(),
-        orderCostPoints(),
-        walletEnforcement(),
-        pickupGpsRequired(),
-        computeShortage(zId),
-      ])
-    : await Promise.all([
-        one("SELECT COUNT(*) n FROM users WHERE role='merchant' AND status='active'"),
-        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND status='active'"),
-        one("SELECT COUNT(*) n FROM users WHERE role='captain' AND online=1"),
-        one("SELECT COUNT(*) n FROM users WHERE status='pending'"),
-        one("SELECT COUNT(*) n FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived')"),
-        one("SELECT COUNT(*) n FROM orders WHERE day=? AND status='delivered'", day),
-        pointsCutoverAt(),
-        orderCostPoints(),
-        walletEnforcement(),
-        pickupGpsRequired(),
-        computeShortage(),
-      ]);
-  res.json({ merchants, captains, online, pending, live, deliveredToday, points_cutover_at: cutoverAt, order_cost_points: orderCost, wallet_enforcement: enforced ? 'on' : 'off', pickup_gps_required: pickupGps, shortage });
+  const zArgs = zId != null ? [zId] : [];
+  const [uRow, oRow, cutoverAt, orderCost, enforced, pickupGps, shortage] = await Promise.all([
+    db.get(
+      `SELECT
+         SUM(CASE WHEN role='merchant' AND status='active' THEN 1 ELSE 0 END) AS merchants,
+         SUM(CASE WHEN role='captain' AND status='active' THEN 1 ELSE 0 END) AS captains,
+         SUM(CASE WHEN role='captain' AND online=1 THEN 1 ELSE 0 END) AS online,
+         SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
+       FROM users ${zId != null ? 'WHERE zone_id=?' : ''}`,
+      ...zArgs
+    ),
+    db.get(
+      `SELECT
+         SUM(CASE WHEN status IN ('searching','offered','accepted','picked_up','arrived') THEN 1 ELSE 0 END) AS live,
+         SUM(CASE WHEN day=? AND status='delivered' THEN 1 ELSE 0 END) AS deliveredToday
+       FROM orders ${zId != null ? 'WHERE zone_id=?' : ''}`,
+      day,
+      ...zArgs
+    ),
+    pointsCutoverAt(),
+    orderCostPoints(),
+    walletEnforcement(),
+    pickupGpsRequired(),
+    computeShortage(zId),
+  ]);
+  res.json({
+    merchants: Number(uRow?.merchants ?? 0),
+    captains: Number(uRow?.captains ?? 0),
+    online: Number(uRow?.online ?? 0),
+    pending: Number(uRow?.pending ?? 0),
+    live: Number(oRow?.live ?? 0),
+    deliveredToday: Number(oRow?.deliveredToday ?? 0),
+    points_cutover_at: cutoverAt,
+    order_cost_points: orderCost,
+    wallet_enforcement: enforced ? 'on' : 'off',
+    pickup_gps_required: pickupGps,
+    shortage,
+  });
 }));
 
 A.get('/live', wrap(async (req, res) => {
   const zId = adminZone(req);
-  const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
-  const [liveRows, recentRows, capRows, merchants, shortage] = zId != null
-    ? await Promise.all([
-        db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId),
-        db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 100', zId),
-        db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId),
-        db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId),
-        computeShortage(zId),
-      ])
-    : await Promise.all([
-        db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
-        db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
-        db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
-        db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
-        computeShortage(),
-      ]);
-  const [orders, recentOrders, captains] = await Promise.all([
-    Promise.all(liveRows.map((o) => viewOrder(o, 'admin'))),
-    Promise.all(recentRows.map((o) => viewOrder(o, 'admin'))),
-    Promise.all(capRows.map(async (c) => {
-      const acts = await activeOrders(c.id);
-      const act = acts[0] || null;
-      const rc = resolveOrderCost(c, defaultCost);
-      return {
-        ...c,
-        online: !!c.online,
-        effective_cost_points: rc.cost_points,
-        cost_source: rc.cost_source,
-        busy: acts.length > 0,
-        active_order_id: act?.id ?? null,
-        active_orders: acts.map((x) => ({ id: x.id, serial_no: String(x.id).padStart(4, '0'), customer_address: x.customer_address, status: x.status })),
-      };
-    })),
+  const [defaultCost, enforced, liveRows, recentRows, capRows, merchants] = await Promise.all([
+    orderCostPoints(),
+    walletEnforcement(),
+    zId != null
+      ? db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') AND zone_id=? ORDER BY id DESC", zId)
+      : db.all("SELECT * FROM orders WHERE status IN ('searching','offered','accepted','picked_up','arrived') ORDER BY id DESC"),
+    zId != null
+      ? db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 20', zId)
+      : db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 20'),
+    zId != null
+      ? db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId)
+      : db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
+    zId != null
+      ? db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId)
+      : db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
   ]);
+
+  const userById = new Map();
+  for (const m of merchants) userById.set(m.id, m);
+  for (const c of capRows) userById.set(c.id, c);
+
+  // Iterate liveRows in reverse (ascending id order) so each captain's active list matches ORDER BY id ASC
+  const activeOrdersByCaptain = new Map();
+  for (let i = liveRows.length - 1; i >= 0; i--) {
+    const o = liveRows[i];
+    if (o.captain_id == null || !ACTIVE.includes(o.status)) continue;
+    let list = activeOrdersByCaptain.get(o.captain_id);
+    if (!list) {
+      list = [];
+      activeOrdersByCaptain.set(o.captain_id, list);
+    }
+    list.push(o);
+  }
+
+  const captains = capRows.map((c) => {
+    const acts = activeOrdersByCaptain.get(c.id) || [];
+    const act = acts[0] || null;
+    const rc = resolveOrderCost(c, defaultCost);
+    return {
+      ...c,
+      online: !!c.online,
+      effective_cost_points: rc.cost_points,
+      cost_source: rc.cost_source,
+      busy: acts.length > 0,
+      active_order_id: act?.id ?? null,
+      active_orders: acts.map((x) => ({ id: x.id, serial_no: String(x.id).padStart(4, '0'), customer_address: x.customer_address, status: x.status })),
+    };
+  });
+
+  const [orders, recentOrders, shortage] = await Promise.all([
+    hydrateAdminOrders(liveRows, userById),
+    hydrateAdminOrders(recentRows, userById),
+    computeShortage(zId, { liveRows, capRows, activeOrdersByCaptain, userById, defaultCost, enforced }),
+  ]);
+
   res.json({
     orders,
     recentOrders,
@@ -1049,7 +1084,7 @@ A.get('/orders', wrap(async (req, res) => {
       ? await db.all('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 300', String(st))
       : await db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 300');
   }
-  res.json(await Promise.all(rows.map((o) => viewOrder(o, 'admin'))));
+  res.json(await viewOrdersBatch(rows, 'admin'));
 }));
 A.post('/orders', wrap(async (req, res) => {
   const b = req.body ?? {};

@@ -46,13 +46,16 @@ function isWalletEligible(captain, defaultCost, enforced, now = Date.now()) {
   return captainAvailablePoints(captain) >= cost_points;
 }
 
-/** Order as seen by each role. Customer details are hidden from captains until they accept. */
-export async function viewOrder(o, role) {
+/**
+ * Format an order row synchronously using an in-memory `userById` lookup map.
+ * Preserves the exact view shape returned by `viewOrder`.
+ */
+export function formatOrderView(o, role, userById) {
   if (!o) return null;
-  const [m, cap] = await Promise.all([
-    db.get('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?', o.merchant_id),
-    o.captain_id ? db.get('SELECT id,name,phone,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE id=?', o.captain_id) : null,
-  ]);
+  const m = (o.merchant_id != null ? userById.get(o.merchant_id) : null) || {};
+  const cap = o.captain_id != null ? userById.get(o.captain_id) || null : null;
+  const offCap = o.offered_captain_id != null ? userById.get(o.offered_captain_id) || null : null;
+
   const v = {
     id: o.id, serial_no: String(o.id).padStart(4, '0'),
     status: o.status, zone_id: o.zone_id, created_at: o.created_at,
@@ -66,15 +69,21 @@ export async function viewOrder(o, role) {
   if (showCustomer) {
     Object.assign(v, { customer_name: o.customer_name, customer_phone: o.customer_phone });
   }
-  if (role !== 'captain' && cap && ACTIVE.includes(o.status)) {
-    const target = o.status === 'accepted' ? m : { lat: o.customer_lat, lng: o.customer_lng };
-    let eta = null;
-    if (cap.last_lat != null && target.lat != null)
-      eta = Math.max(1, Math.round((haversineKm(cap.last_lat, cap.last_lng, target.lat, target.lng) / config.etaSpeedKmh) * 60));
-    v.captain = { id: cap.id, name: cap.name, phone: cap.phone, lat: cap.last_lat, lng: cap.last_lng, at: cap.last_loc_at, last_loc_at: cap.last_loc_at, last_loc_vis: cap.last_loc_vis ?? null };
-    v.eta_minutes = eta;
-  } else if (role !== 'captain' && cap) {
-    v.captain = { id: cap.id, name: cap.name, phone: cap.phone, at: cap.last_loc_at, last_loc_at: cap.last_loc_at, last_loc_vis: cap.last_loc_vis ?? null };
+  if (role !== 'captain' && cap) {
+    const capLat = 'last_lat' in cap ? cap.last_lat : cap.lat;
+    const capLng = 'last_lng' in cap ? cap.last_lng : cap.lng;
+    const capAt = 'last_loc_at' in cap ? cap.last_loc_at : cap.at;
+    if (ACTIVE.includes(o.status)) {
+      const target = o.status === 'accepted' ? m : { lat: o.customer_lat, lng: o.customer_lng };
+      let eta = null;
+      if (capLat != null && target.lat != null) {
+        eta = Math.max(1, Math.round((haversineKm(capLat, capLng, target.lat, target.lng) / config.etaSpeedKmh) * 60));
+      }
+      v.captain = { id: cap.id, name: cap.name, phone: cap.phone, lat: capLat, lng: capLng, at: capAt, last_loc_at: capAt, last_loc_vis: cap.last_loc_vis ?? null };
+      v.eta_minutes = eta;
+    } else {
+      v.captain = { id: cap.id, name: cap.name, phone: cap.phone, at: capAt, last_loc_at: capAt, last_loc_vis: cap.last_loc_vis ?? null };
+    }
   }
   if (role !== 'merchant') {
     v.cost_points = o.cost_points ?? null;
@@ -85,57 +94,146 @@ export async function viewOrder(o, role) {
     v.captain_id = o.captain_id;
     v.offered_captain_id = o.offered_captain_id;
     if (cap) v.captain_name = cap.name;
-    if (o.offered_captain_id) {
-      const offCap = await db.get('SELECT id,name,phone FROM users WHERE id=?', o.offered_captain_id);
-      if (offCap) v.offered_captain = offCap;
+    if (offCap) {
+      v.offered_captain = { id: offCap.id, name: offCap.name, phone: offCap.phone };
     }
   }
   return v;
 }
 
-export async function computeShortage(zoneId = null) {
+/**
+ * Format an array of order rows in memory from a given perspective ('admin' | 'merchant' | 'captain'),
+ * loading all referenced merchants, captains, and offered captains in a single batched `IN (...)` query.
+ * Output shape matches `viewOrder(o, perspective)` identically.
+ */
+export async function viewOrdersBatch(rows, perspective, baseUserMap = null) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+  const userById = new Map(baseUserMap ? baseUserMap.entries() : []);
+  const missingIds = new Set();
+  const needOffered = perspective === 'admin';
+  for (const o of rows) {
+    if (o.merchant_id != null && !userById.has(o.merchant_id)) missingIds.add(o.merchant_id);
+    if (o.captain_id != null && !userById.has(o.captain_id)) missingIds.add(o.captain_id);
+    if (needOffered && o.offered_captain_id != null && !userById.has(o.offered_captain_id)) {
+      missingIds.add(o.offered_captain_id);
+    }
+  }
+  if (missingIds.size > 0) {
+    const ids = [...missingIds];
+    const userRows = await db.all(
+      `SELECT id,name,business_name,address,lat,lng,phone,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
+      ...ids
+    );
+    for (const r of userRows) userById.set(r.id, r);
+  }
+  return rows.map((o) => formatOrderView(o, perspective, userById));
+}
+
+/**
+ * Hydrate an array of orders for admin views using an optional preloaded `baseUserMap`.
+ */
+export const hydrateAdminOrders = (orderRows, baseUserMap = null) =>
+  viewOrdersBatch(orderRows, 'admin', baseUserMap);
+
+/** Order as seen by each role. Customer details are hidden from captains until they accept. */
+export async function viewOrder(o, role) {
+  if (!o) return null;
+  const userById = new Map();
+  const [m, cap, offCap] = await Promise.all([
+    db.get('SELECT id,name,business_name,address,lat,lng,phone FROM users WHERE id=?', o.merchant_id),
+    o.captain_id ? db.get('SELECT id,name,phone,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE id=?', o.captain_id) : null,
+    role === 'admin' && o.offered_captain_id ? db.get('SELECT id,name,phone FROM users WHERE id=?', o.offered_captain_id) : null,
+  ]);
+  if (m) userById.set(m.id, m);
+  if (cap) userById.set(cap.id, cap);
+  if (offCap) userById.set(offCap.id, offCap);
+  return formatOrderView(o, role, userById);
+}
+
+export async function computeShortage(zoneId = null, preloaded = null) {
   const hasZ = zoneId != null;
   const now = Date.now();
-  const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
-  const waitingRows = hasZ
-    ? await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
-    : await db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now);
-  const checked = await Promise.all(
-    waitingRows.map(async (o) => {
-      const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
-      const isTimedOut = now - effectiveStart >= config.shortageTimeoutMs;
-      if (isTimedOut) return viewOrder(o, 'admin');
-      if (o.status !== 'searching') return null;
-      const untriedCaps = await db.all(
-        `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
-           COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
-         FROM users u
-         WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-           AND NOT EXISTS (SELECT 1 FROM offers f WHERE f.order_id=? AND f.captain_id=u.id)`,
-        o.zone_id,
-        o.id
-      );
-      const hasEligible = untriedCaps.some((c) => isWalletEligible(c, defaultCost, enforced, now));
-      return hasEligible ? null : viewOrder(o, 'admin');
-    })
-  );
-  const escalatedOrders = checked.filter(Boolean);
+  const [defaultCost, enforced] = preloaded?.defaultCost != null && preloaded?.enforced != null
+    ? [preloaded.defaultCost, preloaded.enforced]
+    : await Promise.all([orderCostPoints(), walletEnforcement()]);
 
-  const onlineRows = await (hasZ
-    ? db.all(`
-        SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
-          COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost,
-          EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) is_busy
-        FROM users u
-        WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
-      `, zoneId)
-    : db.all(`
-        SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
-          COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost,
-          EXISTS (SELECT 1 FROM orders o WHERE o.captain_id=u.id AND o.status IN ('accepted','picked_up','arrived')) is_busy
-        FROM users u
-        WHERE u.role='captain' AND u.status='active' AND u.online=1
-      `));
+  const waitingRows = preloaded?.liveRows
+    ? preloaded.liveRows
+        .filter((o) => (o.status === 'searching' || o.status === 'offered') && (o.delay_until == null || Number(o.delay_until) <= now) && (!hasZ || o.zone_id === zoneId))
+        .sort((a, b) => a.id - b.id)
+    : await (hasZ
+        ? db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) AND zone_id=? ORDER BY id ASC", now, zoneId)
+        : db.all("SELECT * FROM orders WHERE status IN ('searching','offered') AND (delay_until IS NULL OR delay_until <= ?) ORDER BY id ASC", now));
+
+  const onlineRows = preloaded?.capRows && preloaded?.activeOrdersByCaptain
+    ? preloaded.capRows
+        .filter((c) => c.status === 'active' && Boolean(c.online) && (!hasZ || c.zone_id === zoneId))
+        .map((c) => {
+          const acts = preloaded.activeOrdersByCaptain.get(c.id) || [];
+          const reserved_cost = acts.reduce((sum, ord) => sum + (Number(ord.cost_points) > 0 ? Number(ord.cost_points) : 0), 0);
+          return {
+            id: c.id,
+            zone_id: c.zone_id,
+            balance_points: c.balance_points,
+            cost_override: c.cost_override,
+            exempt_from: c.exempt_from,
+            exempt_until: c.exempt_until,
+            reserved_cost,
+            is_busy: acts.length > 0 ? 1 : 0,
+          };
+        })
+    : await db.all(
+        `SELECT u.id, u.zone_id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+           COALESCE(SUM(CASE WHEN o.id IS NOT NULL AND o.cost_points > 0 THEN o.cost_points ELSE 0 END), 0) AS reserved_cost,
+           CASE WHEN COUNT(o.id) > 0 THEN 1 ELSE 0 END AS is_busy
+         FROM users u
+         LEFT JOIN orders o ON o.captain_id = u.id AND o.status IN ('accepted','picked_up','arrived')
+         WHERE u.role='captain' AND u.status='active' AND u.online=1 ${hasZ ? 'AND u.zone_id=?' : ''}
+         GROUP BY u.id`,
+        ...(hasZ ? [zoneId] : [])
+      );
+
+  const searchingIds = [];
+  for (const o of waitingRows) {
+    const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
+    if (now - effectiveStart < config.shortageTimeoutMs && o.status === 'searching') {
+      searchingIds.push(o.id);
+    }
+  }
+
+  const triedByOrder = new Map();
+  if (searchingIds.length > 0) {
+    const offerRows = await db.all(
+      `SELECT order_id, captain_id FROM offers WHERE order_id IN (${searchingIds.map(() => '?').join(',')})`,
+      ...searchingIds
+    );
+    for (const r of offerRows) {
+      let set = triedByOrder.get(r.order_id);
+      if (!set) {
+        set = new Set();
+        triedByOrder.set(r.order_id, set);
+      }
+      set.add(r.captain_id);
+    }
+  }
+
+  const escalatedRaw = [];
+  for (const o of waitingRows) {
+    const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
+    const isTimedOut = now - effectiveStart >= config.shortageTimeoutMs;
+    if (isTimedOut) {
+      escalatedRaw.push(o);
+      continue;
+    }
+    if (o.status !== 'searching') continue;
+    const tried = triedByOrder.get(o.id);
+    const hasEligible = onlineRows.some(
+      (c) => c.zone_id === o.zone_id && !(tried && tried.has(c.id)) && isWalletEligible(c, defaultCost, enforced, now)
+    );
+    if (!hasEligible) escalatedRaw.push(o);
+  }
+
+  const escalatedOrders = await hydrateAdminOrders(escalatedRaw, preloaded?.userById);
   const eligibleRows = onlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
   const freeOnlineCaptains = eligibleRows.filter((r) => !r.is_busy).length;
   const onlineCaptains = eligibleRows.length;
@@ -205,6 +303,16 @@ async function pickCaptain(order) {
 }
 
 export async function dispatchOrder(orderId) {
+  const preNow = Date.now();
+  const preOrder = await db.get(
+    "SELECT * FROM orders WHERE id=? AND status='searching' AND (delay_until IS NULL OR delay_until <= ?)",
+    orderId,
+    preNow
+  );
+  if (!preOrder) return false;
+  const preCap = await pickCaptain(preOrder);
+  if (!preCap) return false;
+
   let offered = null;
   await tx(async () => {
     const now = Date.now();
@@ -299,35 +407,47 @@ export async function closeOrder(orderId, status, { actor, reason, liability = 0
   await notifyOrder(orderId);
 }
 
+const defaultAlertedTimeouts = new Set();
+
+/** Single periodic dispatcher sweep: expire timed-out offers, dispatch searching orders only when a captain exists, and alert once on 5m timeout. */
+export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts) {
+  const now = Date.now();
+  for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
+    await releaseOffer(o.id, 'timeout');
+  }
+  const waiting = await db.all("SELECT id, status, created_at, delay_until FROM orders WHERE status IN ('searching','offered')");
+  const waitingIds = new Set(waiting.map((o) => o.id));
+  for (const id of alertedTimeouts) {
+    if (!waitingIds.has(id)) alertedTimeouts.delete(id);
+  }
+  for (const o of waiting) {
+    if (o.delay_until && o.delay_until > now) continue;
+    const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
+    const elapsed = now - effectiveStart;
+    let dispatched = false;
+    if (o.status === 'searching') {
+      if (elapsed > config.searchMaxMs) {
+        await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
+        alertedTimeouts.delete(o.id);
+        continue;
+      }
+      dispatched = await dispatchOrder(o.id);
+    }
+    if (elapsed >= config.shortageTimeoutMs && !alertedTimeouts.has(o.id)) {
+      alertedTimeouts.add(o.id);
+      if (!dispatched) await notifyOrder(o.id);
+    }
+  }
+}
+
 /** Periodic tick: expire offers, (re)dispatch waiting orders, trigger 5m shortage timeout, expire stale searches. */
 export function startDispatcher() {
   let running = false;
-  const alertedTimeouts = new Set();
   setInterval(async () => {
     if (running) return;
     running = true;
     try {
-      const now = Date.now();
-      for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
-        await releaseOffer(o.id, 'timeout');
-      }
-      for (const o of await db.all("SELECT id, status, created_at, delay_until FROM orders WHERE status IN ('searching','offered')")) {
-        if (o.delay_until && o.delay_until > now) continue;
-        const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
-        const elapsed = now - effectiveStart;
-        if (o.status === 'searching') {
-          if (elapsed > config.searchMaxMs) {
-            await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
-            alertedTimeouts.delete(o.id);
-            continue;
-          }
-          await dispatchOrder(o.id);
-        }
-        if (elapsed >= config.shortageTimeoutMs && !alertedTimeouts.has(o.id)) {
-          alertedTimeouts.add(o.id);
-          await notifyOrder(o.id);
-        }
-      }
+      await runDispatcherTick(defaultAlertedTimeouts);
     } catch (e) { console.error('dispatcher', e); }
     finally { running = false; }
   }, 5_000);

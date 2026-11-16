@@ -9,14 +9,34 @@ import { DATA_DIR, config } from './config.js';
 const tursoUrl = !process.env.DB_FILE && process.env.TURSO_DATABASE_URL ? process.env.TURSO_DATABASE_URL.trim() : '';
 const isRemote = Boolean(tursoUrl);
 const localDbPath = process.env.DB_FILE || path.join(DATA_DIR, 'mashwar.db');
+export const DB_TIMEOUT_MS = Number(process.env.DB_TIMEOUT_MS) || 8000;
+
+/**
+ * Race a database operation against a hard timeout because @libsql/client ignores
+ * Config.timeout on remote HTTPS/WebSocket Turso connections.
+ */
+export function withDbTimeout(promise, ms = DB_TIMEOUT_MS) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`Database operation timed out after ${ms}ms`);
+      err.code = 'DB_TIMEOUT';
+      reject(err);
+    }, ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
 
 export const client = isRemote
   ? createClient({
       url: tursoUrl,
       authToken: (process.env.TURSO_AUTH_TOKEN || '').trim() || undefined,
+      timeout: DB_TIMEOUT_MS,
     })
   : createClient({
       url: pathToFileURL(path.resolve(localDbPath)).href,
+      timeout: DB_TIMEOUT_MS,
     });
 
 const txStore = new AsyncLocalStorage();
@@ -27,15 +47,15 @@ export const db = {
   client,
   isRemote,
   async get(sql, ...args) {
-    const rs = await runner().execute({ sql, args: normArgs(args) });
+    const rs = await withDbTimeout(runner().execute({ sql, args: normArgs(args) }));
     return rs.rows.length ? { ...rs.rows[0] } : undefined;
   },
   async all(sql, ...args) {
-    const rs = await runner().execute({ sql, args: normArgs(args) });
+    const rs = await withDbTimeout(runner().execute({ sql, args: normArgs(args) }));
     return rs.rows.map((r) => ({ ...r }));
   },
   async run(sql, ...args) {
-    const rs = await runner().execute({ sql, args: normArgs(args) });
+    const rs = await withDbTimeout(runner().execute({ sql, args: normArgs(args) }));
     return {
       changes: rs.rowsAffected,
       lastInsertRowid: rs.lastInsertRowid != null ? Number(rs.lastInsertRowid) : 0,
@@ -52,10 +72,10 @@ export const db = {
 
 export async function tx(fn) {
   if (txStore.getStore()) return await fn();
-  const trx = await client.transaction('write');
+  const trx = await withDbTimeout(client.transaction('write'));
   try {
     const r = await txStore.run(trx, fn);
-    await trx.commit();
+    await withDbTimeout(trx.commit());
     return r;
   } catch (e) {
     try { await trx.rollback(); } catch {}
@@ -376,6 +396,14 @@ await runMigration('2026_11_notification_requires_ack', async () => {
   }
 });
 
+// Performance indexes for admin live/stats, captain lookups, and recent zone orders
+await runMigration('2026_11_perf_indexes', async () => {
+  await db.run('CREATE INDEX IF NOT EXISTS idx_orders_captain_status ON orders(captain_id, status)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_users_role_status_zone ON users(role, status, zone_id, online)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_orders_day_status_zone ON orders(day, status, zone_id)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_orders_zone_id_desc ON orders(zone_id, id DESC)');
+});
+
 export const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const NOTIFICATION_CLEANUP_INTERVAL_MS =
   Number(process.env.NOTIFICATION_CLEANUP_INTERVAL_MS) || 10 * 60 * 1000;
@@ -463,10 +491,37 @@ export async function applyPointsEntry({
   });
 }
 
-export const getSetting = async (k, def) =>
-  (await db.get('SELECT value FROM settings WHERE key=?', k))?.value ?? def;
-export const setSetting = (k, v) =>
-  db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
+const SETTINGS_TTL_MS = 30_000;
+const settingsCache = new Map();
+
+/** Clear cached setting values (all keys or a single key). */
+export const clearSettingsCache = (k) => {
+  if (k) settingsCache.delete(k);
+  else settingsCache.clear();
+};
+
+export const getSetting = async (k, def) => {
+  const now = Date.now();
+  const cached = settingsCache.get(k);
+  if (cached && cached.expiresAt > now) {
+    return cached.value ?? def;
+  }
+  const row = await db.get('SELECT value FROM settings WHERE key=?', k);
+  const val = row?.value ?? null;
+  settingsCache.set(k, { value: val, expiresAt: now + SETTINGS_TTL_MS });
+  return val ?? def;
+};
+
+export const setSetting = async (k, v) => {
+  settingsCache.delete(k);
+  const res = await db.run(
+    'INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+    k,
+    String(v)
+  );
+  settingsCache.delete(k);
+  return res;
+};
 export const orderCostPoints = async () => Number(await getSetting('order_cost_points', config.defaultOrderCostPoints));
 export const walletEnforcement = async () => (await getSetting('wallet_enforcement', 'off')) === 'on';
 export const pickupGpsRequired = async () => getSetting('pickup_gps_required', 'grace');
