@@ -52,7 +52,12 @@ authScreen('admin', (user) => {
     settings: '⚙️ المناطق والإعدادات',
   };
   app.innerHTML = `<aside class="sb"><div class="logo"><img src="/brand/panther-mark-reversed.png" alt="PANTHER" class="brand-logo-sm" width="48" height="25"><div style="line-height:1.15"><div lang="en" dir="ltr"><span class="brand-pan">PAN</span><span class="brand-ther">THER</span></div><small style="font-size:10.5px;color:var(--brand-primary);letter-spacing:1.2px;display:block;font-weight:700"><span lang="en" dir="ltr">DELIVERY</span> • توصيل</small></div></div>
-    <nav class="nav tabs" aria-label="التنقل الجانبي">${Object.entries(TABS).map(([k, v]) => `<button type="button" data-t="${k}">${v}</button>`).join('')}</nav>
+    <nav class="nav tabs" aria-label="التنقل الجانبي">${Object.entries(TABS).map(([k, v]) => {
+      const sp = v.indexOf(' ');
+      const ico = sp > 0 ? v.slice(0, sp) : '';
+      const lbl = sp > 0 ? v.slice(sp + 1) : v;
+      return `<button type="button" data-t="${k}"><span class="sb-ico" aria-hidden="true">${ico}</span><span class="sb-lbl">${lbl}</span></button>`;
+    }).join('')}</nav>
     <div class="sbfoot"><div class="av">${esc((user.name || 'A').slice(0, 1))}</div><b>${esc(user.name || 'المدير')}</b><button type="button" id="lo2">خروج</button></div></aside>
     <section class="main">
       <div class="topbar2">
