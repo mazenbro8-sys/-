@@ -1,5 +1,15 @@
 import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
+import {
+  TRANSFER_HINT_TEXT,
+  CAPTAIN_OFFLINE_TEXT,
+  orderBelongsToMerchant as matchOrderMerchant,
+  getMerchantOpenOrders as filterMerchantOpenOrders,
+  isWaitingOrder,
+  getTransferableOrder,
+  decideMerchantTap,
+  transferOnCaptainTap,
+} from './live-transfer.js?v=panther2026v28';
 
 const toDtLocal = (ms) => {
   if (ms == null) return '';
@@ -266,11 +276,16 @@ authScreen('admin', (user) => {
     </div>`;
   }
 
+  function renderCaptainTooltipHtml(c, stTxt, upd = formatCaptainLastUpdate(c)) {
+    return `<div class="cap-map-tip"><span class="cap-map-tip-txt">🛵 ${esc(c.name)} — ${esc(stTxt)} • ${esc(upd.displayText)}</span><button type="button" class="sec cap-tip-details-btn" data-cap-details="${c.id}">تفاصيل</button></div>`;
+  }
+
   function renderCaptainPopupHtml(c) {
-    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? '🟢 أونلاين متاح' : '⚪ أوفلاين';
+    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? '● أونلاين متاح' : '○ أوفلاين';
     return `<div class="cap-map-popup">
       <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''} <span class="mut">(${esc(stTxt)})</span></div>
       ${renderCaptainLocDiag(c)}
+      <div class="cap-map-popup-actions"><button type="button" class="sec cap-popup-details-btn" data-cap-details="${c.id}">تفاصيل</button></div>
     </div>`;
   }
 
@@ -987,6 +1002,18 @@ authScreen('admin', (user) => {
     return zonesInFlight;
   }
 
+  function destroyLeafletMap(m) {
+    if (!m) return;
+    try { m.stop?.(); } catch {}
+    if (m._animatingZoom) {
+      try { m._onZoomTransitionEnd?.(); } catch {}
+      m._animatingZoom = false;
+    }
+    m.invalidateSize = () => m;
+    m.addLayer = () => m;
+    try { m.remove(); } catch {}
+  }
+
   async function go(t) {
     tab = t;
     clearTimeout(refreshTimer);
@@ -994,9 +1021,9 @@ authScreen('admin', (user) => {
     if (view()) view().onclick = null;
     liveStageObs?.disconnect();
     liveStageObs = null;
-    if (liveMap) { try { liveMap.remove(); } catch {} }
+    destroyLeafletMap(liveMap);
     liveMap = null; liveFitted = false;
-    if (dashMap) { try { dashMap.remove(); } catch {} }
+    destroyLeafletMap(dashMap);
     dashMap = null;
     liveSelection = null;
     if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
@@ -1072,15 +1099,14 @@ authScreen('admin', (user) => {
     const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
     const upd = formatCaptainLastUpdate(c);
     const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
     const coords = `${c.lat},${c.lng}`;
 
     let mk = existing;
     if (!mk) {
       mk = L.marker([c.lat, c.lng], { icon: buildDashCaptainIcon(c, upd) })
         .addTo(dashMap)
-        .bindTooltip(tip)
-        .bindPopup(renderCaptainPopupHtml(c));
-      mk.on('popupopen', tickCaptainLocAges);
+        .bindTooltip(tipHtml, { interactive: true });
       mk._dashStateKey = stateKey;
       mk._dashCoords = coords;
       dashCapMarkers.set(c.id, mk);
@@ -1097,10 +1123,9 @@ authScreen('admin', (user) => {
         const updEl = mk.getElement?.()?.querySelector('[data-cap-upd]');
         applyCaptainLastUpdateEl(updEl, c);
       }
-      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
-      mk.setPopupContent?.(renderCaptainPopupHtml(c));
-      if (mk.isPopupOpen?.()) tickCaptainLocAges();
+      mk.setTooltipContent?.(tipHtml) || mk.bindTooltip(tipHtml, { interactive: true });
     }
+    wireMarkerDomAccessibility(mk, tip, () => openCaptainDetailsModal(c.id, mk.getElement?.()));
   }
 
   const views = {
@@ -1125,7 +1150,8 @@ authScreen('admin', (user) => {
         ['✅', s.deliveredToday, 'طلبات اليوم المسلّمة', 'orders'],
       ];
 
-      if (dashMap) { try { dashMap.remove(); } catch {} }
+      destroyLeafletMap(dashMap);
+      dashMap = null;
       dashCapMarkers.clear();
 
       view().innerHTML = `
@@ -3033,27 +3059,15 @@ authScreen('admin', (user) => {
     return (liveCache.merchants || []).find((m) => (m.business_name || m.name) === name) || null;
   }
 
-  function orderBelongsToMerchant(o, m) {
-    if (!o || !m) return false;
-    if (o.merchant_id != null) return o.merchant_id === m.id;
-    const oName = o.merchant?.name;
-    return Boolean(oName && oName === (m.business_name || m.name));
-  }
+  const orderBelongsToMerchant = (o, m) => matchOrderMerchant(o, m);
 
-  function getMerchantOpenOrders(m) {
-    return (liveCache.orders || []).filter(
-      (o) => orderBelongsToMerchant(o, m) && !['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)
-    );
-  }
+  const getMerchantOpenOrders = (m) => filterMerchantOpenOrders(m, liveCache.orders || []);
 
-  function getMerchantTransferableOrder(m) {
-    const open = getMerchantOpenOrders(m);
-    return open.find((o) => o.status === 'searching') || open.find((o) => o.status === 'offered') || null;
-  }
+  const getMerchantTransferableOrder = (m) => getTransferableOrder(m, liveCache.orders || []);
 
   function getMerchantVisualState(m) {
     const open = getMerchantOpenOrders(m);
-    if (open.some((o) => ['searching', 'offered'].includes(o.status))) {
+    if (open.some(isWaitingOrder)) {
       return { stateKey: 'yellow', stateClass: 'ops-state-yellow ops-pulsing', pulsing: true, label: 'بانتظار كابتن', openOrders: open };
     }
     if (open.some((o) => ['accepted', 'picked_up', 'arrived'].includes(o.status))) {
@@ -3085,17 +3099,17 @@ authScreen('admin', (user) => {
       if (liveHintOverride.tone === 'warning') bar.classList.add('is-warning');
       else if (liveHintOverride.tone === 'selecting') bar.classList.add('is-selecting');
       const sp = document.createElement('span');
+      sp.className = 'live-hint-text';
       sp.textContent = liveHintOverride.text;
       bar.appendChild(sp);
       return;
     }
 
     if (liveSelection?.kind === 'merchant') {
-      const m = (liveCache.merchants || []).find((x) => x.id === liveSelection.merchantId);
-      const ord = (liveCache.orders || []).find((x) => x.id === liveSelection.orderId) || ordersIndex.get(liveSelection.orderId);
       bar.classList.add('is-selecting');
       const sp = document.createElement('span');
-      sp.textContent = `📌 محدد: طلب ${ord ? serialNo(ord) : ''} من «${m?.business_name || m?.name || 'المنشأة'}» — اختر كابتن أونلاين للنقل (أو Esc للإلغاء)`;
+      sp.className = 'live-hint-text';
+      sp.textContent = TRANSFER_HINT_TEXT;
       const clr = document.createElement('button');
       clr.type = 'button';
       clr.className = 'live-hint-clear';
@@ -3109,7 +3123,8 @@ authScreen('admin', (user) => {
       const cap = (liveCache.captains || []).find((x) => x.id === liveSelection.captainId);
       bar.classList.add('is-selecting');
       const sp = document.createElement('span');
-      sp.textContent = `📌 محدد: الكابتن «${cap?.name || 'الكابتن'}» — اختر منشأة صفراء لنقل طلبها إليه (أو Esc للإلغاء)`;
+      sp.className = 'live-hint-text';
+      sp.textContent = `📌 محدد: الكابتن «${cap?.name || 'الكابتن'}» — اختر منشأة صفراء لنقل طلبها إليه`;
       const clr = document.createElement('button');
       clr.type = 'button';
       clr.className = 'live-hint-clear';
@@ -3120,7 +3135,8 @@ authScreen('admin', (user) => {
     }
 
     const sp = document.createElement('span');
-    sp.textContent = '💡 اضغط على منشأة صفراء (بحث/عرض) أو كابتن أونلاين لنقل وتوجيه الطلبات';
+    sp.className = 'live-hint-text';
+    sp.textContent = '💡 اضغط على منشأة صفراء ثم كابتن أونلاين لنقل الطلب فوراً';
     bar.appendChild(sp);
   }
 
@@ -3148,9 +3164,10 @@ authScreen('admin', (user) => {
     if (validTarget) classes.push('is-valid-target');
     if (dimmed) classes.push('is-dimmed');
     const badgeHtml = badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
+    const selectedHtml = selected ? '<span class="ops-pin-selected-tag">محدد</span>' : '';
     return L.divIcon({
       className: classes.join(' '),
-      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}${ageHtml}`,
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}${selectedHtml}${ageHtml}`,
       iconSize: [48, 48],
       iconAnchor: [24, 24],
     });
@@ -3225,7 +3242,7 @@ authScreen('admin', (user) => {
     const orderInfo = st.openOrders.length
       ? ` — ${st.openOrders.map((o) => `${serialNo(o)} (${STATUS[o.status] || o.status})`).join('، ')}`
       : ' — لا يوجد طلب مفتوح';
-    const tip = `🏪 ${name}${orderInfo}`;
+    const tip = `🏪 ${name}${selected ? ' (محدد)' : ''}${orderInfo}`;
     const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${transferableCount}`;
 
     let mk = existing;
@@ -3289,7 +3306,9 @@ authScreen('admin', (user) => {
     const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
     const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
     const upd = formatCaptainLastUpdate(c);
-    const tip = `🛵 ${c.name} — ${st.busy ? `${st.label} (${actCount})` : st.label} • ${upd.displayText}`;
+    const stTxt = st.busy ? `${st.label} (${actCount})` : st.label;
+    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
     const ageHtml = `<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`;
     const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}`;
 
@@ -3308,7 +3327,7 @@ authScreen('admin', (user) => {
       mk = L.marker([c.lat, c.lng], { icon });
       mk._opsSig = sig;
       mk._opsCoords = `${c.lat},${c.lng}`;
-      mk.bindTooltip(tip);
+      mk.bindTooltip(tipHtml, { interactive: true });
       capMarkers.set(c.id, mk);
     } else {
       const coords = `${c.lat},${c.lng}`;
@@ -3330,7 +3349,7 @@ authScreen('admin', (user) => {
         }));
         mk._opsSig = sig;
       }
-      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+      mk.setTooltipContent?.(tipHtml) || mk.bindTooltip(tipHtml, { interactive: true });
     }
 
     if (shouldShow) {
@@ -3342,7 +3361,7 @@ authScreen('admin', (user) => {
 
     wireMarkerDomAccessibility(mk, tip, () => {
       const freshC = (liveCache.captains || []).find((x) => x.id === c.id) || c;
-      handleCaptainTap(freshC);
+      handleCaptainTap(freshC, mk.getElement?.());
     });
   }
 
@@ -3505,8 +3524,8 @@ authScreen('admin', (user) => {
         }
       }
       syncOrderOverlay(freshOrder);
-      if (liveSelection?.kind === 'merchant' && liveSelection.orderId === freshOrder.id) {
-        if (!['searching', 'offered'].includes(freshOrder.status)) {
+      if (!fastTransferInFlight && liveSelection?.kind === 'merchant' && liveSelection.orderId === freshOrder.id) {
+        if (!isWaitingOrder(freshOrder)) {
           setLiveSelection(null);
           showLiveNotice(`ℹ️ تغيرت حالة الطلب ${serialNo(freshOrder)} إلى «${STATUS[freshOrder.status] || freshOrder.status}»`, 'info', 3500);
         }
@@ -3545,54 +3564,360 @@ authScreen('admin', (user) => {
       return;
     }
 
-    if (liveSelection?.kind === 'merchant' && liveSelection.merchantId === m.id) {
+    const dec = decideMerchantTap(m, liveCache.orders || [], liveSelection);
+    if (dec.action === 'clear') {
       setLiveSelection(null);
       return;
     }
-
-    const open = getMerchantOpenOrders(m);
-    const transferable = getMerchantTransferableOrder(m);
-    if (transferable) {
-      setLiveSelection({ kind: 'merchant', merchantId: m.id, orderId: transferable.id });
+    if (dec.action === 'select') {
+      setLiveSelection({ kind: 'merchant', merchantId: m.id, orderId: dec.orderId });
       return;
     }
-    const locked = open.find((o) => ['picked_up', 'arrived'].includes(o.status));
-    if (locked) {
-      showLiveNotice(`⚠️ لا يمكن نقل الطلب ${serialNo(locked)} لأنه في حالة «${STATUS[locked.status]}» (تم استلامه أو وصل للزبون)`, 'warning');
+    if (dec.action === 'locked') {
+      showLiveNotice(`⚠️ لا يمكن نقل الطلب ${serialNo(dec.order)} لأنه في حالة «${STATUS[dec.order.status]}» (تم استلامه أو وصل للزبون)`, 'warning');
       toast('لا يمكن نقل طلب تم استلامه أو وصل للزبون من الخريطة');
       return;
     }
-    const acceptedOnly = open.find((o) => o.status === 'accepted');
-    if (acceptedOnly) {
-      showLiveNotice(`ℹ️ طلب «${m.business_name || m.name}» (${serialNo(acceptedOnly)}) مسند بالفعل لكابتن في الطريق للمنشأة`, 'warning');
+    if (dec.action === 'accepted') {
+      showLiveNotice(`ℹ️ طلب «${m.business_name || m.name}» (${serialNo(dec.order)}) مسند بالفعل لكابتن في الطريق للمنشأة`, 'warning');
       return;
     }
     showLiveNotice(`ℹ️ منشأة «${m.business_name || m.name}» ليس لديها أي طلب مفتوح حالياً`, 'warning', 3200);
   }
 
-  function handleCaptainTap(c) {
-    if (!c) return;
-    if (!c.online) {
-      showLiveNotice(`⛔ الكابتن «${c.name}» أوفلاين حالياً ولا يصلح للنقل`, 'warning');
-      toast('الكابتن أوفلاين ولا يمكن تعيين الطلبات له');
-      return;
-    }
-    if (liveSelection?.kind === 'merchant') {
-      const m = (liveCache.merchants || []).find((x) => x.id === liveSelection.merchantId);
-      const ord = (liveCache.orders || []).find((o) => o.id === liveSelection.orderId) || getMerchantTransferableOrder(m);
-      if (!ord || !['searching', 'offered'].includes(ord.status)) {
-        setLiveSelection(null);
-        showLiveNotice('⚠️ الطلب لم يعد في حالة بحث أو عرض للنقل', 'warning');
+  function ensureCaptainDetailsDialog() {
+    let dlg = document.getElementById('captainDetailsDialog');
+    if (dlg) return dlg;
+    dlg = document.createElement('dialog');
+    dlg.id = 'captainDetailsDialog';
+    dlg.className = 'cap-details-dialog';
+    dlg.setAttribute('closedby', 'any');
+    dlg.setAttribute('aria-labelledby', 'capDetailsTitle');
+    dlg._loadSeq = 0;
+    document.body.appendChild(dlg);
+    attachLightDismissFallback(dlg, () => dlg.close());
+    dlg.addEventListener('close', () => {
+      dlg.returnValue = '';
+      if (dlg._skipFocusReturn) {
+        dlg._skipFocusReturn = false;
         return;
       }
-      openLiveTransferDialog(ord, m, c);
+      const cid = dlg._returnCapId;
+      const markerFallback = cid != null
+        ? ((tab === 'live' ? capMarkers.get(cid)?.getElement?.() : null)
+          || (tab === 'dash' ? dashCapMarkers.get(cid)?.getElement?.() : null)
+          || capMarkers.get(cid)?.getElement?.()
+          || dashCapMarkers.get(cid)?.getElement?.())
+        : null;
+      const candidate = (dlg._returnFocusEl instanceof HTMLElement && dlg._returnFocusEl.isConnected)
+        ? dlg._returnFocusEl
+        : markerFallback;
+      if (candidate instanceof HTMLElement && candidate.isConnected) {
+        requestAnimationFrame(() => {
+          if (!document.querySelector('dialog[open]') && candidate.isConnected && document.activeElement !== candidate) {
+            candidate.focus({ preventScroll: true });
+          }
+        });
+      }
+    });
+    return dlg;
+  }
+
+  function renderCapHistoryRowHtml(o) {
+    const merchantName = o.merchant?.name || '—';
+    const costVal = o.cost_points != null ? points(o.cost_points) : '—';
+    return `<div class="cap-det-history-row" data-cap-history-oid="${o.id}">
+      <div class="cap-det-history-top">
+        <b class="serial-pill" dir="ltr">${serialNo(o)}</b>
+        ${orderStatusBadge(o)}
+        <span class="cap-det-cost-tag">🪙 ${esc(costVal)}</span>
+      </div>
+      <div class="cap-det-history-meta">
+        <span>🏪 ${esc(merchantName)}</span>
+        <time dir="ltr">🕒 ${esc(time(o.closed_at || o.created_at))}</time>
+      </div>
+    </div>`;
+  }
+
+  async function openCaptainDetailsModal(captainId, triggerEl = null) {
+    const cid = Number(captainId);
+    if (!cid) return;
+    const dlg = ensureCaptainDetailsDialog();
+    const seq = ++dlg._loadSeq;
+    dlg._returnCapId = cid;
+    dlg._skipFocusReturn = false;
+
+    const markerFallback = (tab === 'live' ? capMarkers.get(cid)?.getElement?.() : null)
+      || (tab === 'dash' ? dashCapMarkers.get(cid)?.getElement?.() : null)
+      || capMarkers.get(cid)?.getElement?.()
+      || dashCapMarkers.get(cid)?.getElement?.();
+    const invokerEl = (triggerEl instanceof HTMLElement && triggerEl.isConnected)
+      ? triggerEl
+      : (markerFallback || (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+    dlg._returnFocusEl = invokerEl;
+    if (invokerEl && invokerEl.focus && document.activeElement !== invokerEl) {
+      invokerEl.focus({ preventScroll: true });
+    }
+
+    const cachedCap = (liveCache.captains || []).find((x) => x.id === cid) || null;
+    const initialTitle = cachedCap?.name ? `🛵 ${cachedCap.name}` : '🛵 تفاصيل الكابتن';
+    dlg.innerHTML = `
+      <div class="cap-det-sticky-head">
+        <h3 id="capDetailsTitle">${esc(initialTitle)}</h3>
+        <button type="button" class="ghost cap-det-close-btn" id="capDetailsCloseBtn" aria-label="إغلاق">✕ إغلاق</button>
+      </div>
+      <div class="cap-det-body" id="capDetailsBody">
+        <div class="cap-det-loading" role="status" aria-live="polite">⏳ جاري تحميل بيانات الكابتن...</div>
+      </div>`;
+
+    if (!dlg.open) dlg.showModal();
+    dlg.querySelector('#capDetailsCloseBtn')?.focus();
+
+    let loadedHistoryCount = 0;
+    let totalHistoryCount = 0;
+
+    dlg.onclick = async (ev) => {
+      if (ev.target.closest('#capDetailsCloseBtn')) {
+        dlg.close();
+        return;
+      }
+      const ordBtn = ev.target.closest('[data-cap-open-order]');
+      if (ordBtn) {
+        const oid = Number(ordBtn.dataset.capOpenOrder);
+        if (oid) {
+          dlg._skipFocusReturn = true;
+          dlg.close();
+          await openActionSheet(oid, 'detail');
+        }
+        return;
+      }
+      const moreBtn = ev.target.closest('#capDetailsMoreBtn');
+      if (moreBtn && !moreBtn.disabled) {
+        moreBtn.disabled = true;
+        const prevTxt = moreBtn.textContent;
+        moreBtn.textContent = '⏳ جاري تحميل المزيد...';
+        try {
+          const page = await api(`/admin/captains/${cid}/orders?offset=${loadedHistoryCount}&limit=20`);
+          if (seq !== dlg._loadSeq || !dlg.open) return;
+          const listEl = dlg.querySelector('#capDetailsHistoryList');
+          const rows = page.orders || [];
+          rememberOrders(rows);
+          if (listEl && rows.length) {
+            listEl.insertAdjacentHTML('beforeend', rows.map(renderCapHistoryRowHtml).join(''));
+          }
+          loadedHistoryCount += rows.length;
+          totalHistoryCount = Number(page.total ?? totalHistoryCount);
+          if (page.has_more) {
+            moreBtn.disabled = false;
+            moreBtn.textContent = `المزيد (${enDigits(loadedHistoryCount)} / ${enDigits(totalHistoryCount)})`;
+          } else {
+            moreBtn.remove();
+          }
+        } catch (err) {
+          moreBtn.disabled = false;
+          moreBtn.textContent = prevTxt;
+          toast(err?.message || 'تعذّر تحميل المزيد من الطلبات');
+        }
+      }
+    };
+
+    try {
+      const data = await api(`/admin/captains/${cid}/details`);
+      if (seq !== dlg._loadSeq || !dlg.open) return;
+
+      const c = data.profile || data.captain || {};
+      const w = data.wallet || {};
+      const todayStats = data.today || {};
+      const activeOrders = data.active_orders || [];
+      const historyObj = data.history || {};
+      const historyOrders = historyObj.orders || [];
+      rememberOrders(activeOrders);
+      rememberOrders(historyOrders);
+
+      loadedHistoryCount = historyOrders.length;
+      totalHistoryCount = Number(historyObj.total ?? historyOrders.length);
+
+      const titleEl = dlg.querySelector('#capDetailsTitle');
+      if (titleEl) titleEl.textContent = `🛵 ${c.name || 'تفاصيل الكابتن'}`;
+
+      const onlineBadge = c.online
+        ? (activeOrders.length > 0
+            ? `<span class="badge b-accepted cap-status-pill"><span aria-hidden="true">●</span> أونلاين — مشغول (${enDigits(activeOrders.length)})</span>`
+            : '<span class="badge b-active cap-status-pill"><span aria-hidden="true">●</span> أونلاين متاح</span>')
+        : '<span class="badge cap-status-pill"><span aria-hidden="true">○</span> أوفلاين</span>';
+
+      const costSourceTxt = w.cost_source === 'exempt_permanent'
+        ? 'إعفاء دائم'
+        : w.cost_source === 'exempt_temporary'
+          ? 'إعفاء مؤقت'
+          : w.cost_source === 'override'
+            ? 'تكلفة مخصصة'
+            : 'التكلفة الافتراضية';
+
+      let exemptTxt = 'غير معفى';
+      if (w.exemption_status === 'permanent') {
+        exemptTxt = 'إعفاء دائم';
+      } else if (w.exemption_status === 'temporary') {
+        exemptTxt = w.exempt_until ? `إعفاء مؤقت حتى ${time(w.exempt_until)}` : 'إعفاء مؤقت';
+      }
+
+      const upd = formatCaptainLastUpdate(c);
+      const bodyEl = dlg.querySelector('#capDetailsBody');
+      if (!bodyEl) return;
+
+      bodyEl.innerHTML = `
+        <section class="cap-det-sec cap-det-profile" aria-label="بيانات الكابتن">
+          <div class="cap-det-profile-top">
+            <div class="cap-det-id-block">
+              <strong class="cap-det-name">${esc(c.name || '—')}</strong>
+              ${c.tag ? `<code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : '<span class="mut">—</span>'}
+            </div>
+            ${onlineBadge}
+          </div>
+          <div class="cap-det-profile-meta">
+            <span>📞 <b dir="ltr">${esc(c.phone || '—')}</b></span>
+            <span>📍 ${esc(c.zone_name || zname(c.zone_id) || '—')}</span>
+          </div>
+        </section>
+
+        <section class="cap-det-sec" aria-label="المحفظة والتكلفة">
+          <h4 class="cap-det-sec-title">💰 المحفظة</h4>
+          <div class="cap-det-kpis">
+            <div class="cap-det-kpi">
+              <span class="cap-det-kpi-lbl">الرصيد الحالي</span>
+              <b class="cap-det-kpi-val">${esc(points(w.balance_points ?? 0))}</b>
+            </div>
+            <div class="cap-det-kpi">
+              <span class="cap-det-kpi-lbl">تكلفة الطلب</span>
+              <b class="cap-det-kpi-val">${esc(points(w.effective_cost_points ?? 0))}</b>
+              <small class="cap-det-kpi-sub">${esc(costSourceTxt)}</small>
+            </div>
+            <div class="cap-det-kpi cap-det-kpi-wide">
+              <span class="cap-det-kpi-lbl">حالة الإعفاء</span>
+              <b class="cap-det-kpi-val">${esc(exemptTxt)}</b>
+            </div>
+          </div>
+        </section>
+
+        <section class="cap-det-sec" aria-label="إحصائيات اليوم">
+          <h4 class="cap-det-sec-title">📊 اليوم</h4>
+          <div class="cap-det-kpis cap-det-kpis-2">
+            <div class="cap-det-kpi">
+              <span class="cap-det-kpi-lbl">الطلبات المسلّمة اليوم</span>
+              <b class="cap-det-kpi-val">${enDigits(todayStats.delivered_count ?? 0)} طلب</b>
+            </div>
+            <div class="cap-det-kpi">
+              <span class="cap-det-kpi-lbl">النقاط المخصومة اليوم</span>
+              <b class="cap-det-kpi-val">${esc(points(todayStats.points_deducted ?? 0))}</b>
+            </div>
+          </div>
+        </section>
+
+        <section class="cap-det-sec" aria-label="الطلبات النشطة">
+          <h4 class="cap-det-sec-title">📦 الطلبات النشطة (${enDigits(activeOrders.length)})</h4>
+          <div class="cap-det-active-list">
+            ${activeOrders.length
+              ? activeOrders.map((o) => `
+                <button type="button" class="sec cap-det-active-order-btn" data-cap-open-order="${o.id}">
+                  <div class="cap-det-order-top">
+                    <b class="serial-pill" dir="ltr">${serialNo(o)}</b>
+                    ${orderStatusBadge(o)}
+                  </div>
+                  <div class="cap-det-order-meta">
+                    <span>🏪 ${esc(o.merchant?.name || '—')}</span>
+                    <span>📍 ${esc(o.customer_address || '—')}</span>
+                  </div>
+                </button>`).join('')
+              : '<div class="mut cap-det-empty">لا توجد طلبات نشطة حالياً</div>'}
+          </div>
+        </section>
+
+        <section class="cap-det-sec" aria-label="سجل الطلبات">
+          <div class="cap-det-sec-head">
+            <h4 class="cap-det-sec-title">🕓 سجل الطلبات</h4>
+            <span class="badge">${enDigits(totalHistoryCount)} طلب</span>
+          </div>
+          <div id="capDetailsHistoryList" class="cap-det-history-list">
+            ${historyOrders.length
+              ? historyOrders.map(renderCapHistoryRowHtml).join('')
+              : '<div class="mut cap-det-empty">لا توجد طلبات سابقة لهذا الكابتن</div>'}
+          </div>
+          ${historyObj.has_more
+            ? `<button type="button" class="sec cap-det-more-btn" id="capDetailsMoreBtn">المزيد (${enDigits(loadedHistoryCount)} / ${enDigits(totalHistoryCount)})</button>`
+            : ''}
+        </section>
+
+        <section class="cap-det-sec" aria-label="آخر تحديث للموقع">
+          <h4 class="cap-det-sec-title">📡 آخر تحديث للموقع</h4>
+          <div class="cap-det-loc-box">
+            <span class="cap-det-loc-upd${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>
+          </div>
+        </section>`;
+    } catch (err) {
+      if (seq !== dlg._loadSeq || !dlg.open) return;
+      const bodyEl = dlg.querySelector('#capDetailsBody');
+      if (bodyEl) {
+        bodyEl.innerHTML = `<div class="cap-det-error" role="alert">⚠️ ${esc(err?.message || 'تعذّر تحميل تفاصيل الكابتن')}</div>`;
+      }
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-cap-details]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const cid = Number(btn.dataset.capDetails);
+    if (cid) openCaptainDetailsModal(cid, btn);
+  }, true);
+
+  let fastTransferInFlight = false;
+
+  async function handleCaptainTap(c, triggerEl = null) {
+    if (!c) return;
+    if (liveSelection?.kind !== 'merchant') {
+      openCaptainDetailsModal(c.id, triggerEl);
       return;
     }
-    if (liveSelection?.kind === 'captain' && liveSelection.captainId === c.id) {
+    if (fastTransferInFlight) return;
+    let started = false;
+    let out;
+    try {
+      out = await transferOnCaptainTap({
+        captain: c,
+        selection: liveSelection,
+        orders: liveCache.orders || [],
+        api,
+        onStart: () => {
+          started = true;
+          fastTransferInFlight = true;
+        },
+      });
+    } finally {
+      if (started) fastTransferInFlight = false;
+    }
+
+    if (out.action === 'offline') {
+      toast(CAPTAIN_OFFLINE_TEXT);
+      showLiveNotice(`⛔ ${CAPTAIN_OFFLINE_TEXT}`, 'warning', 3200);
+      return;
+    }
+    if (out.action === 'stale') {
       setLiveSelection(null);
+      showLiveNotice('⚠️ الطلب لم يعد في حالة بحث أو عرض للنقل', 'warning');
+      toast('الطلب لم يعد في حالة بحث أو عرض للنقل');
       return;
     }
-    setLiveSelection({ kind: 'captain', captainId: c.id });
+    if (out.action !== 'assign') return;
+
+    if (out.result?.ok) {
+      applyOrderUpdateToLiveCache(out.result.order);
+      setLiveSelection(null);
+      toast(out.result.message, out.result.warning ? 5500 : 3500);
+    } else {
+      setLiveSelection(null);
+      toast(out.result?.error || 'تعذّر نقل الطلب', 4500);
+    }
   }
 
   function openLiveTransferDialog(order, merchant, captain) {
