@@ -1,6 +1,13 @@
 import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 import {
+  getMarkerVisualSize,
+  getMarkerStatusAppearance,
+  looksLikeCaptainTag,
+  matchLoadedCaptain,
+  decideMapSearchResult,
+} from './map-search.js?v=panther2026v1';
+import {
   TRANSFER_HINT_TEXT,
   CAPTAIN_OFFLINE_TEXT,
   orderBelongsToMerchant as matchOrderMerchant,
@@ -103,6 +110,11 @@ authScreen('admin', (user) => {
   const notifCtrl = mountNotificationsBell(app.querySelector('.topbar-actions'), {
     insertBefore: app.querySelector('#adminSndBtn'),
   });
+  const topbarActionsEl = app.querySelector('.topbar-actions');
+  const topbarClockEl = topbarActionsEl?.querySelector('.clock') || null;
+  const adminAddOrderTopBtn = $('#adminAddOrderTop');
+  const adminSndBtnEl = $('#adminSndBtn');
+  const notifBellBtnEl = topbarActionsEl?.querySelector('#notifBellBtn') || null;
   $('#lo2').onclick = () => $('#lo').click();
   const tick = () => {
     const d = new Date();
@@ -132,8 +144,8 @@ authScreen('admin', (user) => {
     } catch {}
   }
   const updateAdminSndBtn = () => {
-    const ok = actx && actx.state === 'running', b = $('#adminSndBtn');
-    if (!b) return;
+    const ok = actx && actx.state === 'running', b = adminSndBtnEl;
+    if (!b || !b.isConnected) return;
     const titleTxt = ok ? 'صوت الإنذار مفعّل' : 'اضغط لتفعيل صوت الإنذار';
     if (b.dataset.sndOk !== (ok ? '1' : '0')) {
       b.dataset.sndOk = ok ? '1' : '0';
@@ -143,8 +155,34 @@ authScreen('admin', (user) => {
     }
     b.className = ok ? 'ok sm' : 'bad sm';
   };
-  $('#adminSndBtn').onclick = () => { testAdminSound(); setTimeout(updateAdminSndBtn, 250); };
+  if (adminSndBtnEl) {
+    adminSndBtnEl.onclick = () => { testAdminSound(); setTimeout(updateAdminSndBtn, 250); };
+  }
   setInterval(updateAdminSndBtn, 1500);
+
+  function syncLiveClockStyle(styleKey = lStore.getItem('mashwar_map_style') || 'google') {
+    document.body.classList.toggle('is-live-map-dark', styleKey === 'dark' || styleKey === 'hybrid');
+  }
+
+  function syncTopbarForLiveMode(isLive) {
+    if (!topbarActionsEl) return;
+    if (isLive) {
+      adminAddOrderTopBtn?.remove();
+      notifBellBtnEl?.remove();
+      adminSndBtnEl?.remove();
+      return;
+    }
+    if (adminAddOrderTopBtn && !adminAddOrderTopBtn.isConnected) {
+      topbarActionsEl.insertBefore(adminAddOrderTopBtn, topbarClockEl);
+    }
+    if (notifBellBtnEl && !notifBellBtnEl.isConnected) {
+      topbarActionsEl.insertBefore(notifBellBtnEl, topbarClockEl);
+    }
+    if (adminSndBtnEl && !adminSndBtnEl.isConnected) {
+      topbarActionsEl.insertBefore(adminSndBtnEl, topbarClockEl);
+      updateAdminSndBtn();
+    }
+  }
 
   function startAdminAlarm() {
     if (alarmTimer) return;
@@ -195,9 +233,11 @@ authScreen('admin', (user) => {
   let tab = 'dash', zones = [], zonesLoaded = false, zonesInFlight = null;
   let liveMap = null, liveFitted = false, liveStageObs = null, dashMap = null;
   let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
-  let capMarkers = new Map(), dashCapMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
+  let capMarkers = new Map(), dashCapMarkers = new Map(), dashMerchMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
   let liveSelection = null;
+  let searchHighlightedCaptainId = null;
+  let searchHighlightTimer = null;
   let liveFilters = {
     showMerchants: true,
     showCaptains: true,
@@ -920,7 +960,7 @@ authScreen('admin', (user) => {
     };
   }
 
-  $('#adminAddOrderTop').onclick = () => openAddOrderModal(null);
+  if (adminAddOrderTopBtn) adminAddOrderTopBtn.onclick = () => openAddOrderModal(null);
 
   $('.tabs').onclick = (e) => {
     const btn = e.target.closest('[data-t]');
@@ -1041,10 +1081,14 @@ authScreen('admin', (user) => {
     liveSelection = null;
     if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
     liveHintOverride = null;
-    capMarkers.clear(); dashCapMarkers.clear(); merchMarkers.clear(); orderMarkers.clear();
+    clearSearchHighlight();
+    capMarkers.clear(); dashCapMarkers.clear(); dashMerchMarkers.clear(); merchMarkers.clear(); orderMarkers.clear();
     if (routeLayers instanceof Map) routeLayers.clear();
     else routeLayers = new Map();
     document.body.classList.toggle('is-live-view', t === 'live');
+    if (t === 'live') syncLiveClockStyle();
+    else document.body.classList.remove('is-live-map-dark');
+    syncTopbarForLiveMode(t === 'live');
     $$('.tabs button').forEach((b) => {
       const isOn = b.dataset.t === t;
       b.classList.toggle('on', isOn);
@@ -1086,15 +1130,89 @@ authScreen('admin', (user) => {
     return '<span class="badge">⚪ أوفلاين</span>';
   }
 
-  function buildDashCaptainIcon(c, upd = formatCaptainLastUpdate(c)) {
-    const coreHtml = c.busy
-      ? '<div class="dash-cap-emoji" aria-hidden="true">🛵</div>'
-      : `<div class="pulsing-dot" style="background:${c.online ? '#10B981' : '#94A3B8'}"></div>`;
+  function buildDashMerchantIcon(m, zoomSize = getMarkerVisualSize(dashMap?.getZoom() ?? 12)) {
+    const st = getMerchantVisualState(m);
+    const app = getMarkerStatusAppearance({ kind: 'merchant', stateKey: st.stateKey });
+    const glyphHtml = zoomSize.showGlyph ? '🏪' : '';
     return L.divIcon({
-      html: `${coreHtml}<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`,
-      className: 'dash-cap-pin',
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="dash-pin-core is-merchant" aria-hidden="true">${glyphHtml}</span>`,
+      className: `dash-merch-pin ${app.stateClass} is-zoom-${zoomSize.tier}`,
+      iconSize: [zoomSize.hitSize, zoomSize.hitSize],
+      iconAnchor: [zoomSize.hitSize / 2, zoomSize.hitSize / 2],
+    });
+  }
+
+  function buildDashCaptainIcon(c, upd = formatCaptainLastUpdate(c), zoomSize = getMarkerVisualSize(dashMap?.getZoom() ?? 12)) {
+    const st = getCaptainVisualState(c);
+    const app = getMarkerStatusAppearance({ kind: 'captain', stateKey: st.stateKey });
+    const coreHtml = !zoomSize.showGlyph
+      ? ''
+      : c.busy
+        ? '<span class="dash-cap-emoji" aria-hidden="true">🛵</span>'
+        : `<span class="pulsing-dot" style="background:${app.color}"></span>`;
+    return L.divIcon({
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="dash-pin-core ${c.busy ? 'is-busy' : 'is-dot'}" aria-hidden="true">${coreHtml}</span><span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`,
+      className: `dash-cap-pin ${app.stateClass} is-zoom-${zoomSize.tier}`,
+      iconSize: [zoomSize.hitSize, zoomSize.hitSize],
+      iconAnchor: [zoomSize.hitSize / 2, zoomSize.hitSize / 2],
+    });
+  }
+
+  function upsertDashMerchantMarker(m) {
+    if (!dashMap || m == null) return;
+    const existing = dashMerchMarkers.get(m.id);
+    if (m.lat == null || m.lng == null) {
+      if (existing) {
+        existing.remove();
+        dashMerchMarkers.delete(m.id);
+      }
+      return;
+    }
+    const zoomSize = getMarkerVisualSize(dashMap.getZoom());
+    const stateKey = getMerchantVisualState(m).stateKey;
+    const tip = `🏪 ${m.business_name || m.name}`;
+    const coords = `${m.lat},${m.lng}`;
+    let mk = existing;
+    if (!mk) {
+      mk = L.marker([m.lat, m.lng], { icon: buildDashMerchantIcon(m, zoomSize) })
+        .addTo(dashMap)
+        .bindTooltip(tip);
+      mk._dashStateKey = stateKey;
+      mk._dashZoomTier = zoomSize.tier;
+      mk._dashCoords = coords;
+      mk._dashEntity = m;
+      dashMerchMarkers.set(m.id, mk);
+    } else {
+      mk._dashEntity = m;
+      if (mk._dashCoords !== coords) {
+        mk.setLatLng([m.lat, m.lng]);
+        mk._dashCoords = coords;
+      }
+      if (mk._dashStateKey !== stateKey || mk._dashZoomTier !== zoomSize.tier) {
+        mk.setIcon(buildDashMerchantIcon(m, zoomSize));
+        mk._dashStateKey = stateKey;
+        mk._dashZoomTier = zoomSize.tier;
+      }
+      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+    }
+  }
+
+  function syncDashMapMarkerZoom() {
+    if (!dashMap) return;
+    const zoomSize = getMarkerVisualSize(dashMap.getZoom());
+    dashMerchMarkers.forEach((mk) => {
+      if (mk._dashZoomTier === zoomSize.tier || !mk._dashEntity) return;
+      mk.setIcon(buildDashMerchantIcon(mk._dashEntity, zoomSize));
+      mk._dashZoomTier = zoomSize.tier;
+    });
+    dashCapMarkers.forEach((mk) => {
+      if (mk._dashZoomTier === zoomSize.tier || !mk._dashEntity) return;
+      const c = mk._dashEntity;
+      const upd = formatCaptainLastUpdate(c);
+      mk.setIcon(buildDashCaptainIcon(c, upd, zoomSize));
+      mk._dashZoomTier = zoomSize.tier;
+      applyCaptainLastUpdateEl(mk.getElement?.()?.querySelector('[data-cap-upd]'), c);
+      mk._opsApplyEl?.();
     });
   }
 
@@ -1108,7 +1226,9 @@ authScreen('admin', (user) => {
       }
       return;
     }
-    const stateKey = c.busy ? 'busy' : c.online ? 'online' : 'offline';
+    const zoomSize = getMarkerVisualSize(dashMap.getZoom());
+    const st = getCaptainVisualState(c);
+    const stateKey = st.stateKey;
     const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
     const upd = formatCaptainLastUpdate(c);
     const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
@@ -1117,21 +1237,25 @@ authScreen('admin', (user) => {
 
     let mk = existing;
     if (!mk) {
-      mk = L.marker([c.lat, c.lng], { icon: buildDashCaptainIcon(c, upd) })
+      mk = L.marker([c.lat, c.lng], { icon: buildDashCaptainIcon(c, upd, zoomSize) })
         .addTo(dashMap)
         .bindTooltip(tipHtml, { interactive: true });
       mk._dashStateKey = stateKey;
+      mk._dashZoomTier = zoomSize.tier;
       mk._dashCoords = coords;
+      mk._dashEntity = c;
       dashCapMarkers.set(c.id, mk);
     } else {
+      mk._dashEntity = c;
       if (mk._dashCoords !== coords) {
         if (animate && dashMap.hasLayer(mk)) animateMarker(mk, [c.lat, c.lng]);
         else mk.setLatLng([c.lat, c.lng]);
         mk._dashCoords = coords;
       }
-      if (mk._dashStateKey !== stateKey) {
-        mk.setIcon(buildDashCaptainIcon(c, upd));
+      if (mk._dashStateKey !== stateKey || mk._dashZoomTier !== zoomSize.tier) {
+        mk.setIcon(buildDashCaptainIcon(c, upd, zoomSize));
         mk._dashStateKey = stateKey;
+        mk._dashZoomTier = zoomSize.tier;
       } else {
         const updEl = mk.getElement?.()?.querySelector('[data-cap-upd]');
         applyCaptainLastUpdateEl(updEl, c);
@@ -1167,6 +1291,7 @@ authScreen('admin', (user) => {
       destroyLeafletMap(dashMap);
       dashMap = null;
       dashCapMarkers.clear();
+      dashMerchMarkers.clear();
 
       view().innerHTML = `
         <div class="card admin-page-head">
@@ -1222,13 +1347,8 @@ authScreen('admin', (user) => {
         <div id="detail"></div>`;
 
       dashMap = makeMap('dashmap', DAMASCUS, 12);
-      merchList.forEach((m) => {
-        if (m.lat != null && m.lng != null) {
-          L.marker([m.lat, m.lng], { icon: emoji('🏪') })
-            .addTo(dashMap)
-            .bindTooltip(`🏪 ${m.business_name || m.name}`);
-        }
-      });
+      dashMap.on('zoomend', syncDashMapMarkerZoom);
+      merchList.forEach((m) => upsertDashMerchantMarker(m));
       capList.forEach((c) => upsertDashCaptainMarker(c));
       liveOrders.forEach((o) => {
         if (o.customer_lat != null && o.customer_lng != null) {
@@ -1314,59 +1434,69 @@ authScreen('admin', (user) => {
         <div class="live-ops-stage">
           <div id="lmap" class="live-ops-map" aria-label="خريطة العمليات الحية"></div>
           <div class="live-ops-hud">
-            <aside id="liveLegendPanel" class="live-legend-panel ${liveLegendCollapsed ? 'is-collapsed' : ''}" aria-label="دليل الخريطة والفلاتر">
-              <div class="live-legend-head">
-                <button type="button" id="liveLegendToggle" class="live-legend-toggle" aria-expanded="${!liveLegendCollapsed}" aria-controls="liveLegendBody">
-                  <span>🎛️ الدليل والفلاتر (<span id="liveVisSummary">0</span>)</span>
-                  <span id="liveLegendChev" aria-hidden="true">${liveLegendCollapsed ? '▾' : '▴'}</span>
-                </button>
-                <div class="live-legend-head-tools">
-                  <button type="button" id="liveFit" class="live-hud-ico-btn" aria-label="تمركز الخريطة لإظهار الكل" title="إظهار الكل">🎯</button>
-                  <button type="button" id="liveRef" class="live-hud-ico-btn" aria-label="تحديث البيانات الفورية" title="تحديث">🔄</button>
+            <div class="live-ops-hud-top">
+              <aside id="liveLegendPanel" class="live-legend-panel ${liveLegendCollapsed ? 'is-collapsed' : ''}" aria-label="دليل الخريطة والفلاتر">
+                <div class="live-legend-head">
+                  <button type="button" id="liveLegendToggle" class="live-legend-toggle" aria-expanded="${!liveLegendCollapsed}" aria-controls="liveLegendBody">
+                    <span>🎛️ الدليل والفلاتر (<span id="liveVisSummary">0</span>)</span>
+                    <span id="liveLegendChev" aria-hidden="true">${liveLegendCollapsed ? '▾' : '▴'}</span>
+                  </button>
+                  <div class="live-legend-head-tools">
+                    <button type="button" id="liveFit" class="live-hud-ico-btn" aria-label="تمركز الخريطة لإظهار الكل" title="إظهار الكل">🎯</button>
+                    <button type="button" id="liveRef" class="live-hud-ico-btn" aria-label="تحديث البيانات الفورية" title="تحديث">🔄</button>
+                  </div>
                 </div>
-              </div>
-              <div id="liveLegendBody" class="live-legend-body">
-                <div class="live-legend-kpis" id="lstats">
-                  <div class="live-kpi-pill"><b id="lkLiveOrders">${initOrders}</b><span>طلبات حية</span></div>
-                  <div class="live-kpi-pill"><b id="lkOnlineCaps">${initOnline}/${initCaps}</b><span>أونلاين</span></div>
-                  <div class="live-kpi-pill"><b id="lkMerchants">${initMerch}</b><span>منشآت</span></div>
+                <div id="liveLegendBody" class="live-legend-body">
+                  <div class="live-legend-kpis" id="lstats">
+                    <div class="live-kpi-pill"><b id="lkLiveOrders">${initOrders}</b><span>طلبات حية</span></div>
+                    <div class="live-kpi-pill"><b id="lkOnlineCaps">${initOnline}/${initCaps}</b><span>أونلاين</span></div>
+                    <div class="live-kpi-pill"><b id="lkMerchants">${initMerch}</b><span>منشآت</span></div>
+                  </div>
+                  <div class="live-legend-group-title">طبقات الخريطة</div>
+                  <label class="live-filter-row" for="lfMerchants">
+                    <span class="live-filter-label"><input type="checkbox" id="lfMerchants" ${liveFilters.showMerchants ? 'checked' : ''}><span>🏪 إظهار المنشآت</span></span>
+                    <span class="live-filter-count" id="lfcMerchants">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfCaptains">
+                    <span class="live-filter-label"><input type="checkbox" id="lfCaptains" ${liveFilters.showCaptains ? 'checked' : ''}><span>🛵 إظهار الكباتن</span></span>
+                    <span class="live-filter-count" id="lfcCaptains">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfRoutes">
+                    <span class="live-filter-label"><input type="checkbox" id="lfRoutes" ${liveFilters.showRoutes ? 'checked' : ''}><span>📍 المسارات والوجهات</span></span>
+                    <span class="live-filter-count" id="lfcRoutes">0</span>
+                  </label>
+                  <div class="live-legend-group-title">حالات العلامات</div>
+                  <label class="live-filter-row" for="lfGreen">
+                    <span class="live-filter-label"><input type="checkbox" id="lfGreen" ${liveFilters.showGreen ? 'checked' : ''}><span class="live-swatch is-green" aria-hidden="true"></span><span>أخضر نابض: للزبون (استلام/وصول) أو طلب نشط</span></span>
+                    <span class="live-filter-count" id="lfcGreen">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfBlue">
+                    <span class="live-filter-label"><input type="checkbox" id="lfBlue" ${liveFilters.showBlue ? 'checked' : ''}><span class="live-swatch is-blue" aria-hidden="true"></span><span>أزرق نابض: كابتن متجه للمنشأة (مقبول)</span></span>
+                    <span class="live-filter-count" id="lfcBlue">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfYellow">
+                    <span class="live-filter-label"><input type="checkbox" id="lfYellow" ${liveFilters.showYellow ? 'checked' : ''}><span class="live-swatch is-yellow" aria-hidden="true"></span><span>أصفر نابض: كابتن متاح أو بحث/عرض</span></span>
+                    <span class="live-filter-count" id="lfcYellow">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfNeutral">
+                    <span class="live-filter-label"><input type="checkbox" id="lfNeutral" ${liveFilters.showNeutral ? 'checked' : ''}><span class="live-swatch is-neutral" aria-hidden="true"></span><span>محايد: منشأة بلا طلب مفتوح</span></span>
+                    <span class="live-filter-count" id="lfcNeutral">0</span>
+                  </label>
+                  <label class="live-filter-row" for="lfGray">
+                    <span class="live-filter-label"><input type="checkbox" id="lfGray" ${liveFilters.showGray ? 'checked' : ''}><span class="live-swatch is-gray" aria-hidden="true"></span><span>رمادي: كابتن أوفلاين (غير متاح)</span></span>
+                    <span class="live-filter-count" id="lfcGray">0</span>
+                  </label>
                 </div>
-                <div class="live-legend-group-title">طبقات الخريطة</div>
-                <label class="live-filter-row" for="lfMerchants">
-                  <span class="live-filter-label"><input type="checkbox" id="lfMerchants" ${liveFilters.showMerchants ? 'checked' : ''}><span>🏪 إظهار المنشآت</span></span>
-                  <span class="live-filter-count" id="lfcMerchants">0</span>
-                </label>
-                <label class="live-filter-row" for="lfCaptains">
-                  <span class="live-filter-label"><input type="checkbox" id="lfCaptains" ${liveFilters.showCaptains ? 'checked' : ''}><span>🛵 إظهار الكباتن</span></span>
-                  <span class="live-filter-count" id="lfcCaptains">0</span>
-                </label>
-                <label class="live-filter-row" for="lfRoutes">
-                  <span class="live-filter-label"><input type="checkbox" id="lfRoutes" ${liveFilters.showRoutes ? 'checked' : ''}><span>📍 المسارات والوجهات</span></span>
-                  <span class="live-filter-count" id="lfcRoutes">0</span>
-                </label>
-                <div class="live-legend-group-title">حالات العلامات</div>
-                <label class="live-filter-row" for="lfGreen">
-                  <span class="live-filter-label"><input type="checkbox" id="lfGreen" ${liveFilters.showGreen ? 'checked' : ''}><span class="live-swatch is-green" aria-hidden="true"></span><span>أخضر نابض: للزبون (استلام/وصول) أو طلب نشط</span></span>
-                  <span class="live-filter-count" id="lfcGreen">0</span>
-                </label>
-                <label class="live-filter-row" for="lfBlue">
-                  <span class="live-filter-label"><input type="checkbox" id="lfBlue" ${liveFilters.showBlue ? 'checked' : ''}><span class="live-swatch is-blue" aria-hidden="true"></span><span>أزرق نابض: كابتن متجه للمنشأة (مقبول)</span></span>
-                  <span class="live-filter-count" id="lfcBlue">0</span>
-                </label>
-                <label class="live-filter-row" for="lfYellow">
-                  <span class="live-filter-label"><input type="checkbox" id="lfYellow" ${liveFilters.showYellow ? 'checked' : ''}><span class="live-swatch is-yellow" aria-hidden="true"></span><span>أصفر نابض: كابتن متاح أو بحث/عرض</span></span>
-                  <span class="live-filter-count" id="lfcYellow">0</span>
-                </label>
-                <label class="live-filter-row" for="lfNeutral">
-                  <span class="live-filter-label"><input type="checkbox" id="lfNeutral" ${liveFilters.showNeutral ? 'checked' : ''}><span class="live-swatch is-neutral" aria-hidden="true"></span><span>محايد: منشأة بلا طلب مفتوح</span></span>
-                  <span class="live-filter-count" id="lfcNeutral">0</span>
-                </label>
-                <label class="live-filter-row" for="lfGray">
-                  <span class="live-filter-label"><input type="checkbox" id="lfGray" ${liveFilters.showGray ? 'checked' : ''}><span class="live-swatch is-gray" aria-hidden="true"></span><span>رمادي: كابتن أوفلاين (غير متاح)</span></span>
-                  <span class="live-filter-count" id="lfcGray">0</span>
-                </label>
-              </div>
-            </aside>
+              </aside>
+              <form id="liveMapSearchForm" class="live-map-search-bar" role="search" novalidate>
+                <div class="live-search-row">
+                  <label for="liveCapSearch" class="live-search-label">كابتن</label>
+                  <input id="liveCapSearch" name="q" type="search" autocomplete="off" dir="auto" placeholder="كود (#A7K3) أو رقم الهاتف...">
+                  <button type="submit" id="liveCapSearchBtn" class="live-search-submit">🔍 بحث</button>
+                </div>
+                <div id="liveCapSearchResult" class="live-search-result hide" role="status" aria-live="polite"></div>
+              </form>
+            </div>
             <div id="liveHintBar" class="live-hint-bar" role="status" aria-live="polite"></div>
           </div>
           <dialog id="liveTransferDialog" class="live-transfer-dialog" aria-labelledby="ltTitle">
@@ -1385,6 +1515,13 @@ authScreen('admin', (user) => {
         </div>`;
 
       liveMap = makeMap('lmap', DAMASCUS, 12);
+      syncLiveClockStyle();
+      const origSetMapStyle = liveMap.setMapStyle;
+      liveMap.setMapStyle = (key) => {
+        origSetMapStyle?.(key);
+        syncLiveClockStyle(lStore.getItem('mashwar_map_style') || key);
+      };
+      liveMap.on('zoomend', syncLiveMapMarkerZoom);
       const stageEl = $('.live-ops-stage');
       if (stageEl && 'ResizeObserver' in window) {
         liveStageObs = new ResizeObserver(() => { liveMap?.invalidateSize({ animate: false }); });
@@ -1399,6 +1536,110 @@ authScreen('admin', (user) => {
         legendPanel?.classList.toggle('is-collapsed', liveLegendCollapsed);
         legendToggle.setAttribute('aria-expanded', String(!liveLegendCollapsed));
         if (legendChev) legendChev.textContent = liveLegendCollapsed ? '▾' : '▴';
+      });
+
+      const searchForm = $('#liveMapSearchForm');
+      const searchInput = $('#liveCapSearch');
+      const searchResultEl = $('#liveCapSearchResult');
+      let liveSearchSeq = 0;
+
+      const renderSearchResult = (res) => {
+        if (!searchResultEl) return;
+        searchResultEl.classList.remove('is-ok', 'is-warning', 'is-error', 'is-neutral');
+        if (!res || !res.message) {
+          searchResultEl.textContent = '';
+          searchResultEl.classList.add('hide');
+          return;
+        }
+        searchResultEl.classList.remove('hide');
+        searchResultEl.classList.add(`is-${res.tone || 'neutral'}`);
+        searchResultEl.replaceChildren();
+        const ico = document.createElement('span');
+        ico.className = 'live-search-ico';
+        ico.setAttribute('aria-hidden', 'true');
+        ico.textContent = res.icon || 'ℹ️';
+        const msg = document.createElement('span');
+        msg.className = 'live-search-msg';
+        msg.textContent = res.message;
+        searchResultEl.append(ico, msg);
+      };
+
+      searchInput?.addEventListener('input', () => {
+        if (!searchInput.value.trim()) {
+          ++liveSearchSeq;
+          clearSearchHighlight();
+          renderSearchResult(null);
+        }
+      });
+
+      searchForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const rawQuery = searchInput?.value || '';
+        const seq = ++liveSearchSeq;
+        if (!rawQuery.trim()) {
+          renderSearchResult(decideMapSearchResult({ captain: null, query: '' }));
+          searchInput?.focus();
+          return;
+        }
+
+        let matched = matchLoadedCaptain(liveCache.captains, rawQuery);
+        const tagCandidate = !matched ? looksLikeCaptainTag(rawQuery) : '';
+        if (!matched && tagCandidate) {
+          try {
+            const fetched = await api(`/admin/captains/by-tag/${encodeURIComponent(tagCandidate)}`);
+            if (seq !== liveSearchSeq || tab !== 'live') return;
+            if (fetched) {
+              matched = {
+                ...fetched,
+                lat: fetched.lat ?? fetched.last_lat ?? null,
+                lng: fetched.lng ?? fetched.last_lng ?? null,
+              };
+              const caps = liveCache.captains || (liveCache.captains = []);
+              if (!caps.some((x) => x.id === matched.id)) caps.push(matched);
+            }
+          } catch (err) {
+            if (seq !== liveSearchSeq || tab !== 'live') return;
+            if (err?.status !== 404) {
+              renderSearchResult({
+                tone: 'error',
+                icon: '⚠',
+                message: err?.message || 'تعذر البحث الآن، حاول مرة أخرى',
+              });
+              return;
+            }
+          }
+        }
+
+        const decision = decideMapSearchResult({ captain: matched, query: rawQuery });
+        renderSearchResult(decision);
+
+        if (decision.action === 'focus' && decision.captain) {
+          let filtersChanged = false;
+          if (!liveFilters.showCaptains) {
+            liveFilters.showCaptains = true;
+            const lfCap = $('#lfCaptains');
+            if (lfCap) lfCap.checked = true;
+            filtersChanged = true;
+          }
+          const st = getCaptainVisualState(decision.captain);
+          const filterCtrlMap = {
+            green: ['showGreen', '#lfGreen'],
+            blue: ['showBlue', '#lfBlue'],
+            yellow: ['showYellow', '#lfYellow'],
+            gray: ['showGray', '#lfGray'],
+          };
+          const fc = filterCtrlMap[st.stateKey];
+          if (fc && !liveFilters[fc[0]]) {
+            liveFilters[fc[0]] = true;
+            const chk = $(fc[1]);
+            if (chk) chk.checked = true;
+            filtersChanged = true;
+          }
+          highlightSearchedCaptain(decision.highlightCaptainId);
+          if (filtersChanged) applyLiveFiltersAndMarkers();
+          else upsertCaptainMarker(decision.captain);
+          liveMap?.setView([decision.lat, decision.lng], decision.zoom || 16);
+        }
       });
 
       $('#liveFit')?.addEventListener('click', () => {
@@ -3199,18 +3440,52 @@ authScreen('admin', (user) => {
     renderLiveHint();
   }
 
-  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, glyph, badgeCount, ageHtml = '' }) {
-    const classes = ['ops-marker', kindClass, stateClass];
+  function clearSearchHighlight() {
+    if (searchHighlightTimer) {
+      clearTimeout(searchHighlightTimer);
+      searchHighlightTimer = null;
+    }
+    const prevId = searchHighlightedCaptainId;
+    searchHighlightedCaptainId = null;
+    if (prevId != null && tab === 'live' && liveMap) {
+      const cap = (liveCache.captains || []).find((x) => x.id === prevId);
+      if (cap) upsertCaptainMarker(cap);
+    }
+  }
+
+  function highlightSearchedCaptain(captainId, durationMs = 3500) {
+    const prevId = searchHighlightedCaptainId;
+    if (searchHighlightTimer) {
+      clearTimeout(searchHighlightTimer);
+      searchHighlightTimer = null;
+    }
+    searchHighlightedCaptainId = captainId;
+    if (prevId != null && prevId !== captainId && tab === 'live' && liveMap) {
+      const prevCap = (liveCache.captains || []).find((x) => x.id === prevId);
+      if (prevCap) upsertCaptainMarker(prevCap);
+    }
+    if (captainId != null) {
+      searchHighlightTimer = setTimeout(() => {
+        clearSearchHighlight();
+      }, durationMs);
+    }
+  }
+
+  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, highlighted = false, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12), glyph, badgeCount, ageHtml = '' }) {
+    const classes = ['ops-marker', kindClass, stateClass, `is-zoom-${zoomSize.tier}`];
     if (selected) classes.push('is-selected');
     if (validTarget) classes.push('is-valid-target');
     if (dimmed) classes.push('is-dimmed');
-    const badgeHtml = badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
+    if (highlighted) classes.push('is-search-highlight');
+    const visibleGlyph = zoomSize.showGlyph ? glyph : '';
+    const badgeHtml = zoomSize.showGlyph && badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
     const selectedHtml = selected ? '<span class="ops-pin-selected-tag">محدد</span>' : '';
+    const hit = zoomSize.hitSize;
     return L.divIcon({
       className: classes.join(' '),
-      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${glyph}</span>${badgeHtml}${selectedHtml}${ageHtml}`,
-      iconSize: [48, 48],
-      iconAnchor: [24, 24],
+      html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="ops-pin-core" aria-hidden="true">${visibleGlyph}</span>${badgeHtml}${selectedHtml}${ageHtml}`,
+      iconSize: [hit, hit],
+      iconAnchor: [hit / 2, hit / 2],
     });
   }
 
@@ -3234,6 +3509,7 @@ authScreen('admin', (user) => {
         });
       }
     };
+    mk._opsApplyEl = applyToEl;
     if (!mk._opsClickWired) {
       mk._opsClickWired = true;
       mk.on('click', () => mk._opsActivate?.());
@@ -3269,13 +3545,7 @@ authScreen('admin', (user) => {
     return { selected, validTarget, dimmed };
   }
 
-  function upsertMerchantMarker(m) {
-    if (!liveMap || m == null) return;
-    const existing = merchMarkers.get(m.id);
-    if (m.lat == null || m.lng == null) {
-      if (existing) { existing.remove(); merchMarkers.delete(m.id); }
-      return;
-    }
+  function buildMerchantIconSpec(m, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12)) {
     const st = getMerchantVisualState(m);
     const shouldShow = liveFilters.showMerchants && isLiveStateFilterVisible(st.stateKey);
     const { selected, validTarget, dimmed, transferableCount } = computeMerchantSelectionFlags(m, st);
@@ -3284,52 +3554,98 @@ authScreen('admin', (user) => {
       ? ` — ${st.openOrders.map((o) => `${serialNo(o)} (${STATUS[o.status] || o.status})`).join('، ')}`
       : ' — لا يوجد طلب مفتوح';
     const tip = `🏪 ${name}${selected ? ' (محدد)' : ''}${orderInfo}`;
-    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${transferableCount}`;
-
-    let mk = existing;
-    if (!mk) {
-      const icon = buildLiveMarkerIcon({
+    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${transferableCount}|${zoomSize.tier}`;
+    return {
+      shouldShow,
+      tip,
+      sig,
+      zoomSize,
+      iconParams: {
         kindClass: 'ops-merchant',
         stateClass: st.stateClass,
         selected,
         validTarget,
         dimmed,
+        zoomSize,
         glyph: '🏪',
         badgeCount: transferableCount,
-      });
-      mk = L.marker([m.lat, m.lng], { icon });
-      mk._opsSig = sig;
+      },
+    };
+  }
+
+  function buildCaptainIconSpec(c, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12)) {
+    const st = getCaptainVisualState(c);
+    const shouldShow = liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey);
+    const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
+    const highlighted = searchHighlightedCaptainId != null && c.id === searchHighlightedCaptainId;
+    const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
+    const upd = formatCaptainLastUpdate(c);
+    const stTxt = st.busy ? `${st.label} (${actCount})` : st.label;
+    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
+    const ageHtml = `<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`;
+    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}|${highlighted ? 1 : 0}|${zoomSize.tier}`;
+    return {
+      shouldShow,
+      tip,
+      tipHtml,
+      sig,
+      zoomSize,
+      iconParams: {
+        kindClass: 'ops-captain',
+        stateClass: st.stateClass,
+        selected,
+        validTarget,
+        dimmed,
+        highlighted,
+        zoomSize,
+        glyph: '🛵',
+        badgeCount: actCount,
+        ageHtml,
+      },
+    };
+  }
+
+  function upsertMerchantMarker(m) {
+    if (!liveMap || m == null) return;
+    const existing = merchMarkers.get(m.id);
+    if (m.lat == null || m.lng == null) {
+      if (existing) { existing.remove(); merchMarkers.delete(m.id); }
+      return;
+    }
+    const spec = buildMerchantIconSpec(m);
+
+    let mk = existing;
+    if (!mk) {
+      mk = L.marker([m.lat, m.lng], { icon: buildLiveMarkerIcon(spec.iconParams) });
+      mk._opsSig = spec.sig;
+      mk._opsZoomTier = spec.zoomSize.tier;
+      mk._opsEntity = m;
       mk._opsCoords = `${m.lat},${m.lng}`;
-      mk.bindTooltip(tip);
+      mk.bindTooltip(spec.tip);
       merchMarkers.set(m.id, mk);
     } else {
+      mk._opsEntity = m;
       const coords = `${m.lat},${m.lng}`;
       if (mk._opsCoords !== coords) {
         mk.setLatLng([m.lat, m.lng]);
         mk._opsCoords = coords;
       }
-      if (mk._opsSig !== sig) {
-        mk.setIcon(buildLiveMarkerIcon({
-          kindClass: 'ops-merchant',
-          stateClass: st.stateClass,
-          selected,
-          validTarget,
-          dimmed,
-          glyph: '🏪',
-          badgeCount: transferableCount,
-        }));
-        mk._opsSig = sig;
+      if (mk._opsSig !== spec.sig) {
+        mk.setIcon(buildLiveMarkerIcon(spec.iconParams));
+        mk._opsSig = spec.sig;
+        mk._opsZoomTier = spec.zoomSize.tier;
       }
-      mk.setTooltipContent?.(tip) || mk.bindTooltip(tip);
+      mk.setTooltipContent?.(spec.tip) || mk.bindTooltip(spec.tip);
     }
 
-    if (shouldShow) {
+    if (spec.shouldShow) {
       if (!liveMap.hasLayer(mk)) mk.addTo(liveMap);
     } else if (liveMap.hasLayer(mk)) {
       mk.remove();
     }
 
-    wireMarkerDomAccessibility(mk, tip, () => {
+    wireMarkerDomAccessibility(mk, spec.tip, () => {
       const freshM = (liveCache.merchants || []).find((x) => x.id === m.id) || m;
       handleMerchantTap(freshM);
     });
@@ -3342,67 +3658,71 @@ authScreen('admin', (user) => {
       if (existing) { existing.remove(); capMarkers.delete(c.id); }
       return;
     }
-    const st = getCaptainVisualState(c);
-    const shouldShow = liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey);
-    const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
-    const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
-    const upd = formatCaptainLastUpdate(c);
-    const stTxt = st.busy ? `${st.label} (${actCount})` : st.label;
-    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
-    const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
-    const ageHtml = `<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`;
-    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}`;
+    const spec = buildCaptainIconSpec(c);
 
     let mk = existing;
     if (!mk) {
-      const icon = buildLiveMarkerIcon({
-        kindClass: 'ops-captain',
-        stateClass: st.stateClass,
-        selected,
-        validTarget,
-        dimmed,
-        glyph: '🛵',
-        badgeCount: actCount,
-        ageHtml,
-      });
-      mk = L.marker([c.lat, c.lng], { icon });
-      mk._opsSig = sig;
+      mk = L.marker([c.lat, c.lng], { icon: buildLiveMarkerIcon(spec.iconParams) });
+      mk._opsSig = spec.sig;
+      mk._opsZoomTier = spec.zoomSize.tier;
+      mk._opsEntity = c;
       mk._opsCoords = `${c.lat},${c.lng}`;
-      mk.bindTooltip(tipHtml, { interactive: true });
+      mk.bindTooltip(spec.tipHtml, { interactive: true });
       capMarkers.set(c.id, mk);
     } else {
+      mk._opsEntity = c;
       const coords = `${c.lat},${c.lng}`;
       if (mk._opsCoords !== coords) {
         if (animate && liveMap.hasLayer(mk)) animateMarker(mk, [c.lat, c.lng]);
         else mk.setLatLng([c.lat, c.lng]);
         mk._opsCoords = coords;
       }
-      if (mk._opsSig !== sig) {
-        mk.setIcon(buildLiveMarkerIcon({
-          kindClass: 'ops-captain',
-          stateClass: st.stateClass,
-          selected,
-          validTarget,
-          dimmed,
-          glyph: '🛵',
-          badgeCount: actCount,
-          ageHtml,
-        }));
-        mk._opsSig = sig;
+      if (mk._opsSig !== spec.sig) {
+        mk.setIcon(buildLiveMarkerIcon(spec.iconParams));
+        mk._opsSig = spec.sig;
+        mk._opsZoomTier = spec.zoomSize.tier;
       }
-      mk.setTooltipContent?.(tipHtml) || mk.bindTooltip(tipHtml, { interactive: true });
+      mk.setTooltipContent?.(spec.tipHtml) || mk.bindTooltip(spec.tipHtml, { interactive: true });
     }
 
-    if (shouldShow) {
+    if (spec.shouldShow) {
       if (!liveMap.hasLayer(mk)) mk.addTo(liveMap);
       applyCaptainLastUpdateEl(mk.getElement?.()?.querySelector('[data-cap-upd]'), c);
     } else if (liveMap.hasLayer(mk)) {
       mk.remove();
     }
 
-    wireMarkerDomAccessibility(mk, tip, () => {
+    wireMarkerDomAccessibility(mk, spec.tip, () => {
       const freshC = (liveCache.captains || []).find((x) => x.id === c.id) || c;
       handleCaptainTap(freshC, mk.getElement?.());
+    });
+  }
+
+  function syncLiveMapMarkerZoom() {
+    if (!liveMap) return;
+    const zoomSize = getMarkerVisualSize(liveMap.getZoom());
+    merchMarkers.forEach((mk, id) => {
+      if (mk._opsZoomTier === zoomSize.tier) return;
+      const freshM = (liveCache.merchants || []).find((x) => x.id === id) || mk._opsEntity;
+      if (!freshM) return;
+      const spec = buildMerchantIconSpec(freshM, zoomSize);
+      mk.setIcon(buildLiveMarkerIcon(spec.iconParams));
+      mk._opsSig = spec.sig;
+      mk._opsZoomTier = zoomSize.tier;
+      mk._opsApplyEl?.();
+    });
+    capMarkers.forEach((mk, id) => {
+      if (mk._opsZoomTier === zoomSize.tier) return;
+      const freshC = (liveCache.captains || []).find((x) => x.id === id) || mk._opsEntity;
+      if (!freshC) return;
+      const spec = buildCaptainIconSpec(freshC, zoomSize);
+      mk.setIcon(buildLiveMarkerIcon(spec.iconParams));
+      mk._opsSig = spec.sig;
+      mk._opsZoomTier = zoomSize.tier;
+      if (liveMap.hasLayer(mk)) {
+        applyCaptainLastUpdateEl(mk.getElement?.()?.querySelector('[data-cap-upd]'), freshC);
+      }
+      mk._opsApplyEl?.();
     });
   }
 
