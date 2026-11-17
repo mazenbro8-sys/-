@@ -2466,7 +2466,7 @@ body.ad.is-live-view #toast {
   --pin-font: 17px;
   --pin-border: 2.5px;
   box-sizing: border-box;
-  position: relative;
+  position: absolute;
   display: grid;
   place-items: center;
   min-width: var(--touch-min);
@@ -2474,7 +2474,7 @@ body.ad.is-live-view #toast {
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: transform var(--dur-fast) var(--ease-standard), opacity var(--dur-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .ops-marker.is-zoom-dot,
@@ -2739,7 +2739,7 @@ body.ad.is-live-view #toast {
 .dash-cap-pin,
 .dash-merch-pin {
   box-sizing: border-box;
-  position: relative;
+  position: absolute;
   display: grid;
   place-items: center;
   min-width: var(--touch-min);
