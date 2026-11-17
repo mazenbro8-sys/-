@@ -1,15 +1,29 @@
 export const CAPTAIN_ACTIVE_STATUSES = ['accepted', 'picked_up', 'arrived'];
+export const CAPTAIN_NO_LOCATION_MS = 10 * 60_000;
 const CUSTOMER_STAGE_STATUSES = new Set(['picked_up', 'arrived']);
+
+/** Map captain visual stateKey to its legend/filter group (no_loc shares the gray filter group). */
+export function captainLegendBucket(stateKey) {
+  return stateKey === 'no_loc' ? 'gray' : stateKey;
+}
+
+/** True when an online captain's last known fix is older than 10 minutes. */
+export function isCaptainOnlineLocationStale(captain, now = Date.now()) {
+  const rawTs = captain?.last_loc_at ?? captain?.fix_at ?? captain?.at;
+  const ts = Number(rawTs) || 0;
+  return ts > 0 && (now - ts) > CAPTAIN_NO_LOCATION_MS;
+}
 
 /**
  * Derive a captain marker's visual state from live order statuses.
  * Rules when online:
  *   - At least one active order in `picked_up` or `arrived`: green, pulsing (priority over blue).
  *   - Active orders only in `accepted`: blue, pulsing.
- *   - No active orders: yellow, pulsing.
+ *   - No active orders and location > 10m old: no_loc, not pulsing ("أونلاين بدون موقع").
+ *   - No active orders and recent/unset location: yellow, pulsing.
  * When offline: gray, not pulsing.
  */
-export function getCaptainVisualState(captain, liveOrders = []) {
+export function getCaptainVisualState(captain, liveOrders = [], now = Date.now()) {
   if (!captain?.online) {
     return {
       stateKey: 'gray',
@@ -61,6 +75,17 @@ export function getCaptainVisualState(captain, liveOrders = []) {
       busy: true,
       activeCount: activeCount || 1,
       label: 'أونلاين متجه للمنشأة',
+    };
+  }
+
+  if (isCaptainOnlineLocationStale(captain, now)) {
+    return {
+      stateKey: 'no_loc',
+      stateClass: 'ops-state-no-loc',
+      pulsing: false,
+      busy: false,
+      activeCount: 0,
+      label: 'أونلاين بدون موقع',
     };
   }
 

@@ -3,8 +3,9 @@ import {
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
-  mountNotificationsBell, debounce
-} from './shared.js?v=panther2026v27';
+  mountNotificationsBell, debounce,
+  normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery
+} from './shared.js?v=panther2026v29';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -216,7 +217,7 @@ authScreen('captain', (user) => {
   let st = { online: false, active: null, activeOrders: [], offer: null, intervals: { active: 10000, idle: 60000 } };
   let allHistory = [], histFilter = 'all', histQuery = '';
   let cancelHistorySearch = null;
-  let pos = null, watchId = null, lastSent = 0;
+  let pos = null, lastGoodFixAt = 0, watchId = null, lastSent = 0, lastSentPos = null, lastStaleRecoveryAt = 0, staleRecoveryAttempts = 0, staleRecoveryInFlight = false;
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
 
@@ -942,14 +943,23 @@ authScreen('captain', (user) => {
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
         (p) => {
-          const coords = {
-            lat: p.coords.latitude,
-            lng: p.coords.longitude,
-            accuracy: Number.isFinite(p.coords.accuracy) ? p.coords.accuracy : undefined,
-          };
-          pos = { lat: coords.lat, lng: coords.lng };
-          showMe();
-          resolve(coords);
+          const now = Date.now();
+          const reading = normalizeGpsReading(p, now);
+          if (shouldAcceptGpsReading(reading, pos, lastGoodFixAt, now)) {
+            pos = reading;
+            if (reading.accuracy == null || reading.accuracy <= 100) {
+              lastGoodFixAt = reading.receivedAt;
+            }
+            staleRecoveryAttempts = 0;
+            lastStaleRecoveryAt = 0;
+            showMe();
+          }
+          resolve({
+            lat: reading.lat,
+            lng: reading.lng,
+            accuracy: reading.accuracy ?? undefined,
+            fix_age_ms: reading.initialAge,
+          });
         },
         () => resolve(null),
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
@@ -957,7 +967,11 @@ authScreen('captain', (user) => {
     });
   }
 
-  function startGps() {
+  function startGps({ forceRestart = false } = {}) {
+    if (forceRestart && watchId != null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
     if (watchId != null) return;
     const gpsEl = $('#gps');
     if (!navigator.geolocation) {
@@ -973,7 +987,15 @@ authScreen('captain', (user) => {
     }
     watchId = navigator.geolocation.watchPosition(
       (p) => {
-        pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        const now = Date.now();
+        const reading = normalizeGpsReading(p, now);
+        if (!shouldAcceptGpsReading(reading, pos, lastGoodFixAt, now)) return;
+        pos = reading;
+        if (reading.accuracy == null || reading.accuracy <= 100) {
+          lastGoodFixAt = reading.receivedAt;
+        }
+        staleRecoveryAttempts = 0;
+        lastStaleRecoveryAt = 0;
         if (gpsEl) {
           gpsEl.textContent = 'GPS نشط';
           gpsEl.classList.add('is-active');
@@ -992,7 +1014,7 @@ authScreen('captain', (user) => {
     navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {});
   }
 
-  function stopGps() {
+  function stopGps({ clearPos = true } = {}) {
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     wake?.release().catch(() => {}); wake = null;
     const gpsEl = $('#gps');
@@ -1000,18 +1022,51 @@ authScreen('captain', (user) => {
       gpsEl.textContent = 'GPS متوقف';
       gpsEl.classList.remove('is-active');
     }
-    pos = null;
+    if (clearPos) {
+      pos = null;
+      lastGoodFixAt = 0;
+      lastSentPos = null;
+      staleRecoveryAttempts = 0;
+      lastStaleRecoveryAt = 0;
+    }
+  }
+
+  async function restartWatchAndFetch() {
+    if (!st.online || document.visibilityState === 'hidden') return null;
+    startGps({ forceRestart: true });
+    const fresh = await getFreshGps();
+    if (fresh) maybeSend();
+    return fresh;
   }
 
   function maybeSend() {
-    if (!st.online || !pos) return;
-    const gap = st.active ? st.intervals.active : st.intervals.idle;
-    if (Date.now() - lastSent < gap) return;
-    lastSent = Date.now();
+    const now = Date.now();
+    const decision = evaluateCaptainLocationSend({ pos, st, lastSent, lastSentPos, now });
+    if (decision.action === 'refresh_stale') {
+      const rec = evaluateStaleRecovery({
+        decision,
+        online: Boolean(st.online),
+        visible: document.visibilityState !== 'hidden',
+        now,
+        lastRecoveryAt: lastStaleRecoveryAt,
+        attempts: staleRecoveryAttempts,
+        inFlight: staleRecoveryInFlight,
+      });
+      if (rec.shouldRecover) {
+        lastStaleRecoveryAt = now;
+        staleRecoveryAttempts = rec.nextAttempts;
+        staleRecoveryInFlight = true;
+        restartWatchAndFetch().finally(() => { staleRecoveryInFlight = false; });
+      }
+      return;
+    }
+    if (decision.action !== 'send') return;
+    lastSent = now;
+    lastSentPos = { lat: decision.payload.lat, lng: decision.payload.lng };
     const vis = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
-    api('/captain/location', 'POST', { ...pos, vis }).catch(() => {});
+    api('/captain/location', 'POST', { ...decision.payload, vis }).catch(() => {});
   }
-  setInterval(maybeSend, 3000);
+  setInterval(maybeSend, 1000);
 
   $('#tog').onclick = async () => {
     const nextOnline = !st.online;
@@ -1019,6 +1074,10 @@ authScreen('captain', (user) => {
     if (r) {
       if (!nextOnline) offerAlarmGate.reset();
       lastSent = 0;
+      lastSentPos = null;
+      lastGoodFixAt = 0;
+      staleRecoveryAttempts = 0;
+      lastStaleRecoveryAt = 0;
       await refresh();
     }
   };
@@ -1041,8 +1100,9 @@ authScreen('captain', (user) => {
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
-      refresh();
-      if (st.online && watchId != null) navigator.wakeLock?.request('screen').then((w) => (wake = w)).catch(() => {});
+      refresh()
+        .then(() => { if (st.online) return restartWatchAndFetch(); })
+        .catch(() => {});
     }
   });
 

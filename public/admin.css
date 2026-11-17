@@ -2576,6 +2576,30 @@ body.ad.is-live-view #toast {
   --pin-bg: rgba(36, 36, 40, 0.92);
 }
 
+:is(.ops-marker, .dash-cap-pin).ops-state-no-loc {
+  --pin-color: var(--status-warn);
+  --pin-bg: rgba(36, 32, 24, 0.9);
+  opacity: 0.72;
+}
+
+:is(.ops-marker, .dash-cap-pin).ops-state-no-loc :is(.ops-pin-core, .dash-pin-core) {
+  border-style: dashed;
+}
+
+:is(.ops-marker, .dash-cap-pin).is-loc-stale {
+  opacity: 0.72;
+}
+
+:is(.ops-marker, .dash-cap-pin).is-loc-stale .ops-pin-ring {
+  animation: none !important;
+  opacity: 0.22 !important;
+}
+
+:is(.ops-marker, .dash-cap-pin).is-loc-stale :is(.ops-pin-core, .dash-pin-core) {
+  border-style: dashed;
+  border-color: var(--status-warn);
+}
+
 :is(.ops-marker, .dash-cap-pin, .dash-merch-pin).ops-state-gray,
 :is(.ops-marker, .dash-cap-pin, .dash-merch-pin).ops-offline {
   --pin-color: var(--map-gray);
@@ -2624,6 +2648,12 @@ body.ad.is-live-view #toast {
 :is(.ops-marker, .dash-cap-pin).is-zoom-dot.ops-offline :is(.ops-pin-core, .dash-pin-core) {
   background: var(--bg-base);
   border: 2px dashed var(--map-gray);
+}
+
+:is(.ops-marker, .dash-cap-pin).is-zoom-dot.ops-state-no-loc :is(.ops-pin-core, .dash-pin-core),
+:is(.ops-marker, .dash-cap-pin).is-zoom-dot.is-loc-stale :is(.ops-pin-core, .dash-pin-core) {
+  background: var(--bg-elevated);
+  border: 2px dashed var(--status-warn);
 }
 
 .ops-marker.is-selected {

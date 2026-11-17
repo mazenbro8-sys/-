@@ -179,7 +179,7 @@ test('GET /api/admin/live preserves exact shape/counts and limits recentOrders t
   assert.equal(liveAfterCost.data.order_cost_points, 42);
 });
 
-test('POST /api/captain/location rejects >200 km/h jump within 120s without consuming lastPing, and accepts coarse-to-precise jump after >120s', async () => {
+test('POST /api/captain/location anti-teleport: drops single >200 km/h spike when both <=100m without consuming lastPing, never blocks improved accuracy or coarse-to-precise', async () => {
   const adm = (await call('/auth/login', 'POST', { phone: '0911111188', password: 'Admin12345' })).data.token;
   const regCap = await call('/admin/users', 'POST', {
     role: 'captain',
@@ -196,27 +196,28 @@ test('POST /api/captain/location rejects >200 km/h jump within 120s without cons
 
   const fiveSecAgo = Date.now() - 5_000;
   await withDb((client) =>
-    client.execute({ sql: 'UPDATE users SET last_lat=?, last_lng=?, last_loc_at=? WHERE id=?', args: [33.50, 36.26, fiveSecAgo, capId] })
+    client.execute({ sql: 'UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, accuracy=?, fix_at=? WHERE id=?', args: [33.50, 36.26, fiveSecAgo, 15, fiveSecAgo, capId] })
   );
 
-  // >200 km/h jump within 120s -> rejected silently (204)
-  const badJump = await call('/captain/location', 'POST', { lat: 34.00, lng: 36.26, vis: 'visible' }, capTok);
+  // Both accurate (15m -> 20m, not better accuracy) & impossible >200 km/h jump -> single spike dropped (204)
+  const badJump = await call('/captain/location', 'POST', { lat: 34.00, lng: 36.26, vis: 'visible', accuracy: 20 }, capTok);
   assert.equal(badJump.status, 204);
   let row = await withDb(async (client) => (await client.execute({ sql: 'SELECT last_lat, last_lng, last_loc_at FROM users WHERE id=?', args: [capId] })).rows[0]);
   assert.equal(row.last_lat, 33.50, 'rejected jump must not overwrite stored lat');
   assert.equal(row.last_loc_at, fiveSecAgo, 'rejected jump must not overwrite last_loc_at');
 
-  // Because lastPing was NOT updated by the rejected jump, a realistic nearby fix succeeds immediately
-  const goodFix = await call('/captain/location', 'POST', { lat: 33.5001, lng: 36.2601, vis: 'visible' }, capTok);
+  // Because lastPing was NOT updated by the rejected spike, a realistic nearby fix succeeds immediately
+  const goodFix = await call('/captain/location', 'POST', { lat: 33.5001, lng: 36.2601, vis: 'visible', accuracy: 18 }, capTok);
   assert.equal(goodFix.status, 204);
-  row = await withDb(async (client) => (await client.execute({ sql: 'SELECT last_lat, last_lng, last_loc_at FROM users WHERE id=?', args: [capId] })).rows[0]);
+  row = await withDb(async (client) => (await client.execute({ sql: 'SELECT last_lat, last_lng, last_loc_at, accuracy FROM users WHERE id=?', args: [capId] })).rows[0]);
   assert.equal(row.last_lat, 33.5001, 'valid nearby ping right after rejected jump must be accepted');
+  assert.equal(row.accuracy, 18);
 
-  // Second captain with >120s old coarse fix -> accepts >200 km/h coarse-to-precise jump and notifies admin WS
+  // Second captain with recent coarse fix (500m, only 5s ago) -> accurate GPS (12m) >200 km/h away is ACCEPTED IMMEDIATELY (never stuck 120s)
   const regCap2 = await call('/admin/users', 'POST', {
     role: 'captain',
     phone: '0939990002',
-    name: 'كابتن قفزة 120',
+    name: 'كابتن قفزة فورية',
     password: 'Passw0rd1',
     zone_id: 1,
   }, adm);
@@ -225,22 +226,25 @@ test('POST /api/captain/location rejects >200 km/h jump within 120s without cons
   const cap2Tok = (await call('/auth/login', 'POST', { phone: '0939990002', password: 'Passw0rd1' })).data.token;
   await call('/captain/online', 'POST', { online: true }, cap2Tok);
 
-  const staleTs = Date.now() - 125_000;
+  const recentCoarseTs = Date.now() - 5_000;
   await withDb((client) =>
-    client.execute({ sql: 'UPDATE users SET last_lat=?, last_lng=?, last_loc_at=? WHERE id=?', args: [33.41, 36.26, staleTs, cap2Id] })
+    client.execute({ sql: 'UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, accuracy=?, fix_at=? WHERE id=?', args: [33.41, 36.26, recentCoarseTs, 500, recentCoarseTs, cap2Id] })
   );
 
   const admWs = await connectWsClient(adm);
   try {
-    const preciseFix = await call('/captain/location', 'POST', { lat: 33.50, lng: 36.26, vis: 'visible' }, cap2Tok);
+    const preciseFix = await call('/captain/location', 'POST', { lat: 33.50, lng: 36.26, vis: 'visible', accuracy: 12, fix_age_ms: 500 }, cap2Tok);
     assert.equal(preciseFix.status, 204);
-    const updatedRow = await withDb(async (client) => (await client.execute({ sql: 'SELECT last_lat, last_lng, last_loc_at FROM users WHERE id=?', args: [cap2Id] })).rows[0]);
-    assert.equal(updatedRow.last_lat, 33.50, 'coarse-to-precise jump after >120s must be accepted even at >200 km/h');
-    assert.ok(updatedRow.last_loc_at > staleTs);
+    const updatedRow = await withDb(async (client) => (await client.execute({ sql: 'SELECT last_lat, last_lng, last_loc_at, accuracy, fix_at FROM users WHERE id=?', args: [cap2Id] })).rows[0]);
+    assert.equal(updatedRow.last_lat, 33.50, 'coarse-to-precise jump must be accepted immediately even at >200 km/h within 5s');
+    assert.equal(updatedRow.accuracy, 12);
+    assert.ok(updatedRow.last_loc_at > recentCoarseTs);
 
     const locMsg = await waitForMsg(admWs.msgs, (m) => m.type === 'loc' && m.captain_id === cap2Id);
-    assert.ok(locMsg, 'admin WS received live loc event after >120s recovery');
+    assert.ok(locMsg, 'admin WS received live loc event with accuracy and fix_at');
     assert.equal(locMsg.lat, 33.50);
+    assert.equal(locMsg.accuracy, 12);
+    assert.equal(locMsg.fix_at, updatedRow.fix_at);
   } finally {
     admWs.ws.close();
   }

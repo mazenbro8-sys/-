@@ -582,10 +582,127 @@ export async function makeRoute(map, from, to, mode = 'driving') {
   return L.polyline([from, to], { color: '#F5B700', weight: 4, opacity: 0.8, dashArray: '10 8' }).addTo(map);
 }
 
+/** Calculate distance in meters between two coordinates via Haversine. */
+export function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const rad = (x) => (x * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLng = rad(lng2 - lng1);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+export const STALE_RECOVERY_BACKOFF_MS = [60_000, 120_000, 180_000];
+
+/** Normalize browser GeolocationPosition using monotonic callback receivedAt and bounded clock-skew-safe initialAge. */
+export function normalizeGpsReading(position, now = Date.now()) {
+  const coords = position?.coords || {};
+  const rawAcc = coords.accuracy;
+  const hasAcc = rawAcc !== undefined && rawAcc !== null && rawAcc !== '' && typeof rawAcc !== 'boolean';
+  const accNum = hasAcc ? Number(rawAcc) : NaN;
+  const accuracy = Number.isFinite(accNum) && accNum >= 0 ? Math.round(accNum * 10) / 10 : null;
+  const receivedAt = Number.isFinite(Number(now)) ? Math.round(Number(now)) : Date.now();
+  const rawTs = Number(position?.timestamp);
+  const delta = Number.isFinite(rawTs) ? Math.round(receivedAt - rawTs) : NaN;
+  const initialAge = Number.isFinite(delta) && delta >= 0 && delta <= 60_000 ? delta : 0;
+  return {
+    lat: Number(coords.latitude),
+    lng: Number(coords.longitude),
+    ...(accuracy != null ? { accuracy } : {}),
+    receivedAt,
+    initialAge,
+  };
+}
+
+/** Decide whether a watchPosition reading should replace currentPos (uses monotonic receivedAt, never p.timestamp). */
+export function shouldAcceptGpsReading(reading, currentPos, lastGoodFixAt = 0, now = Date.now(), { maxAccuracyM = 100, goodFixGraceMs = 60_000 } = {}) {
+  if (!reading || !Number.isFinite(reading.lat) || !Number.isFinite(reading.lng)) return false;
+  if (reading.accuracy != null && reading.accuracy > maxAccuracyM) {
+    if (!currentPos) return true;
+    const goodAgeMs = now - (Number(lastGoodFixAt) || Number(currentPos.receivedAt) || 0);
+    return goodAgeMs > goodFixGraceMs;
+  }
+  return true;
+}
+
+/** Evaluate whether captain.js should send current pos, wait, or trigger stale recovery (using receivedAt + clock-skew-safe fix_age_ms). */
+export function evaluateCaptainLocationSend({
+  pos,
+  st,
+  lastSent = 0,
+  lastSentPos = null,
+  now = Date.now(),
+  staleMaxAgeMs = 30_000,
+  moveTriggerM = 50,
+  idleMovedIntervalMs = 15_000,
+}) {
+  if (!st?.online || !pos) return { action: 'skip', reason: 'offline_or_empty' };
+  const receivedAt = Number(pos.receivedAt) || 0;
+  const staleAgeMs = Math.max(0, now - receivedAt);
+  if (!receivedAt || staleAgeMs > staleMaxAgeMs) {
+    return { action: 'refresh_stale', fixAgeMs: staleAgeMs };
+  }
+  const activeMs = Number(st.intervals?.active) || 10_000;
+  const idleMs = Number(st.intervals?.idle) || 60_000;
+  const idleMovedGap = Math.min(idleMs, Math.max(activeMs, idleMovedIntervalMs));
+  const movedM = lastSentPos && Number.isFinite(lastSentPos.lat) && Number.isFinite(lastSentPos.lng)
+    ? haversineMeters(lastSentPos.lat, lastSentPos.lng, pos.lat, pos.lng)
+    : Infinity;
+  const isIdleMoved = !st.active && movedM >= moveTriggerM;
+  const targetGap = st.active ? activeMs : (isIdleMoved ? idleMovedGap : idleMs);
+  const elapsedMs = now - (Number(lastSent) || 0);
+  if (elapsedMs < targetGap) {
+    return { action: 'wait', movedM, elapsedMs, targetGap };
+  }
+  const initialAge = Math.max(0, Math.min(60_000, Number(pos.initialAge) || 0));
+  const fixAgeMs = Math.max(0, Math.min(60_000, Math.round((now - receivedAt) + initialAge)));
+  return {
+    action: 'send',
+    reason: movedM >= moveTriggerM ? 'moved' : 'interval',
+    movedM,
+    payload: {
+      lat: pos.lat,
+      lng: pos.lng,
+      ...(pos.accuracy != null ? { accuracy: pos.accuracy } : {}),
+      fix_age_ms: fixAgeMs,
+    },
+  };
+}
+
+/** Backoff scheduler for restarting watchPosition + getFreshGps: 30s initial, then 60s -> 120s -> 180s cap, visible & online only. */
+export function evaluateStaleRecovery({
+  decision,
+  online,
+  visible,
+  now = Date.now(),
+  lastRecoveryAt = 0,
+  attempts = 0,
+  inFlight = false,
+}) {
+  if (decision?.action !== 'refresh_stale' || !online || !visible || inFlight) {
+    return { shouldRecover: false, waitMs: 0 };
+  }
+  if (attempts <= 0) {
+    return { shouldRecover: true, nextAttempts: 1, cooldownMs: 0 };
+  }
+  const idx = Math.min(attempts - 1, STALE_RECOVERY_BACKOFF_MS.length - 1);
+  const cooldownMs = STALE_RECOVERY_BACKOFF_MS[idx];
+  const elapsed = now - (Number(lastRecoveryAt) || 0);
+  if (elapsed < cooldownMs) {
+    return { shouldRecover: false, waitMs: cooldownMs - elapsed, cooldownMs };
+  }
+  return { shouldRecover: true, nextAttempts: attempts + 1, cooldownMs };
+}
+
 export function animateMarker(marker, newLatLng, duration = 1000) {
+  if (marker?._animRafId && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(marker._animRafId);
+    marker._animRafId = null;
+  }
   const start = performance.now();
   const from = marker.getLatLng();
   const to = L.latLng(newLatLng);
+  if (from.lat === to.lat && from.lng === to.lng) return;
   const dLat = to.lat - from.lat;
   const dLng = to.lng - from.lng;
 
@@ -593,9 +710,13 @@ export function animateMarker(marker, newLatLng, duration = 1000) {
     const t = Math.min((now - start) / duration, 1);
     const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
     marker.setLatLng([from.lat + dLat * ease, from.lng + dLng * ease]);
-    if (t < 1) requestAnimationFrame(step);
+    if (t < 1) {
+      marker._animRafId = requestAnimationFrame(step);
+    } else {
+      marker._animRafId = null;
+    }
   }
-  requestAnimationFrame(step);
+  marker._animRafId = requestAnimationFrame(step);
 }
 
 export function fitMapToPoints(map, points) {

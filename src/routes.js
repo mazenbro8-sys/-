@@ -59,6 +59,22 @@ const coord = (lat, lng, required = false) => {
   if (a === 0 && b === 0) throw bad('الإحداثيات (0, 0) غير صالحة');
   return [a, b];
 };
+const parseOptionalAccuracy = (raw) => {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw === 'boolean') throw bad('دقة الموقع غير صالحة');
+  const n = Number(typeof raw === 'string' ? toEnDigits(raw) : raw);
+  if (!Number.isFinite(n) || n < 0 || n > 50_000) throw bad('دقة الموقع غير صالحة');
+  return Math.round(n * 10) / 10;
+};
+const parseOptionalFixAgeMs = (raw) => {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw === 'boolean') throw bad('عمر قراءة الموقع غير صالح');
+  const n = Number(typeof raw === 'string' ? toEnDigits(raw) : raw);
+  if (!Number.isFinite(n) || n < 0 || n > 300_000) {
+    throw bad('عمر قراءة الموقع غير صالح');
+  }
+  return Math.round(n);
+};
 const phone = (v) => {
   const p = toEnDigits(v).replace(/[\s\-()]/g, '').replace(/^\+/, '');
   if (!/^\d{9,15}$/.test(p)) throw bad('رقم الهاتف غير صالح');
@@ -437,6 +453,7 @@ M.get('/support', wrap(async (req, res) => {
 const C = express.Router();
 api.use('/captain', auth('captain'), C);
 const lastPing = new Map();
+const pendingJump = new Map();
 
 const activeOrder = (cid) => db.get("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id ASC LIMIT 1", cid);
 const activeOrders = (cid) => db.all("SELECT * FROM orders WHERE captain_id=? AND status IN ('accepted','picked_up','arrived') ORDER BY id ASC", cid);
@@ -511,32 +528,60 @@ C.post('/location', wrap(async (req, res) => {
   const u = req.user;
   if (!u.online) return res.status(204).end(); // offline: no tracking at all
   const [lat, lng] = coord(req.body?.lat, req.body?.lng, true);
+  const accuracy = parseOptionalAccuracy(req.body?.accuracy);
+  const fixAgeMs = parseOptionalFixAgeMs(req.body?.fix_age_ms);
   const rawVis = req.body?.vis;
   if (rawVis !== undefined && rawVis !== null && rawVis !== '' && rawVis !== 'visible' && rawVis !== 'hidden') {
     throw bad('حالة الظهور غير صالحة');
   }
   const vis = rawVis === 'visible' || rawVis === 'hidden' ? rawVis : (u.last_loc_vis ?? null);
   const now = Date.now();
+  const effectiveFixAt = fixAgeMs != null ? (now - fixAgeMs) : now;
   const acts = await activeOrders(u.id);
   const primaryAct = acts[0] || null;
-  const minGap = (acts.length ? config.activeLocIntervalMs : config.idleLocIntervalMs) * 0.8;
+  const movedMeters = u.last_lat != null && u.last_lng != null
+    ? haversineKm(u.last_lat, u.last_lng, lat, lng) * 1000
+    : Infinity;
+  const idleMovedIntervalMs = Math.min(config.idleLocIntervalMs, Math.max(config.activeLocIntervalMs, 15_000));
+  const minGap = (acts.length
+    ? config.activeLocIntervalMs
+    : (movedMeters >= 50 ? idleMovedIntervalMs : config.idleLocIntervalMs)) * 0.8;
   if (now - (lastPing.get(u.id) ?? 0) < minGap) return res.status(204).end();
-  // Anti-teleport check (>200 km/h): reject unrealistic jumps within 120s, but allow coarse-to-precise GPS recovery after >120s
-  if (u.last_lat != null && u.last_loc_at) {
-    const elapsedMs = now - Number(u.last_loc_at);
+  if (u.last_loc_at && effectiveFixAt < Number(u.last_loc_at) - 2000) {
+    return res.status(204).end();
+  }
+  // Anti-teleport: only filter single impossible (>200 km/h) spikes when both fixes are accurate (<=100m) and accuracy did not improve, with confirmation so captains are never stuck 120s
+  const prevAcc = u.accuracy != null && Number.isFinite(Number(u.accuracy)) ? Number(u.accuracy) : null;
+  const bothAccurate = prevAcc != null && accuracy != null && prevAcc <= 100 && accuracy <= 100;
+  if (u.last_lat != null && u.last_loc_at && bothAccurate && accuracy >= prevAcc) {
+    const elapsedMs = Math.max(1000, effectiveFixAt - Number(u.last_loc_at));
     const hrs = elapsedMs / 3.6e6;
-    if (elapsedMs <= 120_000 && hrs > 0 && haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) {
-      return res.status(204).end();
+    if (haversineKm(u.last_lat, u.last_lng, lat, lng) / hrs > 200) {
+      const pending = pendingJump.get(u.id);
+      const confirmedNearPending = pending
+        && (now - pending.at) <= 60_000
+        && haversineKm(pending.lat, pending.lng, lat, lng) <= 0.5;
+      if (!confirmedNearPending) {
+        pendingJump.set(u.id, { lat, lng, at: now });
+        return res.status(204).end();
+      }
     }
   }
-  await db.run('UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, last_loc_vis=? WHERE id=?', lat, lng, now, vis, u.id);
-  await db.run('INSERT INTO locations(captain_id,lat,lng,order_id,at) VALUES(?,?,?,?,?)', u.id, lat, lng, primaryAct?.id ?? null, now);
+  pendingJump.delete(u.id);
+  await db.run(
+    'UPDATE users SET last_lat=?, last_lng=?, last_loc_at=?, last_loc_vis=?, accuracy=?, fix_at=? WHERE id=?',
+    lat, lng, effectiveFixAt, vis, accuracy, effectiveFixAt, u.id
+  );
+  await db.run(
+    'INSERT INTO locations(captain_id,lat,lng,order_id,at,accuracy,fix_at) VALUES(?,?,?,?,?,?,?)',
+    u.id, lat, lng, primaryAct?.id ?? null, now, accuracy, effectiveFixAt
+  );
   lastPing.set(u.id, now);
   if (acts.length > 0) {
     const actViews = await viewOrdersBatch(acts, 'merchant');
     for (let i = 0; i < acts.length; i++) {
       const act = acts[i];
-      sendTo(act.merchant_id, { type: 'loc', order_id: act.id, lat, lng, at: now, eta_minutes: actViews[i].eta_minutes });
+      sendTo(act.merchant_id, { type: 'loc', order_id: act.id, lat, lng, at: effectiveFixAt, eta_minutes: actViews[i].eta_minutes });
     }
   }
   sendToAdmins({
@@ -544,7 +589,9 @@ C.post('/location', wrap(async (req, res) => {
     captain_id: u.id,
     lat,
     lng,
-    at: now,
+    at: effectiveFixAt,
+    fix_at: effectiveFixAt,
+    accuracy,
     vis,
     busy: acts.length > 0,
     active_order_id: primaryAct?.id ?? null,
@@ -754,8 +801,8 @@ A.get('/live', wrap(async (req, res) => {
       ? db.all('SELECT * FROM orders WHERE zone_id=? ORDER BY id DESC LIMIT 20', zId)
       : db.all('SELECT * FROM orders ORDER BY id DESC LIMIT 20'),
     zId != null
-      ? db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId)
-      : db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
+      ? db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,fix_at,accuracy,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' AND zone_id=? ORDER BY online DESC, (status='active') DESC, id DESC", zId)
+      : db.all("SELECT id,name,phone,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat lat,last_lng lng,last_loc_at at,last_loc_at,fix_at,accuracy,last_loc_vis FROM users WHERE role='captain' AND status!='deleted' ORDER BY online DESC, (status='active') DESC, id DESC"),
     zId != null
       ? db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' AND zone_id=? ORDER BY (status='active') DESC, id DESC", zId)
       : db.all("SELECT id,name,business_name,phone,address,zone_id,status,lat,lng FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id DESC"),
@@ -828,8 +875,8 @@ A.get('/captains/by-tag/:tag', wrap(async (req, res) => {
   if (!/^[A-Z0-9]{3,12}$/.test(tag)) throw new HttpError(400, 'كود الكابتن غير صالح');
   const zId = adminZone(req);
   const cap = zId != null
-    ? await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted' AND zone_id=?", tag, zId)
-    : await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted'", tag);
+    ? await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,fix_at,accuracy,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted' AND zone_id=?", tag, zId)
+    : await db.get("SELECT id,name,phone,role,zone_id,status,online,tag,balance_points,cost_override,exempt_from,exempt_until,last_lat,last_lng,last_loc_at,fix_at,accuracy,last_loc_vis FROM users WHERE tag=? AND role='captain' AND status!='deleted'", tag);
   if (!cap) throw new HttpError(404, 'لم يتم العثور على كابتن بهذا الكود');
   const rc = resolveOrderCost(cap, await orderCostPoints());
   res.json({ ...cap, online: !!cap.online, effective_cost_points: rc.cost_points, cost_source: rc.cost_source });
@@ -1369,7 +1416,7 @@ async function loadAdminScopedCaptain(req) {
     `SELECT u.id, u.role, u.name, u.phone, u.tag, u.zone_id, z.name AS zone_name,
             u.status, u.online, u.balance_points, u.cost_override,
             u.exempt_from, u.exempt_until,
-            u.last_lat, u.last_lng, u.last_loc_at, u.last_loc_vis, u.created_at
+            u.last_lat, u.last_lng, u.last_loc_at, u.fix_at, u.accuracy, u.last_loc_vis, u.created_at
      FROM users u
      LEFT JOIN zones z ON z.id = u.zone_id
      WHERE u.id = ? AND u.role = 'captain' AND u.status != 'deleted'`,
@@ -1466,6 +1513,8 @@ A.get('/captains/:id/details', wrap(async (req, res) => {
     last_lat: cap.last_lat ?? null,
     last_lng: cap.last_lng ?? null,
     last_loc_at: cap.last_loc_at ?? null,
+    fix_at: cap.fix_at ?? null,
+    accuracy: cap.accuracy ?? null,
     last_loc_vis: cap.last_loc_vis ?? null,
     created_at: cap.created_at,
   };
@@ -1546,7 +1595,7 @@ A.get('/captains/:id/track', wrap(async (req, res) => {
     const cap = await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId);
     if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
   }
-  const rows = await db.all('SELECT lat,lng,order_id,at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', cid);
+  const rows = await db.all('SELECT lat,lng,order_id,at,accuracy,fix_at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', cid);
   res.json(rows.reverse());
 }));
 

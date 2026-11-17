@@ -1,5 +1,5 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v27';
-import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v29';
+import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v29';
 import {
   getMarkerVisualSize,
   getMarkerStatusAppearance,
@@ -255,6 +255,10 @@ authScreen('admin', (user) => {
   const ordersIndex = new Map();
   const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
   let refreshTimer;
+  let wsHasReady = false;
+  let liveLoadedAt = 0;
+  let liveLoadInFlight = null;
+  const LIVE_RESYNC_DEBOUNCE_MS = 3000;
   const WS_TAB_REFRESH_MS = 3000;
   const wsTabRefreshTimers = { dash: null, orders: null };
   function clearWsTabRefreshTimers() {
@@ -285,9 +289,18 @@ authScreen('admin', (user) => {
   }
   const zname = (id) => zones.find((z) => z.id === id)?.name || '—';
 
-  function computeCaptainLocDiag(ts, vis, busy, now = Date.now()) {
+  function formatLocationAgeShort(ageMs) {
+    const ageSec = Math.floor(Math.max(0, ageMs) / 1000);
+    if (ageSec < 60) return `قبل ${enDigits(ageSec)} ث`;
+    if (ageSec < 3600) return `قبل ${enDigits(Math.floor(ageSec / 60))} د`;
+    return `قبل ${enDigits(Math.floor(ageSec / 3600))} س`;
+  }
+
+  function computeCaptainLocDiag(ts, vis, busy, now = Date.now(), accuracy = null) {
     const t = Number(ts) || 0;
     const expectedMs = busy ? (locIntervals.active || 10_000) : (locIntervals.idle || 60_000);
+    const accNum = accuracy !== '' && accuracy != null && Number.isFinite(Number(accuracy)) ? Math.round(Number(accuracy)) : null;
+    const accPart = accNum != null ? ` • دقة ${enDigits(accNum)} م` : '';
     const visLabel = vis === 'visible'
       ? '🟢 التطبيق بالواجهة'
       : vis === 'hidden'
@@ -301,15 +314,9 @@ authScreen('admin', (user) => {
       };
     }
     const ageMs = Math.max(0, now - t);
-    const ageSec = Math.floor(ageMs / 1000);
-    let ageText;
-    if (ageSec < 60) {
-      ageText = `آخر موقع: منذ ${ageSec} ثانية`;
-    } else if (ageSec < 3600) {
-      ageText = `آخر موقع: منذ ${Math.floor(ageSec / 60)} دقيقة`;
-    } else {
-      ageText = `آخر موقع: منذ ${Math.floor(ageSec / 3600)} ساعة`;
-    }
+    const shortAge = formatLocationAgeShort(ageMs);
+    const prefix = ageMs > CAPTAIN_STALE_MS ? '⚠️ ' : '';
+    const ageText = `آخر موقع: ${prefix}${shortAge}${accPart}`;
     const colorClass = ageMs <= 2 * expectedMs
       ? 'loc-age-ok'
       : ageMs <= 4 * expectedMs
@@ -319,22 +326,24 @@ authScreen('admin', (user) => {
   }
 
   function renderCaptainLocDiag(c) {
-    const ts = c.last_loc_at ?? c.at ?? '';
+    const ts = c.last_loc_at ?? c.fix_at ?? c.at ?? '';
     const vis = c.last_loc_vis || '';
+    const acc = c.accuracy != null && Number.isFinite(Number(c.accuracy)) ? Math.round(Number(c.accuracy)) : '';
     const busy = Boolean(c.busy || c.active_order_id || (c.active_orders && c.active_orders.length));
-    const d = computeCaptainLocDiag(ts, vis, busy);
-    return `<div class="cap-loc-diag" data-loc-cap="${c.id}" data-loc-at="${ts || ''}" data-loc-vis="${esc(vis)}" data-loc-busy="${busy ? '1' : '0'}">
+    const d = computeCaptainLocDiag(ts, vis, busy, Date.now(), acc);
+    return `<div class="cap-loc-diag" data-loc-cap="${c.id}" data-loc-at="${ts || ''}" data-loc-vis="${esc(vis)}" data-loc-busy="${busy ? '1' : '0'}" data-loc-acc="${acc}">
       <span class="cap-loc-age ${d.colorClass}">${esc(d.ageText)}</span>
       <span class="cap-loc-vis">${esc(d.visLabel)}</span>
     </div>`;
   }
 
   function renderCaptainTooltipHtml(c, stTxt, upd = formatCaptainLastUpdate(c)) {
-    return `<div class="cap-map-tip"><span class="cap-map-tip-txt">🛵 ${esc(c.name)} — ${esc(stTxt)} • ${esc(upd.displayText)}</span><button type="button" class="sec cap-tip-details-btn" data-cap-details="${c.id}">تفاصيل</button></div>`;
+    return `<div class="cap-map-tip"><span class="cap-map-tip-txt">🛵 ${esc(c.name)} — ${esc(stTxt)} • ${esc(upd.displayText)}${esc(upd.accPart || '')}</span><button type="button" class="sec cap-tip-details-btn" data-cap-details="${c.id}">تفاصيل</button></div>`;
   }
 
   function renderCaptainPopupHtml(c) {
-    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? '● أونلاين متاح' : '○ أوفلاين';
+    const visSt = getCaptainVisualState(c);
+    const stTxt = visSt.busy ? `مشغول بطلب #${c.active_order_id}` : visSt.label;
     return `<div class="cap-map-popup">
       <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''} <span class="mut">(${esc(stTxt)})</span></div>
       ${renderCaptainLocDiag(c)}
@@ -345,25 +354,33 @@ authScreen('admin', (user) => {
   const CAPTAIN_STALE_MS = 180_000;
 
   function formatCaptainLastUpdate(c, now = Date.now()) {
-    const ts = Number(c?.last_loc_at ?? c?.at) || 0;
+    const ts = Number(c?.last_loc_at ?? c?.fix_at ?? c?.at) || 0;
+    const accRaw = c?.accuracy;
+    const accM = accRaw != null && accRaw !== '' && Number.isFinite(Number(accRaw)) ? Math.round(Number(accRaw)) : null;
+    const accPart = accM != null ? ` • دقة ${enDigits(accM)} م` : '';
     if (!ts) {
       return {
-        text: 'آخر تحديث غير متوفر',
-        displayText: '⚠️ آخر تحديث غير متوفر',
+        text: 'بدون موقع',
+        displayText: '⚠️ بدون موقع',
+        fullText: 'آخر موقع: غير متوفر',
+        accPart: '',
         isStale: true,
+        isNoLoc: true,
         ts: 0,
       };
     }
     const ageMs = Math.max(0, now - ts);
-    const ageSec = Math.floor(ageMs / 1000);
     const isStale = ageMs > CAPTAIN_STALE_MS;
-    const text = ageSec < 60
-      ? `آخر تحديث منذ ${enDigits(ageSec)} ثانية`
-      : `آخر تحديث منذ ${enDigits(Math.floor(ageSec / 60))} دقيقة`;
+    const isNoLoc = ageMs > 600_000;
+    const shortAge = formatLocationAgeShort(ageMs);
+    const displayText = isStale ? `⚠️ ${shortAge}` : shortAge;
     return {
-      text,
-      displayText: isStale ? `⚠️ ${text}` : text,
+      text: shortAge,
+      displayText,
+      fullText: `آخر موقع: ${displayText}${accPart}`,
+      accPart,
       isStale,
+      isNoLoc,
       ts,
     };
   }
@@ -372,7 +389,10 @@ authScreen('admin', (user) => {
     if (!el) return;
     const upd = formatCaptainLastUpdate(c, now);
     if (el.dataset.locAt !== String(upd.ts || '')) el.dataset.locAt = String(upd.ts || '');
-    if (el.textContent !== upd.displayText) el.textContent = upd.displayText;
+    const prefix = el.dataset.locPrefix || '';
+    const withAcc = el.dataset.locWithAcc === '1' ? (upd.accPart || '') : '';
+    const nextTxt = `${prefix}${upd.displayText}${withAcc}`;
+    if (el.textContent !== nextTxt) el.textContent = nextTxt;
     el.classList.toggle('is-stale', upd.isStale);
   }
 
@@ -382,7 +402,8 @@ authScreen('admin', (user) => {
       const ts = el.dataset.locAt;
       const vis = el.dataset.locVis;
       const busy = el.dataset.locBusy === '1';
-      const d = computeCaptainLocDiag(ts, vis, busy, now);
+      const acc = el.dataset.locAcc;
+      const d = computeCaptainLocDiag(ts, vis, busy, now, acc);
       const ageEl = el.querySelector('.cap-loc-age');
       const visEl = el.querySelector('.cap-loc-vis');
       if (ageEl) {
@@ -394,8 +415,31 @@ authScreen('admin', (user) => {
       }
     });
     document.querySelectorAll('[data-cap-upd]').forEach((el) => {
-      applyCaptainLastUpdateEl(el, { last_loc_at: el.dataset.locAt }, now);
+      applyCaptainLastUpdateEl(el, { last_loc_at: el.dataset.locAt, accuracy: el.dataset.locAcc }, now);
     });
+    if (tab === 'live' && liveMap && capMarkers.size) {
+      let stateBoundaryChanged = false;
+      capMarkers.forEach((mk, id) => {
+        const cap = (liveCache.captains || []).find((x) => x.id === id) || mk._opsEntity;
+        if (!cap) return;
+        const spec = buildCaptainIconSpec(cap, getMarkerVisualSize(liveMap.getZoom()), now);
+        if (mk._opsSig !== spec.sig) {
+          upsertCaptainMarker(cap);
+          stateBoundaryChanged = true;
+        }
+      });
+      if (stateBoundaryChanged) updateLegendCountsAndKpis();
+    } else if (tab === 'dash' && dashMap && dashCapMarkers.size) {
+      dashCapMarkers.forEach((mk) => {
+        const c = mk._dashEntity;
+        if (!c) return;
+        const st = getCaptainVisualState(c, liveCache.orders || [], now);
+        const upd = formatCaptainLastUpdate(c, now);
+        if (mk._dashStateKey !== st.stateKey || mk._dashStale !== upd.isStale) {
+          upsertDashCaptainMarker(c);
+        }
+      });
+    }
   }
 
   tick(); setInterval(tick, 1000);
@@ -1127,7 +1171,12 @@ authScreen('admin', (user) => {
       const ordBadges = (c.active_orders || []).map((ao) => `<span class="active-ord-mini"><b dir="ltr">#${ao.serial_no}</b> <button type="button" class="act-pill act-unassign-mini" data-unassign="${ao.id}" title="سحب الطلب من الكابتن">✕</button></span>`).join(' ');
       return `<div class="cap-busy-stack"><span class="badge b-accepted">🛵 مشغول (${(c.active_orders || []).length || 1})</span><div class="cap-busy-orders">${ordBadges}</div></div>`;
     }
-    if (c.online) return '<span class="badge b-active">🟢 أونلاين متاح</span>';
+    if (c.online) {
+      const visSt = getCaptainVisualState(c);
+      return visSt.stateKey === 'no_loc'
+        ? '<span class="badge b-offered">⚠️ أونلاين بدون موقع</span>'
+        : '<span class="badge b-active">🟢 أونلاين متاح</span>';
+    }
     return '<span class="badge">⚪ أوفلاين</span>';
   }
 
@@ -1146,6 +1195,8 @@ authScreen('admin', (user) => {
   function buildDashCaptainIcon(c, upd = formatCaptainLastUpdate(c), zoomSize = getMarkerVisualSize(dashMap?.getZoom() ?? 12)) {
     const st = getCaptainVisualState(c);
     const app = getMarkerStatusAppearance({ kind: 'captain', stateKey: st.stateKey });
+    const stateCls = st.stateKey === 'no_loc' ? 'ops-state-no-loc' : app.stateClass;
+    const staleCls = upd.isStale ? ' is-loc-stale' : '';
     const coreHtml = !zoomSize.showGlyph
       ? ''
       : c.busy
@@ -1153,7 +1204,7 @@ authScreen('admin', (user) => {
         : `<span class="pulsing-dot" style="background:${app.color}"></span>`;
     return L.divIcon({
       html: `<span class="ops-pin-ring" aria-hidden="true"></span><span class="dash-pin-core ${c.busy ? 'is-busy' : 'is-dot'}" aria-hidden="true">${coreHtml}</span><span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`,
-      className: `dash-cap-pin ${app.stateClass} is-zoom-${zoomSize.tier}`,
+      className: `dash-cap-pin ${stateCls}${staleCls} is-zoom-${zoomSize.tier}`,
       iconSize: [zoomSize.hitSize, zoomSize.hitSize],
       iconAnchor: [zoomSize.hitSize / 2, zoomSize.hitSize / 2],
     });
@@ -1212,6 +1263,7 @@ authScreen('admin', (user) => {
       const upd = formatCaptainLastUpdate(c);
       mk.setIcon(buildDashCaptainIcon(c, upd, zoomSize));
       mk._dashZoomTier = zoomSize.tier;
+      mk._dashStale = upd.isStale;
       applyCaptainLastUpdateEl(mk.getElement?.()?.querySelector('[data-cap-upd]'), c);
       mk._opsApplyEl?.();
     });
@@ -1230,9 +1282,9 @@ authScreen('admin', (user) => {
     const zoomSize = getMarkerVisualSize(dashMap.getZoom());
     const st = getCaptainVisualState(c);
     const stateKey = st.stateKey;
-    const stTxt = c.busy ? `مشغول بطلب #${c.active_order_id}` : c.online ? 'أونلاين متاح' : 'أوفلاين (آخر موقع)';
+    const stTxt = st.busy ? `مشغول بطلب #${c.active_order_id}` : st.label;
     const upd = formatCaptainLastUpdate(c);
-    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}${upd.accPart || ''}`;
     const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
     const coords = `${c.lat},${c.lng}`;
 
@@ -1243,6 +1295,7 @@ authScreen('admin', (user) => {
         .bindTooltip(tipHtml, { interactive: true });
       mk._dashStateKey = stateKey;
       mk._dashZoomTier = zoomSize.tier;
+      mk._dashStale = upd.isStale;
       mk._dashCoords = coords;
       mk._dashEntity = c;
       dashCapMarkers.set(c.id, mk);
@@ -1253,10 +1306,11 @@ authScreen('admin', (user) => {
         else mk.setLatLng([c.lat, c.lng]);
         mk._dashCoords = coords;
       }
-      if (mk._dashStateKey !== stateKey || mk._dashZoomTier !== zoomSize.tier) {
+      if (mk._dashStateKey !== stateKey || mk._dashZoomTier !== zoomSize.tier || mk._dashStale !== upd.isStale) {
         mk.setIcon(buildDashCaptainIcon(c, upd, zoomSize));
         mk._dashStateKey = stateKey;
         mk._dashZoomTier = zoomSize.tier;
+        mk._dashStale = upd.isStale;
       } else {
         const updEl = mk.getElement?.()?.querySelector('[data-cap-upd]');
         applyCaptainLastUpdateEl(updEl, c);
@@ -1490,7 +1544,7 @@ authScreen('admin', (user) => {
                     <span class="live-filter-count" id="lfcNeutral">0</span>
                   </label>
                   <label class="live-filter-row" for="lfGray">
-                    <span class="live-filter-label"><input type="checkbox" id="lfGray" ${liveFilters.showGray ? 'checked' : ''}><span class="live-swatch is-gray" aria-hidden="true"></span><span>رمادي: كابتن أوفلاين (غير متاح)</span></span>
+                    <span class="live-filter-label"><input type="checkbox" id="lfGray" ${liveFilters.showGray ? 'checked' : ''}><span class="live-swatch is-gray" aria-hidden="true"></span><span>رمادي: أوفلاين / بدون موقع</span></span>
                     <span class="live-filter-count" id="lfcGray">0</span>
                   </label>
                 </div>
@@ -1703,6 +1757,7 @@ authScreen('admin', (user) => {
             blue: ['showBlue', '#lfBlue'],
             yellow: ['showYellow', '#lfYellow'],
             gray: ['showGray', '#lfGray'],
+            no_loc: ['showGray', '#lfGray'],
           };
           const fc = filterCtrlMap[st.stateKey];
           if (fc && !liveFilters[fc[0]]) {
@@ -3443,7 +3498,7 @@ authScreen('admin', (user) => {
     if (stateKey === 'blue') return liveFilters.showBlue;
     if (stateKey === 'yellow') return liveFilters.showYellow;
     if (stateKey === 'neutral') return liveFilters.showNeutral;
-    if (stateKey === 'gray') return liveFilters.showGray;
+    if (stateKey === 'gray' || stateKey === 'no_loc') return liveFilters.showGray;
     return true;
   }
 
@@ -3562,12 +3617,13 @@ authScreen('admin', (user) => {
     }
   }
 
-  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, highlighted = false, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12), glyph, badgeCount, ageHtml = '' }) {
+  function buildLiveMarkerIcon({ kindClass, stateClass, selected, validTarget, dimmed, highlighted = false, stale = false, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12), glyph, badgeCount, ageHtml = '' }) {
     const classes = ['ops-marker', kindClass, stateClass, `is-zoom-${zoomSize.tier}`];
     if (selected) classes.push('is-selected');
     if (validTarget) classes.push('is-valid-target');
     if (dimmed) classes.push('is-dimmed');
     if (highlighted) classes.push('is-search-highlight');
+    if (stale) classes.push('is-loc-stale');
     const visibleGlyph = zoomSize.showGlyph ? glyph : '';
     const badgeHtml = zoomSize.showGlyph && badgeCount > 0 ? `<span class="ops-pin-badge" aria-hidden="true">${badgeCount}</span>` : '';
     const selectedHtml = selected ? '<span class="ops-pin-selected-tag">محدد</span>' : '';
@@ -3664,18 +3720,18 @@ authScreen('admin', (user) => {
     };
   }
 
-  function buildCaptainIconSpec(c, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12)) {
-    const st = getCaptainVisualState(c);
+  function buildCaptainIconSpec(c, zoomSize = getMarkerVisualSize(liveMap?.getZoom() ?? 12), now = Date.now()) {
+    const st = getCaptainVisualState(c, liveCache.orders || [], now);
     const shouldShow = liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey);
     const { selected, validTarget, dimmed } = computeCaptainSelectionFlags(c);
     const highlighted = searchHighlightedCaptainId != null && c.id === searchHighlightedCaptainId;
     const actCount = st.activeCount || c.active_orders?.length || (st.busy ? 1 : 0);
-    const upd = formatCaptainLastUpdate(c);
+    const upd = formatCaptainLastUpdate(c, now);
     const stTxt = st.busy ? `${st.label} (${actCount})` : st.label;
-    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}`;
+    const tip = `🛵 ${c.name} — ${stTxt} • ${upd.displayText}${upd.accPart || ''}`;
     const tipHtml = renderCaptainTooltipHtml(c, stTxt, upd);
     const ageHtml = `<span class="ops-pin-age${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>`;
-    const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}|${highlighted ? 1 : 0}|${zoomSize.tier}`;
+    const sig = `${st.stateClass}|${upd.isStale ? 1 : 0}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${actCount}|${highlighted ? 1 : 0}|${zoomSize.tier}`;
     return {
       shouldShow,
       tip,
@@ -3689,6 +3745,7 @@ authScreen('admin', (user) => {
         validTarget,
         dimmed,
         highlighted,
+        stale: upd.isStale,
         zoomSize,
         glyph: '🛵',
         badgeCount: actCount,
@@ -3895,7 +3952,7 @@ authScreen('admin', (user) => {
       if (st.stateKey === 'green') green++;
       else if (st.stateKey === 'blue') blue++;
       else if (st.stateKey === 'yellow') yellow++;
-      else gray++;
+      else if (st.stateKey === 'gray' || st.stateKey === 'no_loc') gray++;
       if (liveFilters.showCaptains && isLiveStateFilterVisible(st.stateKey)) visCount++;
     });
 
@@ -4192,10 +4249,13 @@ authScreen('admin', (user) => {
       const titleEl = dlg.querySelector('#capDetailsTitle');
       if (titleEl) titleEl.textContent = `🛵 ${c.name || 'تفاصيل الكابتن'}`;
 
+      const capVisualSt = getCaptainVisualState({ ...c, active_orders: activeOrders }, liveCache.orders || []);
       const onlineBadge = c.online
         ? (activeOrders.length > 0
             ? `<span class="badge b-accepted cap-status-pill"><span aria-hidden="true">●</span> أونلاين — مشغول (${enDigits(activeOrders.length)})</span>`
-            : '<span class="badge b-active cap-status-pill"><span aria-hidden="true">●</span> أونلاين متاح</span>')
+            : capVisualSt.stateKey === 'no_loc'
+              ? `<span class="badge b-offered cap-status-pill"><span aria-hidden="true">⚠</span> ${esc(capVisualSt.label)}</span>`
+              : '<span class="badge b-active cap-status-pill"><span aria-hidden="true">●</span> أونلاين متاح</span>')
         : '<span class="badge cap-status-pill"><span aria-hidden="true">○</span> أوفلاين</span>';
 
       const costSourceTxt = w.cost_source === 'exempt_permanent'
@@ -4302,7 +4362,7 @@ authScreen('admin', (user) => {
         <section class="cap-det-sec" aria-label="آخر تحديث للموقع">
           <h4 class="cap-det-sec-title">📡 آخر تحديث للموقع</h4>
           <div class="cap-det-loc-box">
-            <span class="cap-det-loc-upd${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}">${esc(upd.displayText)}</span>
+            <span class="cap-det-loc-upd${upd.isStale ? ' is-stale' : ''}" data-cap-upd="${c.id}" data-loc-at="${upd.ts || ''}" data-loc-acc="${c.accuracy != null ? Math.round(Number(c.accuracy)) : ''}" data-loc-prefix="آخر تحديث: " data-loc-with-acc="1">آخر تحديث: ${esc(upd.displayText)}${esc(upd.accPart || '')}</span>
           </div>
         </section>`;
     } catch (err) {
@@ -4455,65 +4515,78 @@ authScreen('admin', (user) => {
     }
   });
 
-  async function loadLive() {
+  async function loadLive({ force = true } = {}) {
     if (tab !== 'live' || !liveMap) return;
-    const d = await api('/admin/live');
-    if (tab !== 'live' || !liveMap) return;
-    liveCache = d;
-    if (d.intervals) locIntervals = d.intervals;
-    rememberOrders(d.orders);
-    rememberOrders(d.recentOrders);
-    updateShortageBanner(d.shortage);
+    if (!force && (liveLoadInFlight || Date.now() - liveLoadedAt < LIVE_RESYNC_DEBOUNCE_MS)) return;
+    if (liveLoadInFlight) return liveLoadInFlight;
 
-    const merchants = d.merchants || [];
-    const captains = d.captains || [];
-    const orders = d.orders || [];
+    const run = (async () => {
+      const d = await api('/admin/live');
+      if (tab !== 'live' || !liveMap) return;
+      liveLoadedAt = Date.now();
+      liveCache = d;
+      if (d.intervals) locIntervals = d.intervals;
+      rememberOrders(d.orders);
+      rememberOrders(d.recentOrders);
+      updateShortageBanner(d.shortage);
 
-    const seenM = new Set();
-    merchants.forEach((m) => {
-      if (m.lat != null && m.lng != null) seenM.add(m.id);
-      upsertMerchantMarker(m);
-    });
-    [...merchMarkers.keys()].filter((k) => !seenM.has(k)).forEach((k) => { merchMarkers.get(k).remove(); merchMarkers.delete(k); });
+      const merchants = d.merchants || [];
+      const captains = d.captains || [];
+      const orders = d.orders || [];
 
-    const seenC = new Set();
-    captains.forEach((c) => {
-      if (c.lat != null && c.lng != null) seenC.add(c.id);
-      upsertCaptainMarker(c);
-    });
-    [...capMarkers.keys()].filter((k) => !seenC.has(k)).forEach((k) => { capMarkers.get(k).remove(); capMarkers.delete(k); });
-
-    const openOrderIds = new Set(orders.map((o) => o.id));
-    [...orderMarkers.keys()].forEach((k) => {
-      const idNum = Number(String(k).replace(/^c/, ''));
-      if (!openOrderIds.has(idNum)) { orderMarkers.get(k).remove(); orderMarkers.delete(k); }
-    });
-    if (routeLayers instanceof Map) {
-      [...routeLayers.keys()].forEach((idNum) => {
-        if (!openOrderIds.has(idNum)) { routeLayers.get(idNum)?.layer?.remove?.(); routeLayers.delete(idNum); }
+      const seenM = new Set();
+      merchants.forEach((m) => {
+        if (m.lat != null && m.lng != null) seenM.add(m.id);
+        upsertMerchantMarker(m);
       });
-    }
-    orders.forEach((o) => syncOrderOverlay(o));
+      [...merchMarkers.keys()].filter((k) => !seenM.has(k)).forEach((k) => { merchMarkers.get(k).remove(); merchMarkers.delete(k); });
 
-    updateLegendCountsAndKpis();
-    renderLiveHint();
+      const seenC = new Set();
+      captains.forEach((c) => {
+        if (c.lat != null && c.lng != null) seenC.add(c.id);
+        upsertCaptainMarker(c);
+      });
+      [...capMarkers.keys()].filter((k) => !seenC.has(k)).forEach((k) => { capMarkers.get(k).remove(); capMarkers.delete(k); });
 
-    if (!liveFitted) {
-      const pts = collectAllPoints(d);
-      if (pts.length) {
-        if (window.innerWidth < 768 && pts.length > 1) {
-          const bounds = L.latLngBounds(pts.map((p) => L.latLng(Number(p[0]), Number(p[1]))));
-          const fitZ = liveMap.getBoundsZoom(bounds, false, L.point(90, 90));
-          if (fitZ < 14) {
-            liveMap.setView(bounds.getCenter(), 14, { animate: false });
+      const openOrderIds = new Set(orders.map((o) => o.id));
+      [...orderMarkers.keys()].forEach((k) => {
+        const idNum = Number(String(k).replace(/^c/, ''));
+        if (!openOrderIds.has(idNum)) { orderMarkers.get(k).remove(); orderMarkers.delete(k); }
+      });
+      if (routeLayers instanceof Map) {
+        [...routeLayers.keys()].forEach((idNum) => {
+          if (!openOrderIds.has(idNum)) { routeLayers.get(idNum)?.layer?.remove?.(); routeLayers.delete(idNum); }
+        });
+      }
+      orders.forEach((o) => syncOrderOverlay(o));
+
+      updateLegendCountsAndKpis();
+      renderLiveHint();
+
+      if (!liveFitted) {
+        const pts = collectAllPoints(d);
+        if (pts.length) {
+          if (window.innerWidth < 768 && pts.length > 1) {
+            const bounds = L.latLngBounds(pts.map((p) => L.latLng(Number(p[0]), Number(p[1]))));
+            const fitZ = liveMap.getBoundsZoom(bounds, false, L.point(90, 90));
+            if (fitZ < 14) {
+              liveMap.setView(bounds.getCenter(), 14, { animate: false });
+            } else {
+              fitMapToPoints(liveMap, pts);
+            }
           } else {
             fitMapToPoints(liveMap, pts);
           }
-        } else {
-          fitMapToPoints(liveMap, pts);
+          liveFitted = true;
         }
-        liveFitted = true;
       }
+    })();
+
+    liveLoadInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (liveLoadInFlight === run) liveLoadInFlight = null;
     }
   }
 
@@ -4524,6 +4597,13 @@ authScreen('admin', (user) => {
   }
 
   connectWs((m) => {
+    if (m.type === 'ready') {
+      if (wsHasReady && tab === 'live' && liveMap) {
+        loadLive({ force: false }).catch(() => {});
+      }
+      wsHasReady = true;
+      return;
+    }
     if (m.type === 'notification') {
       notifCtrl?.handleWsNotification(m);
       return;
@@ -4544,14 +4624,17 @@ authScreen('admin', (user) => {
     }
     if (m.type === 'loc') {
       const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
+      const effectiveAt = m.fix_at ?? m.at;
       if (capInCache) {
         capInCache.lat = m.lat;
         capInCache.lng = m.lng;
         capInCache.online = true;
-        if (m.at) {
-          capInCache.last_loc_at = m.at;
-          capInCache.at = m.at;
+        if (effectiveAt) {
+          capInCache.last_loc_at = effectiveAt;
+          capInCache.at = effectiveAt;
+          capInCache.fix_at = effectiveAt;
         }
+        if (m.accuracy !== undefined) capInCache.accuracy = m.accuracy;
         if (m.vis) capInCache.last_loc_vis = m.vis;
         if (m.busy !== undefined) capInCache.busy = m.busy;
         if (m.active_order_id !== undefined) capInCache.active_order_id = m.active_order_id;
@@ -4564,22 +4647,32 @@ authScreen('admin', (user) => {
       });
       const capInUsers = (currentUsersList || []).find((c) => c.id === m.captain_id);
       if (capInUsers) {
-        if (m.at) capInUsers.last_loc_at = m.at;
+        if (effectiveAt) {
+          capInUsers.last_loc_at = effectiveAt;
+          capInUsers.fix_at = effectiveAt;
+        }
+        if (m.accuracy !== undefined) capInUsers.accuracy = m.accuracy;
         if (m.vis) capInUsers.last_loc_vis = m.vis;
         if (m.busy !== undefined) capInUsers.busy = m.busy;
       }
       document.querySelectorAll(`[data-loc-cap="${m.captain_id}"]`).forEach((el) => {
-        if (m.at) el.dataset.locAt = String(m.at);
+        if (effectiveAt) el.dataset.locAt = String(effectiveAt);
         if (m.vis) el.dataset.locVis = m.vis;
+        if (m.accuracy !== undefined) el.dataset.locAcc = m.accuracy != null ? String(Math.round(Number(m.accuracy))) : '';
         if (m.busy !== undefined) el.dataset.locBusy = m.busy ? '1' : '0';
+      });
+      document.querySelectorAll(`[data-cap-upd="${m.captain_id}"]`).forEach((el) => {
+        if (m.accuracy !== undefined) el.dataset.locAcc = m.accuracy != null ? String(Math.round(Number(m.accuracy))) : '';
       });
       if (tab === 'live' && liveMap) {
         if (capInCache) {
           upsertCaptainMarker(capInCache, { animate: true });
         } else {
-          setCap(m.captain_id, m.lat, m.lng, null, m.busy, true, {
-            at: m.at || Date.now(),
-            last_loc_at: m.at || Date.now(),
+          setCap(m.captain_id, m.lat, m.lng, `#${m.captain_id}`, m.busy, true, {
+            at: effectiveAt || Date.now(),
+            last_loc_at: effectiveAt || Date.now(),
+            fix_at: effectiveAt || Date.now(),
+            accuracy: m.accuracy ?? null,
             last_loc_vis: m.vis,
           });
         }
@@ -4592,8 +4685,10 @@ authScreen('admin', (user) => {
           name: `#${m.captain_id}`,
           lat: m.lat,
           lng: m.lng,
-          at: m.at || Date.now(),
-          last_loc_at: m.at || Date.now(),
+          at: effectiveAt || Date.now(),
+          last_loc_at: effectiveAt || Date.now(),
+          fix_at: effectiveAt || Date.now(),
+          accuracy: m.accuracy ?? null,
           last_loc_vis: m.vis,
           busy: Boolean(m.busy),
           online: true,
@@ -4602,6 +4697,7 @@ authScreen('admin', (user) => {
         upsertDashCaptainMarker(dashTarget, { animate: true });
       }
       tickCaptainLocAges();
+      if (tab === 'live') updateLegendCountsAndKpis();
     } else if (m.type === 'balance') {
       const capInCache = (liveCache.captains || []).find((c) => c.id === m.captain_id);
       if (capInCache && m.balance_points != null) capInCache.balance_points = m.balance_points;
@@ -4629,6 +4725,12 @@ authScreen('admin', (user) => {
       }
     } else if (m.type === 'pending_user') {
       toast('طلب تسجيل جديد بانتظار الموافقة');
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && tab === 'live' && liveMap) {
+      loadLive({ force: false }).catch(() => {});
     }
   });
 

@@ -409,6 +409,24 @@ await runMigration('2026_11_captain_orders_index', async () => {
   await db.run('CREATE INDEX IF NOT EXISTS idx_orders_captain_id_desc ON orders(captain_id, id DESC)');
 });
 
+// Add nullable accuracy (meters) and fix_at (client GPS fix epoch ms) columns to users and locations
+await runMigration('2026_11_captain_loc_accuracy_fix_at', async () => {
+  const userCols = await db.all('PRAGMA table_info(users)');
+  if (!userCols.some((c) => c.name === 'accuracy')) {
+    await db.run('ALTER TABLE users ADD COLUMN accuracy REAL');
+  }
+  if (!userCols.some((c) => c.name === 'fix_at')) {
+    await db.run('ALTER TABLE users ADD COLUMN fix_at INTEGER');
+  }
+  const locCols = await db.all('PRAGMA table_info(locations)');
+  if (!locCols.some((c) => c.name === 'accuracy')) {
+    await db.run('ALTER TABLE locations ADD COLUMN accuracy REAL');
+  }
+  if (!locCols.some((c) => c.name === 'fix_at')) {
+    await db.run('ALTER TABLE locations ADD COLUMN fix_at INTEGER');
+  }
+});
+
 export const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const NOTIFICATION_CLEANUP_INTERVAL_MS =
   Number(process.env.NOTIFICATION_CLEANUP_INTERVAL_MS) || 10 * 60 * 1000;
