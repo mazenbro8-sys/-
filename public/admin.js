@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v27';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 import {
   getMarkerVisualSize,
@@ -248,6 +248,7 @@ authScreen('admin', (user) => {
     showNeutral: true,
     showGray: true,
   };
+  const LIVE_HINT_DISMISSED_KEY = 'panther_live_hint_dismissed';
   let liveLegendCollapsed = window.innerWidth <= 767;
   let liveHintOverride = null;
   let locIntervals = { active: 10_000, idle: 60_000 };
@@ -1434,16 +1435,22 @@ authScreen('admin', (user) => {
         <div class="live-ops-stage">
           <div id="lmap" class="live-ops-map" aria-label="خريطة العمليات الحية"></div>
           <div class="live-ops-hud">
+            <div id="liveLegendBackdrop" class="live-legend-backdrop hide" aria-hidden="true"></div>
             <div class="live-ops-hud-top">
               <aside id="liveLegendPanel" class="live-legend-panel ${liveLegendCollapsed ? 'is-collapsed' : ''}" aria-label="دليل الخريطة والفلاتر">
                 <div class="live-legend-head">
                   <button type="button" id="liveLegendToggle" class="live-legend-toggle" aria-expanded="${!liveLegendCollapsed}" aria-controls="liveLegendBody">
-                    <span>🎛️ الدليل والفلاتر (<span id="liveVisSummary">0</span>)</span>
+                    <span class="live-legend-toggle-main">
+                      <svg class="live-legend-filter-ico" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                      <span class="live-legend-emoji" aria-hidden="true">🎛️</span>
+                      <span>الدليل والفلاتر (<span id="liveVisSummary">0</span>)</span>
+                    </span>
                     <span id="liveLegendChev" aria-hidden="true">${liveLegendCollapsed ? '▾' : '▴'}</span>
                   </button>
                   <div class="live-legend-head-tools">
                     <button type="button" id="liveFit" class="live-hud-ico-btn" aria-label="تمركز الخريطة لإظهار الكل" title="إظهار الكل">🎯</button>
                     <button type="button" id="liveRef" class="live-hud-ico-btn" aria-label="تحديث البيانات الفورية" title="تحديث">🔄</button>
+                    <button type="button" id="liveLegendCloseBtn" class="live-hud-ico-btn live-legend-close" aria-label="إغلاق الدليل والفلاتر" title="إغلاق">✕</button>
                   </div>
                 </div>
                 <div id="liveLegendBody" class="live-legend-body">
@@ -1489,10 +1496,15 @@ authScreen('admin', (user) => {
                 </div>
               </aside>
               <form id="liveMapSearchForm" class="live-map-search-bar" role="search" novalidate>
-                <div class="live-search-row">
-                  <label for="liveCapSearch" class="live-search-label">كابتن</label>
-                  <input id="liveCapSearch" name="q" type="search" autocomplete="off" dir="auto" placeholder="كود (#A7K3) أو رقم الهاتف...">
-                  <button type="submit" id="liveCapSearchBtn" class="live-search-submit">🔍 بحث</button>
+                <div class="live-search-header">
+                  <button type="button" id="liveSearchToggle" class="live-search-toggle" aria-expanded="false" aria-controls="liveSearchBody" aria-label="بحث عن كابتن" title="بحث عن كابتن">🔍</button>
+                  <div id="liveSearchBody" class="live-search-body">
+                    <div class="live-search-row">
+                      <label for="liveCapSearch" class="live-search-label">كابتن</label>
+                      <input id="liveCapSearch" name="q" type="search" autocomplete="off" dir="auto" placeholder="كود (#A7K3) أو رقم الهاتف...">
+                      <button type="submit" id="liveCapSearchBtn" class="live-search-submit">🔍 بحث</button>
+                    </div>
+                  </div>
                 </div>
                 <div id="liveCapSearchResult" class="live-search-result hide" role="status" aria-live="polite"></div>
               </form>
@@ -1514,7 +1526,7 @@ authScreen('admin', (user) => {
           </dialog>
         </div>`;
 
-      liveMap = makeMap('lmap', DAMASCUS, 12);
+      liveMap = makeMap('lmap', DAMASCUS, window.innerWidth < 768 ? 14 : 12);
       syncLiveClockStyle();
       const origSetMapStyle = liveMap.setMapStyle;
       liveMap.setMapStyle = (key) => {
@@ -1531,17 +1543,81 @@ authScreen('admin', (user) => {
       const legendPanel = $('#liveLegendPanel');
       const legendToggle = $('#liveLegendToggle');
       const legendChev = $('#liveLegendChev');
-      legendToggle?.addEventListener('click', () => {
-        liveLegendCollapsed = !liveLegendCollapsed;
-        legendPanel?.classList.toggle('is-collapsed', liveLegendCollapsed);
-        legendToggle.setAttribute('aria-expanded', String(!liveLegendCollapsed));
-        if (legendChev) legendChev.textContent = liveLegendCollapsed ? '▾' : '▴';
-      });
-
+      const legendBackdrop = $('#liveLegendBackdrop');
+      const legendCloseBtn = $('#liveLegendCloseBtn');
       const searchForm = $('#liveMapSearchForm');
       const searchInput = $('#liveCapSearch');
       const searchResultEl = $('#liveCapSearchResult');
+      const searchToggle = $('#liveSearchToggle');
+      let liveSearchOpen = false;
       let liveSearchSeq = 0;
+
+      const setLiveSearchOpen = (open) => {
+        liveSearchOpen = Boolean(open);
+        searchForm?.classList.toggle('is-open', liveSearchOpen);
+        if (searchToggle) {
+          searchToggle.setAttribute('aria-expanded', String(liveSearchOpen));
+          searchToggle.textContent = liveSearchOpen ? '✕' : '🔍';
+          searchToggle.setAttribute('aria-label', liveSearchOpen ? 'إغلاق البحث' : 'بحث عن كابتن');
+          searchToggle.setAttribute('title', liveSearchOpen ? 'إغلاق البحث' : 'بحث عن كابتن');
+        }
+        if (liveSearchOpen && window.innerWidth <= 767) {
+          if (!liveLegendCollapsed) setLiveLegendOpen(false);
+          setTimeout(() => searchInput?.focus(), 40);
+        }
+      };
+
+      const setLiveLegendOpen = (open) => {
+        liveLegendCollapsed = !open;
+        legendPanel?.classList.toggle('is-collapsed', liveLegendCollapsed);
+        legendToggle?.setAttribute('aria-expanded', String(open));
+        if (legendChev) legendChev.textContent = liveLegendCollapsed ? '▾' : '▴';
+        legendBackdrop?.classList.add('hide');
+        legendBackdrop?.setAttribute('aria-hidden', 'true');
+        if (open && window.innerWidth <= 767 && liveSearchOpen) {
+          setLiveSearchOpen(false);
+        }
+      };
+      setLiveLegendOpen(!liveLegendCollapsed);
+      setLiveSearchOpen(false);
+
+      legendToggle?.addEventListener('click', () => setLiveLegendOpen(liveLegendCollapsed));
+      legendBackdrop?.addEventListener('click', () => setLiveLegendOpen(false));
+      legendCloseBtn?.addEventListener('click', () => {
+        setLiveLegendOpen(false);
+        legendToggle?.focus();
+      });
+      searchToggle?.addEventListener('click', () => setLiveSearchOpen(!liveSearchOpen));
+
+      const onSearchOutside = (e) => {
+        if (!searchForm?.isConnected) {
+          document.removeEventListener('pointerdown', onSearchOutside, true);
+          document.removeEventListener('click', onSearchOutside, true);
+          return;
+        }
+        if (!liveSearchOpen || window.innerWidth > 767) return;
+        if (searchForm.contains(e.target)) return;
+        setLiveSearchOpen(false);
+      };
+      document.addEventListener('pointerdown', onSearchOutside, true);
+      document.addEventListener('click', onSearchOutside, true);
+
+      const onLegendKeyDown = (e) => {
+        if (!legendPanel?.isConnected) {
+          window.removeEventListener('keydown', onLegendKeyDown);
+          return;
+        }
+        if (e.key === 'Escape' && window.innerWidth <= 767 && !document.querySelector('dialog[open]')) {
+          if (liveSearchOpen) {
+            setLiveSearchOpen(false);
+            searchToggle?.focus();
+          } else if (!liveLegendCollapsed) {
+            setLiveLegendOpen(false);
+            legendToggle?.focus();
+          }
+        }
+      };
+      window.addEventListener('keydown', onLegendKeyDown);
 
       const renderSearchResult = (res) => {
         if (!searchResultEl) return;
@@ -3375,7 +3451,7 @@ authScreen('admin', (user) => {
     const bar = $('#liveHintBar');
     if (!bar) return;
     bar.innerHTML = '';
-    bar.classList.remove('is-selecting', 'is-warning');
+    bar.classList.remove('is-selecting', 'is-warning', 'hide');
 
     if (liveHintOverride?.text) {
       if (liveHintOverride.tone === 'warning') bar.classList.add('is-warning');
@@ -3416,10 +3492,25 @@ authScreen('admin', (user) => {
       return;
     }
 
+    if (window.innerWidth <= 767 && sStore.getItem(LIVE_HINT_DISMISSED_KEY) === '1') {
+      bar.classList.add('hide');
+      return;
+    }
+
     const sp = document.createElement('span');
     sp.className = 'live-hint-text';
     sp.textContent = '💡 اضغط على منشأة صفراء ثم كابتن أونلاين لنقل الطلب فوراً';
-    bar.appendChild(sp);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.id = 'liveHintCloseBtn';
+    closeBtn.className = 'live-hint-close';
+    closeBtn.setAttribute('aria-label', 'إغلاق التلميح');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', () => {
+      sStore.setItem(LIVE_HINT_DISMISSED_KEY, '1');
+      renderLiveHint();
+    });
+    bar.append(sp, closeBtn);
   }
 
   function showLiveNotice(text, tone = 'warning', durationMs = 4500) {
@@ -4409,7 +4500,20 @@ authScreen('admin', (user) => {
 
     if (!liveFitted) {
       const pts = collectAllPoints(d);
-      if (pts.length) { fitMapToPoints(liveMap, pts); liveFitted = true; }
+      if (pts.length) {
+        if (window.innerWidth < 768 && pts.length > 1) {
+          const bounds = L.latLngBounds(pts.map((p) => L.latLng(Number(p[0]), Number(p[1]))));
+          const fitZ = liveMap.getBoundsZoom(bounds, false, L.point(90, 90));
+          if (fitZ < 14) {
+            liveMap.setView(bounds.getCenter(), 14, { animate: false });
+          } else {
+            fitMapToPoints(liveMap, pts);
+          }
+        } else {
+          fitMapToPoints(liveMap, pts);
+        }
+        liveFitted = true;
+      }
     }
   }
 
