@@ -42,6 +42,28 @@ if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
 }
 
+/**
+ * Delay invoking `fn` until `ms` milliseconds after the last call.
+ * Exposes `.cancel()` to clear any pending timer when a view unmounts or re-renders.
+ */
+export function debounce(fn, ms = 300) {
+  let timerId = null;
+  function debounced(...args) {
+    if (timerId !== null) clearTimeout(timerId);
+    timerId = setTimeout(() => {
+      timerId = null;
+      fn.apply(this, args);
+    }, ms);
+  }
+  debounced.cancel = () => {
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  };
+  return debounced;
+}
+
 const makeSafeStore = (kind) => {
   const mem = new Map();
   const raw = () => { try { return window[kind]; } catch { return null; } };

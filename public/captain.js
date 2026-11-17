@@ -3,7 +3,7 @@ import {
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
-  mountNotificationsBell
+  mountNotificationsBell, debounce
 } from './shared.js?v=panther2026v27';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
@@ -215,6 +215,7 @@ authScreen('captain', (user) => {
   let currentTab = 'home';
   let st = { online: false, active: null, activeOrders: [], offer: null, intervals: { active: 10000, idle: 60000 } };
   let allHistory = [], histFilter = 'all', histQuery = '';
+  let cancelHistorySearch = null;
   let pos = null, watchId = null, lastSent = 0;
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
@@ -349,6 +350,7 @@ authScreen('captain', (user) => {
 
   // ---------- Tab Navigation ----------
   function switchTab(tabName) {
+    if (tabName !== 'history') cancelHistorySearch?.();
     currentTab = tabName;
     $$('.cap-tab').forEach((sec) => sec.classList.toggle('hide', sec.id !== `tab-${tabName}`));
     $$('#bottomNav button[data-tab]').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabName));
@@ -524,6 +526,7 @@ authScreen('captain', (user) => {
     }
 
     allHistory = await api('/captain/history');
+    cancelHistorySearch?.();
     renderHomeLastUpdate();
     renderHistory();
     await loadCaptainWallet();
@@ -872,17 +875,27 @@ authScreen('captain', (user) => {
     `).join('');
   }
 
+  const histSearchInput = $('#histSearch');
+  const debouncedHistorySearch = debounce(() => {
+    if (!histSearchInput || !document.body.contains(histSearchInput) || currentTab !== 'history') return;
+    renderHistory();
+  }, 300);
+  cancelHistorySearch = () => debouncedHistorySearch.cancel();
+
   $$('#histFilterTabs button[data-hfilter]').forEach((btn) => {
     btn.onclick = () => {
+      debouncedHistorySearch.cancel();
       histFilter = btn.dataset.hfilter;
       $$('#histFilterTabs button').forEach((b) => b.classList.toggle('active', b === btn));
       renderHistory();
     };
   });
-  $('#histSearch').oninput = (e) => {
-    histQuery = e.target.value;
-    renderHistory();
-  };
+  if (histSearchInput) {
+    histSearchInput.oninput = (e) => {
+      histQuery = e.target.value;
+      debouncedHistorySearch();
+    };
+  }
 
   // ---------- Settings Actions ----------
   $('#pwForm').onsubmit = async (e) => {

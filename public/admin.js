@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell } from './shared.js?v=panther2026v27';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v27';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v22';
 import {
   TRANSFER_HINT_TEXT,
@@ -222,6 +222,13 @@ authScreen('admin', (user) => {
         clearTimeout(wsTabRefreshTimers[k]);
         wsTabRefreshTimers[k] = null;
       }
+    }
+  }
+  let clearSearchDebounces = null;
+  function cancelSearchDebounces() {
+    if (clearSearchDebounces) {
+      clearSearchDebounces();
+      clearSearchDebounces = null;
     }
   }
   function scheduleWsTabRefresh(targetTab) {
@@ -1023,6 +1030,7 @@ authScreen('admin', (user) => {
     tab = t;
     clearTimeout(refreshTimer);
     clearWsTabRefreshTimers();
+    cancelSearchDebounces();
     if (view()) view().onclick = null;
     liveStageObs?.disconnect();
     liveStageObs = null;
@@ -1135,6 +1143,7 @@ authScreen('admin', (user) => {
 
   const views = {
     async dash() {
+      cancelSearchDebounces();
       const [s, d] = await Promise.all([api('/admin/stats'), api('/admin/live')]);
       if (tab !== 'dash') return;
       liveCache = d;
@@ -1255,7 +1264,16 @@ authScreen('admin', (user) => {
         </tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
       };
       renderDashOrders();
-      $('#dashOrderSearch').oninput = (e) => renderDashOrders(e.target.value);
+      cancelSearchDebounces();
+      const dashSearchInput = $('#dashOrderSearch');
+      if (dashSearchInput) {
+        const debouncedDashSearch = debounce((q) => {
+          if (!$('#dashOrderRows') || !document.body.contains(dashSearchInput)) return;
+          renderDashOrders(q);
+        }, 300);
+        clearSearchDebounces = () => debouncedDashSearch.cancel();
+        dashSearchInput.oninput = (e) => debouncedDashSearch(e.target.value);
+      }
 
       view().onclick = async (e) => {
         if (await handleOrderActionClick(e)) return;
@@ -2218,6 +2236,7 @@ authScreen('admin', (user) => {
     },
 
     async orders() {
+      cancelSearchDebounces();
       const [rows, d] = await Promise.all([api('/admin/orders'), api('/admin/live')]);
       liveCache = d;
       if (d.intervals) locIntervals = d.intervals;
@@ -2252,8 +2271,25 @@ authScreen('admin', (user) => {
         $('#orderRows').innerHTML = filtered.map((o) => `<tr><td dir="ltr"><b class="serial-pill">${serialNo(o)}</b></td><td><b>🏪 ${esc(o.merchant.name)}</b></td><td><b>📍 ${esc(o.customer_address || '—')}</b></td><td>${orderStatusBadge(o)}</td><td>${renderOrderCaptainCell(o, capList)}</td><td>${time(o.created_at)}${o.closed_at ? `<div class="mut">أُغلق ${time(o.closed_at)}</div>` : ''}</td><td>${renderOrderRowActions(o)}</td></tr>`).join('') || '<tr><td colspan="7" class="mut">لا توجد طلبات مطابقة للبحث</td></tr>';
       };
       renderOrders();
-      $('#orderSearch').oninput = renderOrders;
-      $('#orderStatusFilter').onchange = renderOrders;
+      cancelSearchDebounces();
+      const orderSearchInput = $('#orderSearch');
+      const orderStatusSelect = $('#orderStatusFilter');
+      if (orderSearchInput) {
+        const debouncedOrderSearch = debounce(() => {
+          if (!$('#orderRows') || !document.body.contains(orderSearchInput)) return;
+          renderOrders();
+        }, 300);
+        clearSearchDebounces = () => debouncedOrderSearch.cancel();
+        orderSearchInput.oninput = () => debouncedOrderSearch();
+        if (orderStatusSelect) {
+          orderStatusSelect.onchange = () => {
+            debouncedOrderSearch.cancel();
+            renderOrders();
+          };
+        }
+      } else if (orderStatusSelect) {
+        orderStatusSelect.onchange = renderOrders;
+      }
       view().onclick = async (e) => {
         if (await handleOrderActionClick(e)) return;
         const dEl = e.target.closest('[data-d]');
