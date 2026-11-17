@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.GeolocationPermissions;
@@ -31,8 +32,10 @@ import java.util.List;
 import java.util.Map;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "PantherMainActivity";
     private static final String VIRTUAL_HOST = "appassets.panther.sy";
     private WebView webView;
+    private volatile boolean activityVisible = false;
 
     public class JsBridge {
         @JavascriptInterface
@@ -46,13 +49,12 @@ public class MainActivity extends Activity {
 
             Intent svc = new Intent(MainActivity.this, CaptainService.class);
             if (online && token != null && !token.isEmpty()) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(svc);
-                    } else {
-                        startService(svc);
-                    }
-                } catch (Exception ignored) {}
+                if (activityVisible && hasFineLocation()) {
+                    svc.setAction(CaptainService.ACTION_START_FOREGROUND_LOCATION);
+                } else {
+                    svc.setAction(CaptainService.ACTION_START_DATASYNC);
+                }
+                startServiceCompat(svc);
             } else {
                 CaptainService.stopSiren();
                 svc.setAction("STOP_SERVICE");
@@ -60,6 +62,11 @@ public class MainActivity extends Activity {
                     startService(svc);
                 } catch (Exception ignored) {}
             }
+        }
+
+        @JavascriptInterface
+        public boolean isNativeTrackingActive() {
+            return CaptainService.isNativeTrackingActive();
         }
 
         @JavascriptInterface
@@ -213,13 +220,65 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean hasFineLocation() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void startServiceCompat(Intent svc) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svc);
+            } else {
+                startService(svc);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to start CaptainService (" + e.getClass().getSimpleName() + "): " + e.getMessage());
+        }
+    }
+
+    private void promoteLocationServiceIfEligible() {
+        SharedPreferences prefs = getSharedPreferences("panther_prefs", MODE_PRIVATE);
+        boolean online = prefs.getBoolean("online", false);
+        String token = prefs.getString("token", "");
+        String serverUrl = prefs.getString("server_url", "");
+        if (!online || token == null || token.isEmpty() || serverUrl == null || serverUrl.isEmpty()) {
+            return;
+        }
+        Intent svc = new Intent(this, CaptainService.class);
+        if (activityVisible && hasFineLocation()) {
+            svc.setAction(CaptainService.ACTION_START_FOREGROUND_LOCATION);
+        } else {
+            svc.setAction(CaptainService.ACTION_START_DATASYNC);
+        }
+        startServiceCompat(svc);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1001 && activityVisible) {
+            promoteLocationServiceIfEligible();
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        activityVisible = true;
+        CaptainService.setUiInForeground(true);
+        promoteLocationServiceIfEligible();
         if (webView != null) {
             webView.onResume();
             webView.evaluateJavascript("window.dispatchEvent(new Event('visibilitychange'));", null);
         }
+    }
+
+    @Override
+    protected void onPause() {
+        activityVisible = false;
+        CaptainService.setUiInForeground(false);
+        super.onPause();
     }
 
     private String guessMime(String path) {

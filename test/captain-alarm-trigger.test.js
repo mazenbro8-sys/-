@@ -187,7 +187,7 @@ test('captain web & Android alarm triggers stay silent on status presses and rep
     'CaptainService startSiren must be gated inside offerId != lastNotifiedOfferId'
   );
 
-  // Admin message background delivery assertions in CaptainService.java & version 1.4.3 (versionCode 9)
+  // Admin message background delivery assertions in CaptainService.java & bumped APK version (1.4.4 / versionCode 10+)
   assert.match(javaSvc, /CHANNEL_MSG\s*=\s*"panther_messages"/, 'CaptainService must define CHANNEL_MSG');
   assert.match(javaSvc, /"PANTHER Messages"/, 'CaptainService must create PANTHER Messages notification channel');
   assert.match(javaSvc, /PREF_ALERTED_NOTIF_IDS\s*=\s*"alerted_notif_ids"/, 'CaptainService must track alerted_notif_ids');
@@ -206,15 +206,15 @@ test('captain web & Android alarm triggers stay silent on status presses and rep
     path.join(process.cwd(), 'android-captain', 'app', 'src', 'main', 'AndroidManifest.xml'),
     'utf8'
   );
-  assert.match(manifestXml, /android:versionCode="9"/, 'AndroidManifest versionCode must be 9');
-  assert.match(manifestXml, /android:versionName="1\.4\.3"/, 'AndroidManifest versionName must be 1.4.3');
+  assert.match(manifestXml, /android:versionCode="10"/, 'AndroidManifest versionCode must be 10');
+  assert.match(manifestXml, /android:versionName="1\.4\.4"/, 'AndroidManifest versionName must be 1.4.4');
 
   const buildGradle = fs.readFileSync(
     path.join(process.cwd(), 'android-captain', 'app', 'build.gradle'),
     'utf8'
   );
-  assert.match(buildGradle, /versionCode\s+9\b/, 'build.gradle versionCode must be 9');
-  assert.match(buildGradle, /versionName\s+"1\.4\.3"/, 'build.gradle versionName must be 1.4.3');
+  assert.match(buildGradle, /versionCode\s+10\b/, 'build.gradle versionCode must be 10');
+  assert.match(buildGradle, /versionName\s+"1\.4\.4"/, 'build.gradle versionName must be 1.4.4');
 
   // End-to-end server flow
   let alarmStartCount = 0;

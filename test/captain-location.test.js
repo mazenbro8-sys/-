@@ -11,6 +11,7 @@ import {
   shouldAcceptGpsReading,
   evaluateCaptainLocationSend,
   evaluateStaleRecovery,
+  shouldSkipWebLocationPost,
   STALE_RECOVERY_BACKOFF_MS,
   animateMarker,
 } from '../public/shared.js';
@@ -391,4 +392,77 @@ test('server POST /api/captain/location: fix_age_ms clock-skew safety, validatio
     await new Promise((r) => srv.once('exit', r));
     try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); } catch {}
   }
+});
+
+test('shouldSkipWebLocationPost: browsers & old APKs send, native inactive sends, native active skips safely', () => {
+  // Web browser (native absent) -> send (skip = false)
+  assert.equal(shouldSkipWebLocationPost(undefined), false);
+  assert.equal(shouldSkipWebLocationPost(null), false);
+
+  // Old APK 1.4.3 (PantherNative exists, no isNativeTrackingActive method) -> send
+  assert.equal(shouldSkipWebLocationPost({ syncState() {}, stopSiren() {} }), false);
+  assert.equal(shouldSkipWebLocationPost({ isNativeTrackingActive: true }), false);
+
+  // New APK present, native tracking not recently active -> send (fallback)
+  assert.equal(shouldSkipWebLocationPost({ isNativeTrackingActive: () => false }), false);
+
+  // Host bridge throws -> fail open and send from web
+  assert.equal(
+    shouldSkipWebLocationPost({ isNativeTrackingActive: () => { throw new Error('bridge dead'); } }),
+    false
+  );
+
+  // New APK present and native tracking recently posted -> skip duplicate web POST
+  assert.equal(shouldSkipWebLocationPost({ isNativeTrackingActive: () => true }), true);
+});
+
+test('Android APK 1.4.4 manifest, build.gradle, and cache-bust v31 match background tracking requirements', () => {
+  const manifest = fs.readFileSync(new URL('../android-captain/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8');
+  const gradle = fs.readFileSync(new URL('../android-captain/app/build.gradle', import.meta.url), 'utf8');
+  const captainHtml = fs.readFileSync(new URL('../public/captain.html', import.meta.url), 'utf8');
+  const captainJs = fs.readFileSync(new URL('../public/captain.js', import.meta.url), 'utf8');
+
+  assert.match(manifest, /android:versionCode="10"/);
+  assert.match(manifest, /android:versionName="1\.4\.4"/);
+  assert.match(manifest, /android\.permission\.FOREGROUND_SERVICE_LOCATION/);
+  assert.match(manifest, /android:foregroundServiceType="dataSync\|location"/);
+  assert.doesNotMatch(manifest, /ACCESS_BACKGROUND_LOCATION/);
+
+  assert.match(gradle, /versionCode 10/);
+  assert.match(gradle, /versionName "1\.4\.4"/);
+
+  assert.ok(captainHtml.includes('captain.js?v=panther2026v32'));
+  assert.ok(captainJs.includes('./shared.js?v=panther2026v32'));
+});
+
+test('CaptainService.java corrective pass: 90s native window, seq == sendSeq guard, FGS stopSelf fallback, and permission-revoked downgrade', () => {
+  const svc = fs.readFileSync(
+    new URL('../android-captain/app/src/main/java/sy/panther/captain/CaptainService.java', import.meta.url),
+    'utf8'
+  );
+
+  // 1. NATIVE_ACTIVE_WINDOW_MS updated to 90_000L (idle heartbeat is 60s)
+  assert.match(svc, /NATIVE_ACTIVE_WINDOW_MS\s*=\s*90_000L\b/);
+  assert.doesNotMatch(svc, /NATIVE_ACTIVE_WINDOW_MS\s*=\s*45_000L\b/);
+
+  // 2. postLocationAttempt 2xx branch guards state updates with locationTrackingActive && seq == sendSeq
+  const postMatch = svc.match(/private void postLocationAttempt\([\s\S]*?private void scheduleSingleRetry/);
+  assert.ok(postMatch, 'postLocationAttempt must exist');
+  const okBranch = postMatch[0].match(/if\s*\(code\s*>=\s*200\s*&&\s*code\s*<\s*300\)\s*\{[\s\S]*?return;\s*\}/);
+  assert.ok(okBranch, '2xx success branch must exist in postLocationAttempt');
+  assert.match(okBranch[0], /if\s*\(locationTrackingActive\s*&&\s*seq\s*==\s*sendSeq\)/);
+
+  // 3. onStartCommand checks startForegroundCompat return value, retries once dataSync-only, and stops with START_NOT_STICKY on failure
+  const onStartMatch = svc.match(/public int onStartCommand\([\s\S]*?private boolean hasValidOnlinePrefs/);
+  assert.ok(onStartMatch, 'onStartCommand must exist');
+  const stopNotStickyMatches = onStartMatch[0].match(/startForegroundCompat\(buildForegroundNotification\(TEXT_BG_IDLE\),\s*false\)[\s\S]*?stopSelf\(\);\s*return START_NOT_STICKY;/g) || [];
+  assert.equal(stopNotStickyMatches.length, 2, 'Both explicit FGS fallback and background/boot/no-permission branch must retry dataSync-only then stopSelf + START_NOT_STICKY');
+
+  // 4. checkCaptainState downgrades foreground service type to dataSync-only when location permission is revoked
+  const checkStateMatch = svc.match(/private void checkCaptainState\([\s\S]*?private void checkUnreadMessages/);
+  assert.ok(checkStateMatch, 'checkCaptainState must exist');
+  assert.match(
+    checkStateMatch[0],
+    /if\s*\(!hasFineLocationPermission\(\)\)[\s\S]*?stopLocationTracking\(\);[\s\S]*?startForegroundCompat\(buildForegroundNotification\(TEXT_BG_IDLE\),\s*false\)/
+  );
 });

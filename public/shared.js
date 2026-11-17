@@ -32,14 +32,269 @@ export const STATUS = {
 };
 export const badge = (s) => `<span class="badge b-${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 
-export function toast(msg, ms = 3500) {
-  let t = $('#toast');
-  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.append(t); }
-  t.textContent = msg; t.style.display = 'block';
-  clearTimeout(t._t); t._t = setTimeout(() => (t.style.display = 'none'), ms);
+/** Format timestamp as compact Arabic relative duration using English digits. */
+export function formatRelativeNotifTime(ts, now = Date.now()) {
+  const num = Number(ts);
+  if (!Number.isFinite(num) || num <= 0) return '—';
+  const diffMs = Math.max(0, Number(now) - num);
+  if (diffMs < 60_000) return 'الآن';
+  if (diffMs < 3_600_000) return `قبل ${enDigits(Math.floor(diffMs / 60_000))} د`;
+  if (diffMs < 86_400_000) return `قبل ${enDigits(Math.floor(diffMs / 3_600_000))} س`;
+  return `قبل ${enDigits(Math.floor(diffMs / 86_400_000))} ي`;
 }
+
+/**
+ * Sort inbox notifications (un-acked requires_ack pinned at top, newest first)
+ * and compute unread / >threshold grouping metadata.
+ */
+export function sortAndPrepareNotifications(rows, { groupThreshold = 5 } = {}) {
+  const valid = Array.isArray(rows) ? rows.filter((n) => n && n.id != null) : [];
+  const isRead = (n) => Boolean(n.read || n.read_at);
+  const isPinnedAck = (n) => Boolean(n.requires_ack && !isRead(n));
+  const byNewest = (a, b) =>
+    ((Number(b.created_at) || 0) - (Number(a.created_at) || 0))
+    || ((Number(b.id) || 0) - (Number(a.id) || 0));
+
+  const pinnedAckItems = valid.filter(isPinnedAck).sort(byNewest);
+  const regularItems = valid.filter((n) => !isPinnedAck(n)).sort(byNewest);
+  const items = [...pinnedAckItems, ...regularItems];
+  const unreadItems = items.filter((n) => !isRead(n));
+  const unreadCount = unreadItems.length;
+  const regularUnreadIds = unreadItems.filter((n) => !n.requires_ack).map((n) => n.id);
+  const shouldGroupBanner = unreadCount > groupThreshold;
+  const bannerText = shouldGroupBanner ? `لديك ${enDigits(unreadCount)} رسائل جديدة` : '';
+  return { items, pinnedAckItems, unreadCount, regularUnreadIds, shouldGroupBanner, bannerText };
+}
+
+/** Pure queue transition helper: append/coalesce a toast item with cap enforcement. */
+export function enqueueToastItem(queue, nextItem, { maxQueue = 12 } = {}) {
+  const text = String(nextItem?.msg ?? '').trim();
+  if (!text) return queue.slice();
+  const ms = Math.max(1000, Math.min(15_000, Number(nextItem?.ms) || 3500));
+  const tag = String(nextItem?.tag || '');
+  const replaceTag = Boolean(nextItem?.replaceTag && tag);
+  const priority = nextItem?.priority === 'high' ? 'high' : 'normal';
+
+  let list = replaceTag ? queue.filter((q) => q.tag !== tag) : queue.slice();
+  if (list.some((q) => q.msg === text)) return list;
+
+  while (list.length >= maxQueue) {
+    const dropIdx = list.findIndex((q) => q.priority !== 'high');
+    if (dropIdx >= 0) list.splice(dropIdx, 1);
+    else list.shift();
+  }
+  const entry = { msg: text, ms, tag, priority };
+  if (priority === 'high') {
+    const firstNormal = list.findIndex((q) => q.priority !== 'high');
+    if (firstNormal >= 0) list.splice(firstNormal, 0, entry);
+    else list.push(entry);
+  } else {
+    list.push(entry);
+  }
+  return list;
+}
+
+const _toastState = { queue: [], active: [], timers: new Map(), deferTimer: null, nextId: 1 };
+
+function toastRectIntersectsProtected() {
+  if (typeof document === 'undefined') return false;
+  const hdr = document.querySelector('.panther-header');
+  const hdrRect = hdr?.getBoundingClientRect();
+  const topOffset = (hdrRect && hdrRect.height > 0) ? Math.ceil(hdrRect.bottom + 8) : 16;
+  const bandTop = topOffset - 4;
+  const bandBottom = topOffset + 76;
+  const criticalEls = document.querySelectorAll(
+    '#offer .offer-sheet, #offer #acc, #offer #rej, #tab-active #nx, #tab-active #fl, #tab-active .cap-quick-actions'
+  );
+  for (const el of criticalEls) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    if (r.top < bandBottom && r.bottom > bandTop) return true;
+  }
+  return false;
+}
+
+function getOrCreateToastRegion() {
+  let region = document.getElementById('toast');
+  if (!region) {
+    region = document.createElement('div');
+    region.id = 'toast';
+    region.className = 'toast-region';
+    region.setAttribute('role', 'region');
+    region.setAttribute('aria-label', 'التنبيهات');
+    if (typeof HTMLElement !== 'undefined' && Object.hasOwn(HTMLElement.prototype, 'popover')) {
+      region.setAttribute('popover', 'manual');
+    }
+    document.body.appendChild(region);
+  }
+  let live = document.getElementById('toastLive');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'toastLive';
+    live.className = 'inclusively-hidden';
+    live.setAttribute('aria-live', 'polite');
+    document.body.appendChild(live);
+  }
+  return { region, live };
+}
+
+function showRegionLayer(region, visible) {
+  const hasPopover = typeof HTMLElement !== 'undefined' && Object.hasOwn(HTMLElement.prototype, 'popover');
+  if (visible) {
+    const hdr = document.querySelector('.panther-header');
+    const hr = hdr?.getBoundingClientRect();
+    const topOffset = (hr && hr.height > 0) ? Math.ceil(hr.bottom + 8) : 16;
+    region.style.setProperty('--toast-top-offset', `${topOffset}px`);
+    region.classList.add('is-open');
+    if (hasPopover) {
+      try {
+        if (!region.matches(':popover-open')) region.showPopover();
+      } catch {}
+    }
+  } else {
+    region.classList.remove('is-open');
+    if (hasPopover) {
+      try {
+        if (region.matches(':popover-open')) region.hidePopover();
+      } catch {}
+    }
+  }
+}
+
+function scheduleToastTimer(id, ms) {
+  const existing = _toastState.timers.get(id);
+  if (existing) clearTimeout(existing);
+  const tid = setTimeout(() => dismissActiveToast(id), ms);
+  _toastState.timers.set(id, tid);
+}
+
+function dismissActiveToast(id, { restoreFocus = false } = {}) {
+  const timer = _toastState.timers.get(id);
+  if (timer) clearTimeout(timer);
+  _toastState.timers.delete(id);
+
+  const idx = _toastState.active.findIndex((a) => a.id === id);
+  if (idx >= 0) _toastState.active.splice(idx, 1);
+
+  const region = document.getElementById('toast');
+  const el = region?.querySelector(`[data-toast-id="${id}"]`);
+  const hadFocus = Boolean(restoreFocus && el && el.contains(document.activeElement));
+  const priorFocus = el?._priorFocus;
+  el?.remove();
+
+  flushToastQueue();
+
+  if (hadFocus) {
+    const nextBtn = region?.querySelector('.toast-close');
+    if (nextBtn) nextBtn.focus();
+    else if (priorFocus && typeof priorFocus.focus === 'function' && priorFocus.isConnected) {
+      try { priorFocus.focus(); } catch {}
+    }
+  }
+}
+
+function flushToastQueue() {
+  if (typeof document === 'undefined') return;
+  clearTimeout(_toastState.deferTimer);
+  _toastState.deferTimer = null;
+
+  const { region, live } = getOrCreateToastRegion();
+  const maxVisible = (typeof window !== 'undefined' && window.innerWidth <= 767) ? 1 : 2;
+
+  if (_toastState.queue.length > 0 && toastRectIntersectsProtected()) {
+    if (_toastState.active.length === 0) showRegionLayer(region, false);
+    _toastState.deferTimer = setTimeout(flushToastQueue, 300);
+    return;
+  }
+
+  while (_toastState.active.length < maxVisible && _toastState.queue.length > 0) {
+    const next = _toastState.queue.shift();
+    const id = _toastState.nextId++;
+    const entry = { ...next, id };
+    _toastState.active.push(entry);
+
+    const card = document.createElement('div');
+    card.className = 'toast-item';
+    card.dataset.toastId = String(id);
+    if (entry.tag) card.dataset.toastTag = entry.tag;
+    card._priorFocus = document.activeElement;
+
+    const msgSpan = document.createElement('span');
+    msgSpan.className = 'toast-msg';
+    msgSpan.textContent = entry.msg;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'toast-close';
+    closeBtn.setAttribute('aria-label', 'إغلاق التنبيه');
+    closeBtn.textContent = '✕';
+    closeBtn.onclick = () => dismissActiveToast(id, { restoreFocus: true });
+
+    card.append(msgSpan, closeBtn);
+    const pause = () => {
+      const t = _toastState.timers.get(id);
+      if (t) { clearTimeout(t); _toastState.timers.delete(id); }
+    };
+    const resume = () => {
+      if (_toastState.active.some((a) => a.id === id) && !card.matches(':focus-within')) {
+        scheduleToastTimer(id, 1800);
+      }
+    };
+    card.addEventListener('pointerenter', pause);
+    card.addEventListener('pointerleave', resume);
+    card.addEventListener('focusin', pause);
+    card.addEventListener('focusout', resume);
+
+    region.appendChild(card);
+    scheduleToastTimer(id, entry.ms);
+
+    try {
+      if (typeof document.ariaNotify === 'function') document.ariaNotify(entry.msg);
+      else live.textContent = entry.msg;
+    } catch {
+      live.textContent = entry.msg;
+    }
+  }
+
+  showRegionLayer(region, _toastState.active.length > 0);
+}
+
+/** Display a non-blocking queued toast alert clear of offers and active actions. */
+export function toast(msg, msOrOpts = 3500) {
+  if (typeof document === 'undefined') return;
+  const opts = typeof msOrOpts === 'object' && msOrOpts !== null
+    ? msOrOpts
+    : { ms: Number(msOrOpts) || 3500 };
+  const text = String(msg ?? '').trim();
+  if (!text) return;
+
+  if (opts.replaceTag && opts.tag) {
+    const activeIds = _toastState.active.filter((a) => a.tag === opts.tag).map((a) => a.id);
+    for (const id of activeIds) dismissActiveToast(id);
+  }
+  if (_toastState.active.some((a) => a.msg === text)) return;
+
+  _toastState.queue = enqueueToastItem(_toastState.queue, {
+    msg: text,
+    ms: opts.ms ?? 3500,
+    tag: opts.tag || '',
+    replaceTag: Boolean(opts.replaceTag),
+    priority: opts.priority || 'normal',
+  });
+  flushToastQueue();
+}
+
+/** Replace any queued/active tagged toast messages with one collapsed summary toast. */
+export function collapseToastTag(tag, msg, ms = 3500) {
+  toast(msg, { ms, tag, replaceTag: true });
+}
+
 if (typeof document !== 'undefined') {
-  document.addEventListener('DOMContentLoaded', () => { document.getElementById('toast')?.style.setProperty('display', 'none'); });
+  document.addEventListener('DOMContentLoaded', () => {
+    const region = document.getElementById('toast');
+    if (region) showRegionLayer(region, false);
+  });
+  document.addEventListener('close', () => setTimeout(flushToastQueue, 40), true);
 }
 
 /**
@@ -669,6 +924,17 @@ export function evaluateCaptainLocationSend({
   };
 }
 
+/** Skip web POSTs only when the native Android app's tracking bridge confirms a recent upload. */
+export function shouldSkipWebLocationPost(nativeBridge) {
+  if (!nativeBridge) return false;
+  try {
+    if (typeof nativeBridge.isNativeTrackingActive !== 'function') return false;
+    return Boolean(nativeBridge.isNativeTrackingActive());
+  } catch {
+    return false;
+  }
+}
+
 /** Backoff scheduler for restarting watchPosition + getFreshGps: 30s initial, then 60s -> 120s -> 180s cap, visible & online only. */
 export function evaluateStaleRecovery({
   decision,
@@ -1141,6 +1407,13 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
   if (!_notifCtrl) {
     let unreadCount = 0;
     let activeOfferState = null;
+    const listeners = new Set();
+
+    const notifyListeners = (evt) => {
+      for (const fn of listeners) {
+        try { fn(evt); } catch {}
+      }
+    };
 
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1165,8 +1438,12 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
             <h3 id="notifInboxTitle">🔔 الإشعارات</h3>
             <span id="notifInboxUnreadSummary" class="badge">0 غير مقروء</span>
           </div>
-          <button type="button" id="notifInboxClose" class="sec sm notif-inbox-close" aria-label="إغلاق صندوق الإشعارات" autofocus>✕ إغلاق</button>
+          <div class="notif-inbox-head-actions">
+            <button type="button" id="notifMarkAllReadBtn" class="sec sm notif-mark-all-btn hide">✓ تعليم الكل كمقروء</button>
+            <button type="button" id="notifInboxClose" class="sec sm notif-inbox-close" aria-label="إغلاق صندوق الإشعارات" autofocus>✕ إغلاق</button>
+          </div>
         </div>
+        <div id="notifInboxGroupSummary" class="notif-group-inline hide" role="status" aria-live="polite"></div>
         <div id="notifInboxStatus" class="mut notif-inbox-status hide" aria-live="polite"></div>
         <div id="notifInboxList" class="notif-inbox-list" role="list"></div>
       </div>`;
@@ -1174,6 +1451,8 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
 
     const badgeEl = btn.querySelector('#notifUnreadBadge');
     const summaryEl = dlg.querySelector('#notifInboxUnreadSummary');
+    const groupInlineEl = dlg.querySelector('#notifInboxGroupSummary');
+    const markAllBtn = dlg.querySelector('#notifMarkAllReadBtn');
     const statusEl = dlg.querySelector('#notifInboxStatus');
     const listEl = dlg.querySelector('#notifInboxList');
     const offerSlotEl = dlg.querySelector('#notifOfferPrioritySlot');
@@ -1187,11 +1466,25 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
       btn.setAttribute('aria-label', n > 0 ? `صندوق الإشعارات (${n} غير مقروء)` : 'صندوق الإشعارات');
       summaryEl.textContent = n > 0 ? `${enDigits(n)} غير مقروء` : 'لا توجد رسائل جديدة';
       summaryEl.className = n > 0 ? 'badge b-searching' : 'badge';
+
+      if (n > 5) {
+        groupInlineEl.textContent = `📩 لديك ${enDigits(n)} رسائل جديدة — الأحدث أولاً`;
+        groupInlineEl.classList.remove('hide');
+      } else {
+        groupInlineEl.textContent = '';
+        groupInlineEl.classList.add('hide');
+      }
+
+      const hasDomList = listEl.querySelectorAll('.notif-item').length > 0;
+      const regularUnreadDom = listEl.querySelectorAll('.notif-item.is-unread:not([data-pinned-ack="1"])').length;
+      const showMarkAll = hasDomList ? regularUnreadDom > 0 : n > 0;
+      markAllBtn.classList.toggle('hide', !showMarkAll);
     };
 
     const setUnreadCount = (n) => {
       unreadCount = Math.max(0, Number(n) || 0);
       syncUnreadUi();
+      notifyListeners({ type: 'unread', unreadCount });
     };
 
     const refreshUnreadCount = async () => {
@@ -1207,49 +1500,137 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
 
     const markItemReadUi = (itemEl) => {
       if (!itemEl || itemEl.classList.contains('is-read')) return;
-      itemEl.classList.remove('is-unread');
+      itemEl.classList.remove('is-unread', 'is-ack-required');
       itemEl.classList.add('is-read');
+      itemEl.removeAttribute('data-pinned-ack');
+      itemEl.querySelector('.notif-ack-btn')?.remove();
+      itemEl.querySelector('.notif-ack-pill')?.remove();
       const pill = itemEl.querySelector('.notif-state-pill');
       if (pill) pill.outerHTML = statePillHtml(true);
     };
 
+    const syncItemExpandVisibility = (itemEl) => {
+      if (!itemEl) return;
+      const expandBtn = itemEl.querySelector('.notif-expand-btn');
+      const bodyEl = itemEl.querySelector('.notif-item-body');
+      if (!expandBtn || !bodyEl) return;
+      if (itemEl.classList.contains('is-expanded')) {
+        expandBtn.classList.remove('hide');
+        return;
+      }
+      const text = bodyEl.textContent || '';
+      const heuristicLong = text.length > 90 || (text.match(/\n/g)?.length || 0) >= 2;
+      const visualOverflow = bodyEl.clientHeight > 0 && bodyEl.scrollHeight > bodyEl.clientHeight + 2;
+      expandBtn.classList.toggle('hide', !(heuristicLong || visualOverflow));
+    };
+
+    const refreshListExpandVisibility = () => {
+      for (const itemEl of listEl.querySelectorAll('.notif-item')) {
+        syncItemExpandVisibility(itemEl);
+      }
+    };
+
+    const refreshRelativeTimes = () => {
+      const now = Date.now();
+      for (const tEl of listEl.querySelectorAll('time[data-ts]')) {
+        const ts = Number(tEl.dataset.ts);
+        if (ts > 0) tEl.textContent = formatRelativeNotifTime(ts, now);
+      }
+    };
+
+    const markNotificationRead = async (n, itemEl, actionBtn = null) => {
+      if (!itemEl || itemEl.classList.contains('is-read')) return true;
+      const triggerBtn = itemEl.querySelector('.notif-item-trigger');
+      if (triggerBtn) triggerBtn.disabled = true;
+      if (actionBtn) actionBtn.disabled = true;
+      try {
+        await api(`/notifications/${n.id}/read`, 'POST');
+        markItemReadUi(itemEl);
+        setUnreadCount(Math.max(0, unreadCount - 1));
+        notifyListeners({ type: 'read', id: n.id, requires_ack: Boolean(n.requires_ack) });
+        refreshUnreadCount();
+        return true;
+      } catch (err) {
+        toast(err?.message || 'تعذر تحديث حالة القراءة');
+        return false;
+      } finally {
+        if (triggerBtn) triggerBtn.disabled = false;
+        if (actionBtn) actionBtn.disabled = false;
+      }
+    };
+
     const createInboxItemEl = (n) => {
       const isRead = Boolean(n.read || n.read_at);
-      const itemBtn = document.createElement('button');
-      itemBtn.type = 'button';
-      itemBtn.className = `notif-item ${isRead ? 'is-read' : 'is-unread'}`;
-      itemBtn.dataset.notifId = String(n.id);
-      itemBtn.setAttribute('role', 'listitem');
-      itemBtn.setAttribute('aria-expanded', 'false');
-      itemBtn.innerHTML = `
-        <strong class="notif-item-title">${esc(n.title || '')}</strong>
-        <div class="notif-item-body">${esc(n.body || '')}</div>
-        <div class="notif-item-meta mut">
-          <span class="notif-item-byline">
-            <span>${esc(n.sender_name || 'الإدارة')}</span>
-            <span aria-hidden="true">•</span>
-            <time>${esc(time(n.created_at))}</time>
-          </span>
-          ${statePillHtml(isRead)}
+      const isPinnedAck = Boolean(n.requires_ack && !isRead);
+      const itemEl = document.createElement('article');
+      itemEl.className = `notif-item ${isRead ? 'is-read' : 'is-unread'}${isPinnedAck ? ' is-ack-required' : ''}`;
+      itemEl.dataset.notifId = String(n.id);
+      if (isPinnedAck) itemEl.dataset.pinnedAck = '1';
+      itemEl.setAttribute('role', 'listitem');
+
+      const bodyText = String(n.body || '');
+      const heuristicLong = bodyText.length > 90 || (bodyText.match(/\n/g)?.length || 0) >= 2;
+
+      itemEl.innerHTML = `
+        <button type="button" class="notif-item-trigger" aria-expanded="false">
+          <div class="notif-item-top">
+            ${isPinnedAck ? '<span class="notif-ack-pill">⚠️ يتطلب الموافقة</span>' : ''}
+            <strong class="notif-item-title">${esc(n.title || '')}</strong>
+          </div>
+          <div class="notif-item-body">${esc(bodyText)}</div>
+          <div class="notif-item-meta mut">
+            <span class="notif-item-byline">
+              <span>${esc(n.sender_name || 'الإدارة')}</span>
+              <span aria-hidden="true">•</span>
+              <time data-ts="${esc(n.created_at || '')}" title="${esc(time(n.created_at))}">${esc(formatRelativeNotifTime(n.created_at))}</time>
+            </span>
+            ${statePillHtml(isRead)}
+          </div>
+        </button>
+        <div class="notif-item-actions">
+          <button type="button" class="sec sm notif-expand-btn${heuristicLong ? '' : ' hide'}" aria-expanded="false">عرض المزيد</button>
+          ${isPinnedAck ? '<button type="button" class="ok sm notif-ack-btn">✓ موافق</button>' : ''}
         </div>`;
 
-      itemBtn.onclick = async () => {
-        const expanded = itemBtn.classList.toggle('is-expanded');
-        itemBtn.setAttribute('aria-expanded', String(expanded));
-        if (itemBtn.classList.contains('is-read')) return;
-        itemBtn.disabled = true;
-        try {
-          await api(`/notifications/${n.id}/read`, 'POST');
-          markItemReadUi(itemBtn);
-          setUnreadCount(Math.max(0, unreadCount - 1));
-          refreshUnreadCount();
-        } catch (err) {
-          toast(err?.message || 'تعذر تحديث حالة القراءة');
-        } finally {
-          itemBtn.disabled = false;
+      const triggerBtn = itemEl.querySelector('.notif-item-trigger');
+      const expandBtn = itemEl.querySelector('.notif-expand-btn');
+      const ackBtn = itemEl.querySelector('.notif-ack-btn');
+
+      const toggleExpanded = () => {
+        const expanded = itemEl.classList.toggle('is-expanded');
+        triggerBtn?.setAttribute('aria-expanded', String(expanded));
+        if (expandBtn) {
+          expandBtn.textContent = expanded ? 'عرض أقل' : 'عرض المزيد';
+          expandBtn.setAttribute('aria-expanded', String(expanded));
+        }
+        syncItemExpandVisibility(itemEl);
+      };
+
+      const handlePrimaryTap = async () => {
+        toggleExpanded();
+        if (!itemEl.dataset.pinnedAck) {
+          await markNotificationRead(n, itemEl);
         }
       };
-      return itemBtn;
+
+      triggerBtn.onclick = handlePrimaryTap;
+      itemEl.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        handlePrimaryTap();
+      };
+      if (expandBtn) {
+        expandBtn.onclick = (e) => {
+          e.stopPropagation();
+          toggleExpanded();
+        };
+      }
+      if (ackBtn) {
+        ackBtn.onclick = async (e) => {
+          e.stopPropagation();
+          await markNotificationRead(n, itemEl, ackBtn);
+        };
+      }
+      return itemEl;
     };
 
     const setStatus = (msg = '') => {
@@ -1268,19 +1649,71 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
         const rows = await api('/notifications/inbox');
         setStatus('');
         listEl.innerHTML = '';
-        if (!Array.isArray(rows) || !rows.length) {
+        const prepared = sortAndPrepareNotifications(rows);
+        if (!prepared.items.length) {
           listEl.innerHTML = '<div class="notif-empty mut">لا توجد إشعارات في صندوق الوارد حالياً</div>';
           setUnreadCount(0);
           return;
         }
-        let unreadInInbox = 0;
-        for (const n of rows) {
-          if (!n.read && !n.read_at) unreadInInbox++;
+        for (const n of prepared.items) {
           listEl.appendChild(createInboxItemEl(n));
         }
-        setUnreadCount(unreadInInbox);
+        setUnreadCount(prepared.unreadCount);
+        requestAnimationFrame(() => {
+          refreshListExpandVisibility();
+          refreshRelativeTimes();
+        });
       } catch (err) {
         setStatus(err?.message || 'تعذر تحميل الإشعارات');
+      }
+    };
+
+    const markAllRead = async () => {
+      if (markAllBtn.disabled) return;
+      markAllBtn.disabled = true;
+      try {
+        const rows = await api('/notifications/inbox');
+        const prepared = sortAndPrepareNotifications(rows);
+        const idsToMark = prepared.regularUnreadIds;
+        if (!idsToMark.length) {
+          if (prepared.pinnedAckItems.length > 0) {
+            toast(`⚠️ متبقي ${enDigits(prepared.pinnedAckItems.length)} إشعار يتطلب الضغط على «موافق»`, { tag: 'notif-ack-warn', replaceTag: true });
+          } else {
+            toast('لا توجد رسائل عادية غير مقروءة');
+          }
+          await refreshUnreadCount();
+          return;
+        }
+        let marked = 0;
+        const chunkSize = 5;
+        for (let i = 0; i < idsToMark.length; i += chunkSize) {
+          const chunk = idsToMark.slice(i, i + chunkSize);
+          const settled = await Promise.allSettled(
+            chunk.map(async (id) => {
+              await api(`/notifications/${id}/read`, 'POST');
+              return id;
+            })
+          );
+          for (const res of settled) {
+            if (res.status === 'fulfilled') {
+              marked++;
+              const itemEl = listEl.querySelector(`[data-notif-id="${res.value}"]`);
+              if (itemEl) markItemReadUi(itemEl);
+              notifyListeners({ type: 'read', id: res.value, requires_ack: false });
+            }
+          }
+        }
+        await refreshUnreadCount();
+        const remainingAck = prepared.pinnedAckItems.length;
+        if (marked > 0 && remainingAck > 0) {
+          toast(`✅ تم تعليم ${enDigits(marked)} كمقروء — متبقي ${enDigits(remainingAck)} يتطلب موافقتك`);
+        } else if (marked > 0) {
+          toast('✅ تم تعليم جميع الإشعارات كمقروءة');
+        }
+      } catch (err) {
+        toast(err?.message || 'تعذر تعليم الكل كمقروء');
+      } finally {
+        markAllBtn.disabled = false;
       }
     };
 
@@ -1337,6 +1770,8 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
 
     btn.onclick = () => openInbox();
     closeBtn.onclick = () => { if (dlg.open) dlg.close(); };
+    markAllBtn.onclick = () => markAllRead();
+
     if (!('closedBy' in HTMLDialogElement.prototype)) {
       const outside = (e) => {
         const r = dlg.getBoundingClientRect();
@@ -1354,6 +1789,12 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
       open: openInbox,
       close: () => { if (dlg.open) dlg.close(); },
       refreshUnreadCount,
+      markAllRead,
+      subscribe(fn) {
+        if (typeof fn !== 'function') return () => {};
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      },
       syncCaptainOffer(offerState) {
         activeOfferState = offerState?.offer ? offerState : null;
         renderCaptainOfferPriority();
@@ -1365,11 +1806,18 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
       handleWsNotification(msg) {
         const n = msg?.notification;
         setUnreadCount(unreadCount + 1);
-        if (dlg.open && n && n.id != null) {
+        if (dlg.open && n && n.id != null && !listEl.querySelector(`[data-notif-id="${n.id}"]`)) {
           listEl.querySelector('.notif-empty')?.remove();
-          if (!listEl.querySelector(`[data-notif-id="${n.id}"]`)) {
-            listEl.prepend(createInboxItemEl({ ...n, read: false, read_at: null }));
+          const el = createInboxItemEl({ ...n, read: false, read_at: null });
+          if (n.requires_ack) {
+            listEl.prepend(el);
+          } else {
+            const pinned = listEl.querySelectorAll('[data-pinned-ack="1"]');
+            if (pinned.length > 0) pinned[pinned.length - 1].after(el);
+            else listEl.prepend(el);
           }
+          syncUnreadUi();
+          requestAnimationFrame(() => syncItemExpandVisibility(el));
         }
         refreshUnreadCount();
       },

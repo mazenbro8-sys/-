@@ -1,11 +1,13 @@
 import {
-  $, $$, esc, points, time, badge, api, act, toast, connectWs, authScreen,
+  $, $$, esc, enDigits, points, time, badge, api, act, toast, collapseToastTag,
+  formatRelativeNotifTime, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
   setToken, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
   mountNotificationsBell, debounce,
-  normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery
-} from './shared.js?v=panther2026v29';
+  normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery,
+  shouldSkipWebLocationPost
+} from './shared.js?v=panther2026v32';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -35,6 +37,20 @@ authScreen('captain', (user) => {
   app.classList.remove('hide');
   app.innerHTML = `
     ${renderInstallBanner('captain')}
+
+    <div id="capNotifGroupBanner" class="card notif-group-banner hide" role="region" aria-label="ملخص الإشعارات الجديدة">
+      <div class="notif-group-banner-main">
+        <span class="notif-group-ico" aria-hidden="true">📩</span>
+        <div class="notif-group-copy">
+          <strong id="capNotifGroupTitle">لديك 0 رسائل جديدة</strong>
+          <div class="mut notif-group-sub">تجمع الإشعارات الكثيرة هنا لتفادي الازدحام</div>
+        </div>
+      </div>
+      <div class="notif-group-actions">
+        <button type="button" id="capOpenInboxBtn" class="ok sm">📬 فتح الإشعارات</button>
+        <button type="button" id="capMarkAllReadBtn" class="sec sm">✓ تعليم الكل كمقروء</button>
+      </div>
+    </div>
 
     <!-- TAB 1: HOME (Status First -> Offer / Active Order -> Brief Today Stats -> Collapsible Map) -->
     <section id="tab-home" class="cap-tab">
@@ -221,6 +237,34 @@ authScreen('captain', (user) => {
   let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
   let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
 
+  // ---------- Grouped Notification Banner (> 5 unread) ----------
+  const groupBannerEl = $('#capNotifGroupBanner');
+  const groupTitleEl = $('#capNotifGroupTitle');
+  const openInboxBtn = $('#capOpenInboxBtn');
+  const markAllReadBtn = $('#capMarkAllReadBtn');
+
+  function syncNotifGroupBanner() {
+    if (!groupBannerEl) return;
+    const unread = notifCtrl?.unreadCount ?? 0;
+    const hideBanner = Boolean(st?.offer) || unread <= 5;
+    groupBannerEl.classList.toggle('hide', hideBanner);
+    if (!hideBanner && groupTitleEl) {
+      groupTitleEl.textContent = `لديك ${enDigits(unread)} رسائل جديدة`;
+    }
+  }
+
+  openInboxBtn?.addEventListener('click', () => notifCtrl?.open());
+  markAllReadBtn?.addEventListener('click', async () => {
+    if (!notifCtrl?.markAllRead || markAllReadBtn.disabled) return;
+    markAllReadBtn.disabled = true;
+    try {
+      await notifCtrl.markAllRead();
+    } finally {
+      markAllReadBtn.disabled = false;
+      syncNotifGroupBanner();
+    }
+  });
+
   // ---------- Blocking Cancellation Acknowledgement Dialog ----------
   const ackDlg = document.createElement('dialog');
   ackDlg.id = 'captainAckDialog';
@@ -230,7 +274,10 @@ authScreen('captain', (user) => {
   ackDlg.innerHTML = `
     <div class="captain-ack-card">
       <div class="captain-ack-head">
-        <span class="captain-ack-badge">⚠️ إشعار إلغاء طلب</span>
+        <div class="captain-ack-badges">
+          <span class="captain-ack-badge">⚠️ إشعار إلغاء طلب</span>
+          <span id="capAckQueueBadge" class="badge b-searching hide"></span>
+        </div>
         <h3 id="captainAckTitle">تم إلغاء الطلب</h3>
       </div>
       <p id="captainAckBody" class="captain-ack-body"></p>
@@ -245,32 +292,72 @@ authScreen('captain', (user) => {
   const ackTitleEl = ackDlg.querySelector('#captainAckTitle');
   const ackBodyEl = ackDlg.querySelector('#captainAckBody');
   const ackMetaEl = ackDlg.querySelector('#captainAckMeta');
+  const ackQueueBadgeEl = ackDlg.querySelector('#capAckQueueBadge');
   const ackOkBtn = ackDlg.querySelector('#capAckOkBtn');
   const ackDoneBtn = ackDlg.querySelector('#capAckDoneBtn');
   let pendingAckQueue = [];
   let currentAck = null;
   let ackBusy = false;
+  let intentionalAckClose = false;
+
+  const hasOtherOpenModal = () => Boolean(document.querySelector('dialog[open]:not(#captainAckDialog)'));
+
+  const syncAckQueueBadge = () => {
+    if (!ackQueueBadgeEl) return;
+    const totalRemaining = (currentAck ? 1 : 0) + pendingAckQueue.length;
+    if (totalRemaining > 1) {
+      ackQueueBadgeEl.textContent = `١ من ${enDigits(totalRemaining)} • متبقي ${enDigits(totalRemaining)}`;
+      ackQueueBadgeEl.classList.remove('hide');
+    } else {
+      ackQueueBadgeEl.textContent = '';
+      ackQueueBadgeEl.classList.add('hide');
+    }
+  };
 
   ackDlg.addEventListener('cancel', (e) => {
     e.preventDefault();
   });
   ackDlg.addEventListener('close', () => {
-    if (currentAck && !ackDlg.open) {
+    if (intentionalAckClose) {
+      intentionalAckClose = false;
+      return;
+    }
+    if (currentAck && !ackDlg.open && !st?.offer && !hasOtherOpenModal()) {
       queueMicrotask(() => {
-        if (currentAck && !ackDlg.open) {
+        if (currentAck && !ackDlg.open && !st?.offer && !hasOtherOpenModal()) {
           try { ackDlg.showModal(); } catch {}
         }
       });
     }
   });
 
-  function showNextAckDialog() {
+  function suspendAckDialogForPriority() {
+    if (ackBusy) return;
     if (currentAck) {
+      pendingAckQueue.unshift(currentAck);
+      currentAck = null;
+    }
+    if (ackDlg.open) {
+      intentionalAckClose = true;
+      ackDlg.close();
+    }
+  }
+
+  function showNextAckDialog() {
+    if (st?.offer || hasOtherOpenModal()) {
+      suspendAckDialogForPriority();
+      return;
+    }
+    if (currentAck) {
+      syncAckQueueBadge();
       if (!ackDlg.open) ackDlg.showModal();
       return;
     }
     if (!pendingAckQueue.length) {
-      if (ackDlg.open) ackDlg.close();
+      if (ackDlg.open) {
+        intentionalAckClose = true;
+        ackDlg.close();
+      }
       return;
     }
     currentAck = pendingAckQueue.shift();
@@ -278,8 +365,9 @@ authScreen('captain', (user) => {
     ackBodyEl.textContent = currentAck.body || '';
     ackMetaEl.textContent = [
       currentAck.sender_name || '',
-      currentAck.created_at ? time(currentAck.created_at) : '',
+      currentAck.created_at ? `${formatRelativeNotifTime(currentAck.created_at)} • ${time(currentAck.created_at)}` : '',
     ].filter(Boolean).join(' • ');
+    syncAckQueueBadge();
     ackOkBtn.disabled = false;
     ackDoneBtn.disabled = false;
     if (!ackDlg.open) ackDlg.showModal();
@@ -296,6 +384,22 @@ authScreen('captain', (user) => {
     showNextAckDialog();
   }
 
+  notifCtrl?.subscribe?.((evt) => {
+    if (evt?.type === 'read' && evt.id != null) {
+      pendingAckQueue = pendingAckQueue.filter((q) => q.id !== evt.id);
+      if (currentAck?.id === evt.id) {
+        currentAck = null;
+        showNextAckDialog();
+      } else {
+        syncAckQueueBadge();
+      }
+    }
+    syncNotifGroupBanner();
+  });
+  notifCtrl?.dialog?.addEventListener('close', () => {
+    setTimeout(showNextAckDialog, 30);
+  });
+
   async function acknowledgeCurrent() {
     if (!currentAck || ackBusy) return;
     ackBusy = true;
@@ -305,9 +409,10 @@ authScreen('captain', (user) => {
       await api(`/notifications/${currentAck.id}/read`, 'POST');
       currentAck = null;
       notifCtrl?.refreshUnreadCount();
-      if (pendingAckQueue.length > 0) {
+      if (pendingAckQueue.length > 0 && !st?.offer && !hasOtherOpenModal()) {
         showNextAckDialog();
       } else if (ackDlg.open) {
+        intentionalAckClose = true;
         ackDlg.close();
       }
     } catch (e) {
@@ -327,8 +432,9 @@ authScreen('captain', (user) => {
       const inbox = await api('/notifications/inbox');
       const unacked = (inbox || [])
         .filter((n) => n && n.requires_ack && !n.read && !n.read_at)
-        .sort((a, b) => a.id - b.id);
+        .sort((a, b) => b.id - a.id);
       if (unacked.length) enqueueAckNotifications(unacked);
+      syncNotifGroupBanner();
     } catch {}
   }
 
@@ -633,9 +739,13 @@ authScreen('captain', (user) => {
       lastAutoShownOfferId = null;
       offerAlarmGate.syncOffer(null, { online: st.online !== false });
       notifCtrl?.syncCaptainOffer(null);
+      syncNotifGroupBanner();
+      showNextAckDialog();
       return;
     }
+    suspendAckDialogForPriority();
     homeTab?.classList.add('home-compact');
+    syncNotifGroupBanner();
     const mapCard = $('#idleMapCard');
     if (mapCard?.open) mapCard.open = false;
     if (o.id !== lastAutoShownOfferId) {
@@ -1061,6 +1171,7 @@ authScreen('captain', (user) => {
       return;
     }
     if (decision.action !== 'send') return;
+    if (shouldSkipWebLocationPost(window.PantherNative)) return;
     lastSent = now;
     lastSentPos = { lat: decision.payload.lat, lng: decision.payload.lng };
     const vis = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
@@ -1086,9 +1197,18 @@ authScreen('captain', (user) => {
   connectWs((m) => {
     if (m.type === 'notification') {
       notifCtrl?.handleWsNotification(m);
-      if (m.notification?.requires_ack && !m.notification.read && !m.notification.read_at) {
-        enqueueAckNotifications([m.notification]);
+      syncNotifGroupBanner();
+      const n = m.notification;
+      if (n?.requires_ack && !n.read && !n.read_at) {
+        enqueueAckNotifications([n]);
         refresh();
+      } else if (n && !notifCtrl?.dialog?.open) {
+        const unread = notifCtrl?.unreadCount ?? 0;
+        if (unread > 5) {
+          collapseToastTag('ws-notif', `📩 لديك ${enDigits(unread)} رسائل جديدة`, 3500);
+        } else if (n.title) {
+          toast(`🔔 ${n.title}`, { ms: 3000, tag: 'ws-notif', replaceTag: true });
+        }
       }
     } else if (m.type === 'balance') {
       toast('💳 تم تحديث رصيد محفظتك');

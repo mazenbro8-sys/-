@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v29';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v32';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v29';
 import {
   getMarkerVisualSize,
