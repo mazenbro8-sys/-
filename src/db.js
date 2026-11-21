@@ -433,6 +433,7 @@ export const NOTIFICATION_CLEANUP_INTERVAL_MS =
 
 /** Hard-delete notifications older than 24 hours and their read receipts. */
 export async function cleanupExpiredNotifications(now = Date.now()) {
+  if (client.closed) return { deleted: 0, cutoff: now - NOTIFICATION_RETENTION_MS };
   const cutoff = now - NOTIFICATION_RETENTION_MS;
   return tx(async () => {
     await db.run(
@@ -445,9 +446,13 @@ export async function cleanupExpiredNotifications(now = Date.now()) {
 }
 
 await cleanupExpiredNotifications();
-setInterval(() => {
-  cleanupExpiredNotifications().catch((e) => console.error('notification cleanup', e));
-}, NOTIFICATION_CLEANUP_INTERVAL_MS).unref();
+const cleanupTimer = setInterval(() => {
+  cleanupExpiredNotifications().catch((e) => {
+    if (e?.code === 'CLIENT_CLOSED' || client.closed) return;
+    console.error('notification cleanup', e);
+  });
+}, NOTIFICATION_CLEANUP_INTERVAL_MS);
+cleanupTimer.unref?.();
 
 /** Atomically append a ledger entry and update captain balance_points inside tx(). */
 export async function applyPointsEntry({

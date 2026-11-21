@@ -116,8 +116,8 @@ test('(a) dispatchOrder and runDispatcherTick open zero write transactions when 
     await runDispatcherTick(alerted);
     assert.equal(writeTxCount, 0, 'runDispatcherTick must open 0 write transactions when no captain is available');
 
-    // Bring captain online and run dispatcher once -> exactly 1 write transaction assigns first order
-    await db.run('UPDATE users SET online=1 WHERE id=?', capId);
+    // Bring captain online with recent location signal and run dispatcher once -> exactly 1 write transaction assigns first order
+    await db.run('UPDATE users SET online=1, last_loc_at=? WHERE id=?', Date.now(), capId);
     writeTxCount = 0;
     const dispatched = await dispatchOrder(searchingIds[0]);
     assert.equal(dispatched, true);

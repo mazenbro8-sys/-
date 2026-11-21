@@ -3,11 +3,11 @@ import {
   formatRelativeNotifTime, connectWs, authScreen,
   makeMap, emoji, animateMarker, makeRoute, fitMapToPoints, DAMASCUS,
   serialNo, renderInstallBanner, isNativeApk, getServerUrl, getToken,
-  setToken, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
+  setToken, performLogout, normalizeCaptainTone, playCaptainTone, createCaptainAlarmGate, lStore,
   mountNotificationsBell, debounce,
   normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery,
   shouldSkipWebLocationPost
-} from './shared.js?v=panther2026v33';
+} from './shared.js?v=panther2026v34';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -1019,10 +1019,14 @@ authScreen('captain', (user) => {
   };
   $('#logoutBtn').onclick = async () => {
     if (!confirm('هل تريد تسجيل الخروج من حساب الكابتن؟')) return;
-    try { await api('/auth/logout-all', 'POST'); } catch {}
-    try { window.PantherNative?.syncState('', '', false); } catch {}
-    setToken(null);
-    location.reload();
+    const hasActiveOrder = Boolean((st?.activeOrders && st.activeOrders.length > 0) || st?.active);
+    await performLogout({
+      isCaptain: true,
+      hasActiveOrder,
+      onBeforeClear: () => {
+        try { window.PantherNative?.syncState('', '', false); } catch {}
+      },
+    });
   };
 
   // ---------- GPS & Location Tracking ----------

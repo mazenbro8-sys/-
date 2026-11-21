@@ -68,12 +68,18 @@ export function attachWs(server) {
     });
     ws.on('error', () => {});
   });
-  setInterval(() => {
+  const pingTimer = setInterval(() => {
     for (const ws of wss.clients) {
       if (!ws.isAlive) { ws.terminate(); continue; }
       ws.isAlive = false; ws.ping();
     }
   }, 30_000);
+  pingTimer.unref?.();
+  wss.on('close', () => clearInterval(pingTimer));
+  server.on('close', () => {
+    clearInterval(pingTimer);
+    try { wss.close(); } catch {}
+  });
 }
 
 /** True when the user has at least one open, authenticated WebSocket. */

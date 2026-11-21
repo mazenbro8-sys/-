@@ -5,6 +5,30 @@ import { sendTo, sendToAdmins, isConnected } from './realtime.js';
 export const ACTIVE = ['accepted', 'picked_up', 'arrived'];
 export const CLOSED = ['delivered', 'cancelled', 'failed', 'expired'];
 
+// Lightweight in-memory captain heartbeat timestamps (updated on /captain/state, /captain/online, /captain/location)
+const captainLastSeen = new Map();
+export const touchCaptainSeen = (captainId, now = Date.now()) => {
+  if (captainId != null) captainLastSeen.set(Number(captainId), now);
+};
+export const clearCaptainSeen = (captainId) => {
+  if (captainId != null) captainLastSeen.delete(Number(captainId));
+};
+export const getCaptainLastSeen = (captainId) => captainLastSeen.get(Number(captainId)) ?? null;
+
+/**
+ * True when a captain has a live WebSocket or a recent location / heartbeat signal within `config.captainReachableMs` (5m).
+ */
+export function isCaptainReachable(captainRow, now = Date.now()) {
+  if (!captainRow || captainRow.id == null) return false;
+  const cid = Number(captainRow.id);
+  if (isConnected(cid)) return true;
+  const cutoff = now - config.captainReachableMs;
+  const locAt = captainRow.last_loc_at != null ? Number(captainRow.last_loc_at) : 0;
+  if (Number.isFinite(locAt) && locAt >= cutoff) return true;
+  const seenAt = captainLastSeen.get(cid) ?? 0;
+  return seenAt >= cutoff;
+}
+
 export function haversineKm(a, b, c, d) {
   const R = 6371, rad = (x) => (x * Math.PI) / 180;
   const dLat = rad(c - a), dLng = rad(d - b);
@@ -179,12 +203,13 @@ export async function computeShortage(zoneId = null, preloaded = null) {
             cost_override: c.cost_override,
             exempt_from: c.exempt_from,
             exempt_until: c.exempt_until,
+            last_loc_at: c.last_loc_at ?? null,
             reserved_cost,
             is_busy: acts.length > 0 ? 1 : 0,
           };
         })
     : await db.all(
-        `SELECT u.id, u.zone_id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+        `SELECT u.id, u.zone_id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until, u.last_loc_at,
            COALESCE(SUM(CASE WHEN o.id IS NOT NULL AND o.cost_points > 0 THEN o.cost_points ELSE 0 END), 0) AS reserved_cost,
            CASE WHEN COUNT(o.id) > 0 THEN 1 ELSE 0 END AS is_busy
          FROM users u
@@ -193,6 +218,8 @@ export async function computeShortage(zoneId = null, preloaded = null) {
          GROUP BY u.id`,
         ...(hasZ ? [zoneId] : [])
       );
+
+  const reachableOnlineRows = onlineRows.filter((c) => isCaptainReachable(c, now));
 
   const searchingIds = [];
   for (const o of waitingRows) {
@@ -228,14 +255,14 @@ export async function computeShortage(zoneId = null, preloaded = null) {
     }
     if (o.status !== 'searching') continue;
     const tried = triedByOrder.get(o.id);
-    const hasEligible = onlineRows.some(
+    const hasEligible = reachableOnlineRows.some(
       (c) => c.zone_id === o.zone_id && !(tried && tried.has(c.id)) && isWalletEligible(c, defaultCost, enforced, now)
     );
     if (!hasEligible) escalatedRaw.push(o);
   }
 
   const escalatedOrders = await hydrateAdminOrders(escalatedRaw, preloaded?.userById);
-  const eligibleRows = onlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
+  const eligibleRows = reachableOnlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
   const freeOnlineCaptains = eligibleRows.filter((r) => !r.is_busy).length;
   const onlineCaptains = eligibleRows.length;
   const alert = escalatedOrders.length > 0;
@@ -274,7 +301,7 @@ async function pickCaptain(order) {
   const [defaultCost, enforced] = await Promise.all([orderCostPoints(), walletEnforcement()]);
   const now = Date.now();
   const freeAll = await db.all(
-    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until, u.last_loc_at,
        COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
      FROM users u
      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
@@ -284,12 +311,12 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
-  const freeRows = freeAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
-  const freePick = freeRows.find((r) => isConnected(r.id)) ?? freeRows[0];
-  if (freePick) return freePick;
+  const freeRows = freeAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now) && isCaptainReachable(r, now));
+  const freeConnected = freeRows.find((r) => isConnected(r.id));
+  if (freeConnected) return freeConnected;
 
   const busyAll = await db.all(
-    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until,
+    `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until, u.last_loc_at,
        COALESCE((SELECT SUM(o2.cost_points) FROM orders o2 WHERE o2.captain_id=u.id AND o2.status IN ('accepted','picked_up','arrived') AND o2.cost_points > 0), 0) reserved_cost
      FROM users u
      WHERE u.role='captain' AND u.status='active' AND u.online=1 AND u.zone_id=?
@@ -299,8 +326,9 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
-  const busyRows = busyAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
-  return busyRows.find((r) => isConnected(r.id)) ?? busyRows[0] ?? null;
+  const busyRows = busyAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now) && isCaptainReachable(r, now));
+  const busyConnected = busyRows.find((r) => isConnected(r.id));
+  return busyConnected ?? freeRows[0] ?? busyRows[0] ?? null;
 }
 
 export async function dispatchOrder(orderId) {
@@ -459,7 +487,72 @@ export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts
   }
 }
 
-/** Periodic tick: expire offers, (re)dispatch waiting orders, trigger 5m shortage timeout, expire stale searches. */
+/**
+ * Sweep idle captains stuck online=1 with no WS and no GPS/heartbeat signal for > config.captainSweepStaleMs (30m).
+ * Never sweeps captains with an active order or pending offer, nor newly-created captains in their first 30m.
+ * Performs zero writes when no candidates qualify; otherwise executes one conditional UPDATE and broadcasts for changed rows.
+ */
+export async function sweepStaleCaptains(now = Date.now()) {
+  const cutoff = now - config.captainSweepStaleMs;
+  const candidates = await db.all(
+    `SELECT id, zone_id, last_loc_at, created_at
+     FROM users
+     WHERE role='captain' AND status='active' AND online=1
+       AND COALESCE(last_loc_at, created_at) < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM orders o
+         WHERE (o.captain_id = users.id AND o.status IN ('accepted','picked_up','arrived'))
+            OR (o.offered_captain_id = users.id AND o.status = 'offered')
+       )`,
+    cutoff
+  );
+  const toSweep = candidates.filter((c) => {
+    if (isConnected(c.id)) return false;
+    const seenAt = captainLastSeen.get(c.id) ?? 0;
+    if (seenAt >= cutoff) return false;
+    return true;
+  });
+  if (!toSweep.length) return [];
+
+  const ids = toSweep.map((c) => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const upd = await db.run(
+    `UPDATE users SET online=0
+     WHERE id IN (${placeholders})
+       AND online=1
+       AND COALESCE(last_loc_at, created_at) < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM orders o
+         WHERE (o.captain_id = users.id AND o.status IN ('accepted','picked_up','arrived'))
+            OR (o.offered_captain_id = users.id AND o.status = 'offered')
+       )`,
+    ...ids,
+    cutoff
+  );
+  if (!upd.changes) return [];
+
+  const changedRows = upd.changes === toSweep.length
+    ? toSweep
+    : await db.all(`SELECT id, zone_id FROM users WHERE id IN (${placeholders}) AND online=0`, ...ids);
+  for (const c of changedRows) clearCaptainSeen(c.id);
+  if (!changedRows.length) return [];
+
+  const shortage = await computeShortage();
+  const zoneShortageCache = new Map();
+  for (const c of changedRows) {
+    let zShort = null;
+    if (c.zone_id != null) {
+      if (!zoneShortageCache.has(c.zone_id)) {
+        zoneShortageCache.set(c.zone_id, await computeShortage(c.zone_id));
+      }
+      zShort = zoneShortageCache.get(c.zone_id);
+    }
+    sendToAdmins({ type: 'captain', id: c.id, online: false, shortage, zoneShortage: zShort }, c.zone_id);
+  }
+  return changedRows;
+}
+
+/** Periodic tick: expire offers, (re)dispatch waiting orders, trigger 5m shortage timeout, expire stale searches, and run 60s zombie sweep. */
 export function startDispatcher() {
   let running = false;
   setInterval(async () => {
@@ -470,4 +563,16 @@ export function startDispatcher() {
     } catch (e) { console.error('dispatcher', e); }
     finally { running = false; }
   }, 5_000);
+
+  let sweeping = false;
+  const runSweep = async () => {
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      await sweepStaleCaptains();
+    } catch (e) { console.error('presence sweep', e); }
+    finally { sweeping = false; }
+  };
+  setTimeout(runSweep, 10_000).unref?.();
+  setInterval(runSweep, config.captainSweepIntervalMs).unref?.();
 }

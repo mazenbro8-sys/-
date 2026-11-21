@@ -1,4 +1,4 @@
-import { toast } from './shared.js?v=panther2026v33';
+import { toast } from './shared.js?v=panther2026v34';
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-copy]');

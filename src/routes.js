@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag, NOTIFICATION_RETENTION_MS } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
-import { ACTIVE, CLOSED, viewOrder, viewOrdersBatch, hydrateAdminOrders, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
+import { ACTIVE, CLOSED, viewOrder, viewOrdersBatch, hydrateAdminOrders, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost, touchCaptainSeen, clearCaptainSeen } from './dispatch.js';
 import { resolveAndParseGoogleMapsLink, GeoParseError } from './geo.js';
 
 export const api = express.Router();
@@ -13,6 +13,11 @@ export const api = express.Router();
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (msg) => new HttpError(400, msg);
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const assertPasswordComplexity = (pw) => {
+  if (!/[A-Za-z\u0600-\u06FF]/.test(pw) || !/\d/.test(pw)) {
+    throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
+  }
+};
 
 const toEnDigits = (v) => String(v ?? '')
   .replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x0660)
@@ -198,7 +203,7 @@ const createAccount = wrap(async (req, res) => {
   const p = phone(b.phone);
   const name = str(b.name, 'الاسم', 2, 60);
   const pass = str(b.password, 'كلمة المرور', 6, 72);
-  if (!/[A-Za-z\u0600-\u06FF]/.test(pass) || !/\d/.test(pass)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
+  assertPasswordComplexity(pass);
   let zone = null;
   if (isZoneAdmin) {
     if (role === 'merchant' && b.zone_id != null && b.zone_id !== '') {
@@ -206,7 +211,9 @@ const createAccount = wrap(async (req, res) => {
       if (reqZone !== req.user.zone_id) throw new HttpError(403, 'لا يمكنك إنشاء منشأة خارج منطقتك');
     }
     zone = req.user.zone_id;
-  } else if (role !== 'admin' || (b.zone_id != null && b.zone_id !== '')) {
+  } else if (role === 'admin') {
+    zone = null;
+  } else {
     zone = int(b.zone_id, 'المنطقة', 1, 2 ** 31);
   }
   if (zone != null && !(await db.get('SELECT 1 FROM zones WHERE id=? AND active=1', zone))) {
@@ -248,8 +255,13 @@ api.post('/auth/login', loginLimiter, wrap(async (req, res) => {
   const ok = bcrypt.compareSync(pass, u ? u.pass_hash : DUMMY_HASH);
   if (!u || !ok) {
     if (u) {
-      const f = u.failed_logins + 1;
-      await db.run('UPDATE users SET failed_logins=?, locked_until=? WHERE id=?', f >= 5 ? 0 : f, f >= 5 ? now + 5 * 60_000 : 0, u.id);
+      await tx(async () => {
+        await db.run('UPDATE users SET failed_logins = failed_logins + 1 WHERE id=?', u.id);
+        const row = await db.get('SELECT failed_logins FROM users WHERE id=?', u.id);
+        if ((row?.failed_logins ?? 0) >= 5) {
+          await db.run('UPDATE users SET failed_logins=0, locked_until=? WHERE id=?', now + 5 * 60_000, u.id);
+        }
+      });
     }
     throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
   }
@@ -264,16 +276,33 @@ api.post('/auth/login', loginLimiter, wrap(async (req, res) => {
 api.get('/me', auth(), (req, res) => res.json(publicUser(req.user)));
 
 api.post('/auth/logout-all', auth(), wrap(async (req, res) => {
-  await db.run('UPDATE users SET token_version=token_version+1 WHERE id=?', req.user.id);
+  const u = req.user;
+  await db.run('UPDATE users SET token_version=token_version+1 WHERE id=?', u.id);
+  disconnectUser(u.id);
+  if (u.role === 'captain') {
+    clearCaptainSeen(u.id);
+    const hasAct = await activeOrder(u.id);
+    if (!hasAct) {
+      await db.run('UPDATE users SET online=0 WHERE id=?', u.id);
+      const off = await pendingOffer(u.id);
+      if (off) await releaseOffer(off.id, 'rejected');
+      const [shortage, zoneShortage] = await Promise.all([
+        computeShortage(),
+        u.zone_id != null ? computeShortage(u.zone_id) : null,
+      ]);
+      sendToAdmins({ type: 'captain', id: u.id, online: false, shortage, zoneShortage }, u.zone_id);
+    }
+  }
   res.json({ ok: true });
 }));
 
 api.post('/auth/password', auth(), wrap(async (req, res) => {
   const old = str(req.body?.old_password, 'كلمة المرور الحالية', 1, 72);
   const nw = str(req.body?.new_password, 'كلمة المرور الجديدة', 6, 72);
-  if (!/\d/.test(nw) || !/[A-Za-z\u0600-\u06FF]/.test(nw)) throw bad('كلمة المرور يجب أن تحتوي حروفاً وأرقاماً');
+  assertPasswordComplexity(nw);
   if (!bcrypt.compareSync(old, req.user.pass_hash)) throw new HttpError(403, 'كلمة المرور الحالية خاطئة');
   await db.run('UPDATE users SET pass_hash=?, token_version=token_version+1 WHERE id=?', bcrypt.hashSync(nw, 12), req.user.id);
+  disconnectUser(req.user.id);
   res.json({ ok: true });
 }));
 
@@ -497,6 +526,7 @@ C.get('/wallet', wrap(async (req, res) => {
 }));
 
 C.get('/state', wrap(async (req, res) => {
+  if (req.user.online) touchCaptainSeen(req.user.id);
   const [allAct, off, wallet] = await Promise.all([
     activeOrders(req.user.id),
     pendingOffer(req.user.id),
@@ -522,6 +552,9 @@ C.post('/online', wrap(async (req, res) => {
     if (await activeOrder(req.user.id)) throw bad('لا يمكنك الخروج وعندك طلب نشط');
     const off = await pendingOffer(req.user.id);
     if (off) await releaseOffer(off.id, 'rejected');
+    clearCaptainSeen(req.user.id);
+  } else {
+    touchCaptainSeen(req.user.id);
   }
   await db.run('UPDATE users SET online=? WHERE id=?', on ? 1 : 0, req.user.id);
   const [shortage, zoneShortage] = await Promise.all([
@@ -535,6 +568,7 @@ C.post('/online', wrap(async (req, res) => {
 C.post('/location', wrap(async (req, res) => {
   const u = req.user;
   if (!u.online) return res.status(204).end(); // offline: no tracking at all
+  touchCaptainSeen(u.id);
   const [lat, lng] = coord(req.body?.lat, req.body?.lng, true);
   const accuracy = parseOptionalAccuracy(req.body?.accuracy);
   const fixAgeMs = parseOptionalFixAgeMs(req.body?.fix_age_ms);
@@ -1024,18 +1058,56 @@ A.patch('/users/:id', wrap(async (req, res) => {
       throw bad('تاريخ نهاية الإعفاء يجب أن يكون في المستقبل عند عدم تحديد تاريخ بداية');
     }
   }
+  const prevRole = u.role;
+  const prevZoneId = u.zone_id;
+  let roleChanged = false;
+  let zoneChanged = false;
+  let nextCaptainTag = u.tag;
   if (b.role != null && b.role !== u.role) {
-    if (zId != null && ['admin', 'zone_admin'].includes(b.role)) {
-      throw new HttpError(403, 'ليس لديك صلاحية لتعيين حساب مسؤول');
+    if (zId != null) {
+      throw new HttpError(403, 'ليس لديك صلاحية لتغيير نوع الحساب');
     }
     if (u.id === req.user.id && b.role !== 'admin') {
       throw bad('لا يمكنك تغيير صلاحية حسابك الشخصي الحالي');
     }
-    const allowedRoles = zId != null ? ['merchant', 'captain'] : ['merchant', 'captain', 'zone_admin', 'admin'];
+    const allowedRoles = ['merchant', 'captain', 'zone_admin', 'admin'];
     if (!allowedRoles.includes(b.role)) throw bad('نوع الحساب غير صالح');
     if (b.role !== 'admin' && !b.zone_id && !u.zone_id) throw bad('يرجى تحديد المنطقة لهذا الحساب');
-    await db.run('UPDATE users SET role=?, token_version=token_version+1 WHERE id=?', b.role, id);
+    if (prevRole === 'captain') {
+      const busyOrd = await db.get(
+        "SELECT id FROM orders WHERE (captain_id=? AND status IN ('accepted','picked_up','arrived')) OR (offered_captain_id=? AND status='offered') LIMIT 1",
+        id,
+        id
+      );
+      if (busyOrd) throw new HttpError(409, 'لا يمكن تغيير دور الكابتن ولديه طلب نشط أو عرض معلق');
+    }
+    if (b.role === 'captain' && !nextCaptainTag) {
+      nextCaptainTag = await generateUniqueCaptainTag();
+    }
+    roleChanged = true;
     u.role = b.role;
+  }
+  let nextZoneId = prevZoneId;
+  if (b.zone_id !== undefined) {
+    if ((b.zone_id === null || b.zone_id === '') && u.role === 'admin') {
+      nextZoneId = null;
+    } else {
+      const z = int(b.zone_id, 'zone', 1, 2 ** 31);
+      if (zId != null && z !== zId) throw new HttpError(403, 'لا يمكنك نقل المستخدم خارج منطقتك');
+      if (!(await db.get('SELECT 1 FROM zones WHERE id=?', z))) throw bad('المنطقة غير موجودة');
+      nextZoneId = z;
+    }
+    if (nextZoneId !== prevZoneId) zoneChanged = true;
+  }
+  if (roleChanged) {
+    if (prevRole === 'captain' && u.role !== 'captain') {
+      await db.run('UPDATE users SET role=?, online=0, token_version=token_version+1 WHERE id=?', u.role, id);
+      clearCaptainSeen(id);
+    } else if (u.role === 'captain') {
+      await db.run('UPDATE users SET role=?, tag=COALESCE(tag, ?), token_version=token_version+1 WHERE id=?', u.role, nextCaptainTag, id);
+    } else {
+      await db.run('UPDATE users SET role=?, token_version=token_version+1 WHERE id=?', u.role, id);
+    }
   }
   if (b.name != null) {
     const nm = str(b.name, 'الاسم', 2, 60);
@@ -1061,21 +1133,22 @@ A.patch('/users/:id', wrap(async (req, res) => {
     if (u.id === req.user.id && b.status !== 'active') throw bad('لا يمكنك إيقاف حسابك الشخصي الحالي');
     await db.run("UPDATE users SET status=?, token_version=token_version+1, failed_logins=0, locked_until=0, online=CASE WHEN ?='active' THEN online ELSE 0 END WHERE id=?", b.status, b.status, id);
     if (b.status !== 'active') {
+      clearCaptainSeen(id);
       disconnectUser(id);
       if (u.role === 'captain') {
         const off = await pendingOffer(id); if (off) await releaseOffer(off.id, 'cancelled');
       }
     }
   }
-  if (b.zone_id !== undefined) {
-    if ((b.zone_id === null || b.zone_id === '') && u.role === 'admin') {
-      await db.run('UPDATE users SET zone_id=NULL WHERE id=?', id);
+  if (zoneChanged) {
+    if (roleChanged) {
+      await db.run('UPDATE users SET zone_id=? WHERE id=?', nextZoneId, id);
     } else {
-      const z = int(b.zone_id, 'zone', 1, 2 ** 31);
-      if (zId != null && z !== zId) throw new HttpError(403, 'لا يمكنك نقل المستخدم خارج منطقتك');
-      if (!(await db.get('SELECT 1 FROM zones WHERE id=?', z))) throw bad('المنطقة غير موجودة');
-      await db.run('UPDATE users SET zone_id=? WHERE id=?', z, id);
+      await db.run('UPDATE users SET zone_id=?, token_version=token_version+1 WHERE id=?', nextZoneId, id);
     }
+  }
+  if (roleChanged || zoneChanged) {
+    disconnectUser(id);
   }
   let locChanged = false;
   let locSource = null;
@@ -1103,10 +1176,12 @@ A.post('/users/:id/reset-password', wrap(async (req, res) => {
   const id = oid(req);
   const zId = adminZone(req);
   const pw = str(req.body?.password, 'كلمة المرور', 6, 72);
+  assertPasswordComplexity(pw);
   const r = zId != null
     ? await db.run("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain') AND zone_id=? AND status!='deleted'", bcrypt.hashSync(pw, 12), id, zId)
     : await db.run("UPDATE users SET pass_hash=?, token_version=token_version+1, failed_logins=0, locked_until=0 WHERE id=? AND role IN ('merchant','captain','zone_admin','admin') AND status!='deleted'", bcrypt.hashSync(pw, 12), id);
   if (!r.changes) throw new HttpError(404, 'المستخدم غير موجود');
+  disconnectUser(id);
   await audit(req.user.id, 'reset_password', { id });
   res.json({ ok: true });
 }));
@@ -1133,6 +1208,7 @@ A.delete('/users/:id', wrap(async (req, res) => {
     if (off) await releaseOffer(off.id, 'cancelled');
   }
   await db.run("UPDATE users SET status='deleted', online=0, token_version=token_version+1 WHERE id=?", id);
+  clearCaptainSeen(id);
   disconnectUser(id);
   await audit(req.user.id, 'delete_user', { id, role: u.role, phone: u.phone });
   res.json({ ok: true });
@@ -1684,10 +1760,10 @@ A.post('/captains/:id/topup', wrap(async (req, res) => {
 A.get('/captains/:id/track', wrap(async (req, res) => {
   const cid = int(req.params.id, 'id', 1, 2 ** 31);
   const zId = adminZone(req);
-  if (zId != null) {
-    const cap = await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId);
-    if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
-  }
+  const cap = zId != null
+    ? await db.get("SELECT 1 FROM users WHERE id=? AND role='captain' AND zone_id=?", cid, zId)
+    : await db.get("SELECT 1 FROM users WHERE id=? AND role='captain'", cid);
+  if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
   const rows = await db.all('SELECT lat,lng,order_id,at,accuracy,fix_at FROM locations WHERE captain_id=? ORDER BY id DESC LIMIT 300', cid);
   res.json(rows.reverse());
 }));

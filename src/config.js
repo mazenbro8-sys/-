@@ -36,6 +36,9 @@ export const config = {
   searchMaxMs: 10 * 60_000,
   activeLocIntervalMs: 10_000,
   idleLocIntervalMs: 60_000,
+  captainReachableMs: Number(process.env.CAPTAIN_REACHABLE_MS || 5 * 60_000), // 5 minutes
+  captainSweepStaleMs: Number(process.env.CAPTAIN_SWEEP_STALE_MS || 30 * 60_000), // 30 minutes
+  captainSweepIntervalMs: Number(process.env.CAPTAIN_SWEEP_INTERVAL_MS || 60_000), // 60 seconds
   defaultCommission: 2000,
   defaultOrderCostPoints: 25,
   pickupRadiusM: 100,

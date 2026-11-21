@@ -597,6 +597,39 @@ export async function api(path, method = 'GET', body) {
   }
   return data;
 }
+
+async function postLogoutStep(path, body, timeoutMs = 2000) {
+  const base = getServerUrl();
+  if (!token || (isNativeApk() && !base)) return;
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    await fetch(`${base}/api${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    });
+  } catch {
+    // Never block logout on network/server failure
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function performLogout({ isCaptain = false, hasActiveOrder = false, onBeforeClear = null } = {}) {
+  if (isCaptain && !hasActiveOrder) {
+    await postLogoutStep('/captain/online', { online: false }, 2000);
+  }
+  await postLogoutStep('/auth/logout-all', null, 2000);
+  try { onBeforeClear?.(); } catch {}
+  setToken(null);
+  location.reload();
+}
+
 export const act = async (fn, okMsg) => { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message); } };
 
 export function connectWs(onMsg) {
@@ -1156,7 +1189,12 @@ export function header(title, user, onLogout) {
     const logoutEl = h.querySelector('#lo');
     mountNotificationsBell(actionsEl, { insertBefore: logoutEl });
   }
-  $('#lo', h).onclick = async () => { try { await api('/auth/logout-all', 'POST'); } catch {} onLogout?.(); setToken(null); location.reload(); };
+  $('#lo', h).onclick = async () => {
+    await performLogout({
+      isCaptain: user?.role === 'captain' || ROLE_KEY === 'captain',
+      onBeforeClear: onLogout,
+    });
+  };
 }
 
 /** Captain details modal: name, phone, live location on a map, and a direct call button. */
