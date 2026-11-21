@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v35';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v36';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v29';
 import {
   getMarkerVisualSize,
@@ -231,7 +231,9 @@ authScreen('admin', (user) => {
   const isZoneAdmin = user.role === 'zone_admin';
   const feed = [];
   let tab = 'dash', zones = [], zonesLoaded = false, zonesInFlight = null;
-  let liveMap = null, liveFitted = false, liveStageObs = null, dashMap = null;
+  let liveMap = null, liveFitted = false, liveStageObs = null, dashMap = null, nmap = null, detailMap = null;
+  let dashRouteSeq = 0, detailRouteSeq = 0;
+  const liveRouteSeq = new Map();
   let usersTab = 'merchant', usersZoneFilter = '', currentUsersList = [];
   let capMarkers = new Map(), dashCapMarkers = new Map(), dashMerchMarkers = new Map(), merchMarkers = new Map(), orderMarkers = new Map(), routeLayers = new Map();
   let liveCache = { orders: [], recentOrders: [], captains: [], merchants: [], shortage: null };
@@ -353,7 +355,7 @@ authScreen('admin', (user) => {
     return `<div class="cap-map-popup">
       <div class="cap-map-popup-head"><b>🛵 ${esc(c.name)}</b>${c.tag ? ` <code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''} <span class="mut">(${esc(stTxt)})</span></div>
       ${renderCaptainLocDiag(c)}
-      <div class="cap-map-popup-actions"><button type="button" class="sec cap-popup-details-btn" data-cap-details="${c.id}">تفاصيل</button></div>
+      <div class="cap-map-popup-actions"><button type="button" class="sec cap-popup-details-btn" data-cap-details="${esc(c.id)}">تفاصيل</button></div>
     </div>`;
   }
 
@@ -623,6 +625,9 @@ authScreen('admin', (user) => {
   }
 
   async function closeActionSheet() {
+    destroyLeafletMap(detailMap);
+    detailMap = null;
+    detailRouteSeq++;
     await closeSheetDialog(document.getElementById('orderActionSheet'));
   }
 
@@ -1128,10 +1133,17 @@ authScreen('admin', (user) => {
     if (view()) view().onclick = null;
     liveStageObs?.disconnect();
     liveStageObs = null;
+    dashRouteSeq++;
+    detailRouteSeq++;
+    liveRouteSeq.clear();
     destroyLeafletMap(liveMap);
     liveMap = null; liveFitted = false;
     destroyLeafletMap(dashMap);
     dashMap = null;
+    destroyLeafletMap(nmap);
+    nmap = null;
+    destroyLeafletMap(detailMap);
+    detailMap = null;
     liveSelection = null;
     if (liveHintOverride?.timer) clearTimeout(liveHintOverride.timer);
     liveHintOverride = null;
@@ -1177,8 +1189,8 @@ authScreen('admin', (user) => {
   function capStatusTag(c) {
     if (c.status !== 'active') return badge(c.status);
     if (c.busy) {
-      const ordBadges = (c.active_orders || []).map((ao) => `<span class="active-ord-mini"><b dir="ltr">#${ao.serial_no}</b> <button type="button" class="act-pill act-unassign-mini" data-unassign="${ao.id}" title="سحب الطلب من الكابتن">✕</button></span>`).join(' ');
-      return `<div class="cap-busy-stack"><span class="badge b-accepted">🛵 مشغول (${(c.active_orders || []).length || 1})</span><div class="cap-busy-orders">${ordBadges}</div></div>`;
+      const ordBadges = (c.active_orders || []).map((ao) => `<span class="active-ord-mini"><b dir="ltr">#${esc(ao.serial_no)}</b> <button type="button" class="act-pill act-unassign-mini" data-unassign="${esc(ao.id)}" title="سحب الطلب من الكابتن">✕</button></span>`).join(' ');
+      return `<div class="cap-busy-stack"><span class="badge b-accepted">🛵 مشغول (${enDigits((c.active_orders || []).length || 1)})</span><div class="cap-busy-orders">${ordBadges}</div></div>`;
     }
     if (c.online) {
       const visSt = getCaptainVisualState(c);
@@ -1231,7 +1243,7 @@ authScreen('admin', (user) => {
     }
     const zoomSize = getMarkerVisualSize(dashMap.getZoom());
     const stateKey = getMerchantVisualState(m).stateKey;
-    const tip = `🏪 ${m.business_name || m.name}`;
+    const tip = `🏪 ${esc(m.business_name || m.name || 'منشأة')}`;
     const coords = `${m.lat},${m.lng}`;
     let mk = existing;
     if (!mk) {
@@ -1371,7 +1383,7 @@ authScreen('admin', (user) => {
           </div>
         </div>
 
-        <div class="stats4">${cards.map(([i, n, l, to]) => `<div class="card sc" data-go="${to}" style="cursor:pointer"><div class="ic">${i}</div><div><div class="n">${n}</div><div class="mut">${l}</div></div></div>`).join('')}</div>
+        <div class="stats4">${cards.map(([i, n, l, to]) => `<div class="card sc" data-go="${esc(to)}" style="cursor:pointer"><div class="ic">${esc(i)}</div><div><div class="n">${esc(n)}</div><div class="mut">${esc(l)}</div></div></div>`).join('')}</div>
 
         <div class="card">
           <div class="page-head-main">
@@ -1414,15 +1426,22 @@ authScreen('admin', (user) => {
       dashMap.on('zoomend', syncDashMapMarkerZoom);
       merchList.forEach((m) => upsertDashMerchantMarker(m));
       capList.forEach((c) => upsertDashCaptainMarker(c));
+      const dRouteSeq = ++dashRouteSeq;
       liveOrders.forEach((o) => {
         if (o.customer_lat != null && o.customer_lng != null) {
           L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') })
             .addTo(dashMap)
-            .bindTooltip(`📍 طلب ${serialNo(o)} (${o.customer_address || ''})`);
+            .bindTooltip(`📍 طلب ${esc(serialNo(o))} (${esc(o.customer_address || '')})`);
         }
         if (o.captain?.lat != null && ['accepted', 'picked_up', 'arrived'].includes(o.status)) {
           const dest = o.status === 'accepted' ? [o.merchant?.lat, o.merchant?.lng] : [o.customer_lat, o.customer_lng];
-          if (dest[0] != null) makeRoute(dashMap, [o.captain.lat, o.captain.lng], dest);
+          if (dest[0] != null) {
+            makeRoute(dashMap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
+              if (dRouteSeq !== dashRouteSeq || tab !== 'dash' || !dashMap) {
+                try { layer.remove(); } catch {}
+              }
+            });
+          }
         }
       });
 
@@ -1822,6 +1841,8 @@ authScreen('admin', (user) => {
     async users(zonesPromise = ensureZonesLoaded()) {
       if (!zonesLoaded) await zonesPromise;
       if (isZoneAdmin && usersTab === 'admin') usersTab = 'merchant';
+      destroyLeafletMap(nmap);
+      nmap = null;
 
       const wirePwToggle = (btn, inp) => {
         if (!btn || !inp) return;
@@ -1997,7 +2018,7 @@ authScreen('admin', (user) => {
         </div>`;
 
       let npos = [null, null], origPos = [null, null], editActiveOrdersCount = 0;
-      let locationSource = null, nmap = null, nmapCtrl = null, editUserId = null, usersReqSeq = 0;
+      let locationSource = null, nmapCtrl = null, editUserId = null, usersReqSeq = 0;
 
       wirePwToggle($('#nuPwToggle'), $('#nuPw'));
 
@@ -2763,7 +2784,7 @@ authScreen('admin', (user) => {
           <div class="row-head" style="margin-bottom:10px">
             <div>
               <h3 id="walletModalTitle" style="margin:0">💳 محفظة ${esc(c.name)} ${c.tag ? `<code dir="ltr" class="cap-tag-pill">#${esc(c.tag)}</code>` : ''}</h3>
-              <div class="mut" style="font-size:13px">الرصيد الحالي: <b>${c.balance_points ?? 0} نقطة</b> — التكلفة الفعلية: <b>${c.effective_cost_points} نقطة</b> (${sourceLabel})</div>
+              <div class="mut" style="font-size:13px">الرصيد الحالي: <b>${enDigits(c.balance_points ?? 0)} نقطة</b> — التكلفة الفعلية: <b>${enDigits(c.effective_cost_points)} نقطة</b> (${esc(sourceLabel)})</div>
             </div>
             <button type="button" class="sec sm" id="wmClose">✕ إغلاق</button>
           </div>
@@ -2783,12 +2804,12 @@ authScreen('admin', (user) => {
             ${!isZoneAdmin ? `
             <div class="billing-settings-box" style="margin-top:14px;padding:12px;border:1px solid var(--border-neutral-strong);border-radius:10px;background:var(--bg-subtle)">
               <div style="font-weight:700;margin-bottom:4px">⚙️ إعدادات الرسوم والخصم (المدير العام)</div>
-              <div class="mut" style="font-size:12.5px;margin-bottom:8px">حالة الإعفاء الحالية: <b class="clr-ok-soft">${exemptStatusText}</b></div>
+              <div class="mut" style="font-size:12.5px;margin-bottom:8px">حالة الإعفاء الحالية: <b class="clr-ok-soft">${esc(exemptStatusText)}</b></div>
 
               <label for="wmCostOverride">تكلفة الطلب للكابتن (نقطة)</label>
               <div class="form-hint">فارغ = استخدام الافتراضي العام | 0 = معفى دائم | رقم موجب = تكلفة خاصة للكابتن</div>
               <input id="wmCostOverride" name="cost_override" type="number" min="0" max="100000" step="1" placeholder="استخدام الافتراضي العام">
-              <div class="mut" style="font-size:12px;margin:2px 0 8px">القيمة الفعالة حالياً: <b>${c.effective_cost_points} نقطة</b> (المصدر: ${sourceLabel})</div>
+              <div class="mut" style="font-size:12px;margin:2px 0 8px">القيمة الفعالة حالياً: <b>${enDigits(c.effective_cost_points)} نقطة</b> (المصدر: ${esc(sourceLabel)})</div>
 
               <div class="row">
                 <div>
@@ -3415,6 +3436,9 @@ authScreen('admin', (user) => {
   async function detail(id, targetBox = null) {
     const detBox = targetBox || $('#detail');
     if (!detBox) return;
+    destroyLeafletMap(detailMap);
+    detailMap = null;
+    const dSeq = ++detailRouteSeq;
     if (targetBox) {
       const pageDet = $('#view #detail');
       if (pageDet) pageDet.innerHTML = '';
@@ -3423,10 +3447,11 @@ authScreen('admin', (user) => {
       if (sheetDet) sheetDet.innerHTML = '';
     }
     const o = await api(`/admin/orders/${id}`);
+    if (!detBox.isConnected || dSeq !== detailRouteSeq) return;
     ordersIndex.set(o.id, o);
     const capList = liveCache.captains || [];
     const hasMap = (o.merchant?.lat != null) || (o.customer_lat != null) || (o.captain?.lat != null);
-    detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${serialNo(o)}</span> ${orderStatusBadge(o)}</h3>
+    detBox.innerHTML = `<div class="card"><h3>طلب — الرقم التسلسلي <span dir="ltr">${esc(serialNo(o))}</span> ${orderStatusBadge(o)}</h3>
         <p><b>المنشأة:</b> ${esc(o.merchant.name)} — <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}</p>
         ${!targetBox ? `<div style="margin:10px 0;padding:10px;background:var(--bg-subtle);border-radius:10px">
           <b>🛵 الكابتن المسند للطلب:</b>
@@ -3438,20 +3463,22 @@ authScreen('admin', (user) => {
         ${!targetBox ? `<div class="row">${o.status === 'accepted' ? `<button type="button" class="ok" id="fpBtn">⚡ تأكيد استلام (تجاوز GPS)</button>` : ''}${!isZoneAdmin && o.captain_id !== undefined && o.captain ? `<button type="button" class="bad" id="lb">⚠️ تعديل / خصم نقاط (تعويض)</button>` : ''}
         ${!['delivered', 'cancelled', 'failed', 'expired'].includes(o.status) ? '<button type="button" class="sec" id="ca">إلغاء الطلب نهائياً</button>' : ''}</div>` : ''}</div>`;
     if (hasMap) {
+      destroyLeafletMap(detailMap);
       const dmap = makeMap('dmap', DAMASCUS, 13);
+      detailMap = dmap;
       const pts = [];
       if (o.merchant?.lat != null) {
-        L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(dmap).bindTooltip(`🏪 ${o.merchant.name}`);
+        L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(dmap).bindTooltip(`🏪 ${esc(o.merchant.name || '')}`);
         pts.push([o.merchant.lat, o.merchant.lng]);
       }
       if (o.customer_lat != null) {
-        L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(dmap).bindTooltip(`📍 ${o.customer_address || ''}`);
+        L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(dmap).bindTooltip(`📍 ${esc(o.customer_address || '')}`);
         pts.push([o.customer_lat, o.customer_lng]);
       }
       if (o.captain?.lat != null) {
         L.marker([o.captain.lat, o.captain.lng], { icon: emoji('🛵') })
           .addTo(dmap)
-          .bindTooltip(`🛵 ${o.captain.name}`)
+          .bindTooltip(`🛵 ${esc(o.captain.name || '')}`)
           .bindPopup(renderCaptainPopupHtml({ ...o.captain, busy: true, active_order_id: o.serial_id || o.id, online: true }))
           .on('popupopen', tickCaptainLocAges);
         pts.push([o.captain.lat, o.captain.lng]);
@@ -3459,9 +3486,15 @@ authScreen('admin', (user) => {
       if (pts.length) fitMapToPoints(dmap, pts);
       if (o.captain?.lat != null && ['accepted', 'picked_up', 'arrived'].includes(o.status)) {
         const dest = o.status === 'accepted' ? [o.merchant?.lat, o.merchant?.lng] : [o.customer_lat, o.customer_lng];
-        if (dest[0] != null) makeRoute(dmap, [o.captain.lat, o.captain.lng], dest);
+        if (dest[0] != null) {
+          makeRoute(dmap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
+            if (dSeq !== detailRouteSeq || detailMap !== dmap) {
+              try { layer.remove(); } catch {}
+            }
+          });
+        }
       }
-      setTimeout(() => dmap.invalidateSize(), 120);
+      setTimeout(() => { if (detailMap === dmap) dmap.invalidateSize(); }, 120);
     }
     $('#fpBtn', detBox)?.addEventListener('click', async () => {
       if (!confirm('تأكيد استلام الطلب إدارياً وتجاوز فحص GPS؟')) return;
@@ -3724,10 +3757,12 @@ authScreen('admin', (user) => {
       ? ` — ${st.openOrders.map((o) => `${serialNo(o)} (${STATUS[o.status] || o.status})`).join('، ')}`
       : ' — لا يوجد طلب مفتوح';
     const tip = `🏪 ${name}${selected ? ' (محدد)' : ''}${orderInfo}`;
+    const tipHtml = `🏪 ${esc(name)}${selected ? ' (محدد)' : ''}${esc(orderInfo)}`;
     const sig = `${st.stateClass}|${selected ? 1 : 0}|${validTarget ? 1 : 0}|${dimmed ? 1 : 0}|${transferableCount}|${zoomSize.tier}`;
     return {
       shouldShow,
       tip,
+      tipHtml,
       sig,
       zoomSize,
       iconParams: {
@@ -3793,7 +3828,7 @@ authScreen('admin', (user) => {
       mk._opsZoomTier = spec.zoomSize.tier;
       mk._opsEntity = m;
       mk._opsCoords = `${m.lat},${m.lng}`;
-      mk.bindTooltip(spec.tip);
+      mk.bindTooltip(spec.tipHtml);
       merchMarkers.set(m.id, mk);
     } else {
       mk._opsEntity = m;
@@ -3807,7 +3842,7 @@ authScreen('admin', (user) => {
         mk._opsSig = spec.sig;
         mk._opsZoomTier = spec.zoomSize.tier;
       }
-      mk.setTooltipContent?.(spec.tip) || mk.bindTooltip(spec.tip);
+      mk.setTooltipContent?.(spec.tipHtml) || mk.bindTooltip(spec.tipHtml);
     }
 
     if (spec.shouldShow) {
@@ -3910,7 +3945,7 @@ authScreen('admin', (user) => {
 
     const existingPin = orderMarkers.get(pinKey);
     if (showRoutes && o.customer_lat != null && o.customer_lng != null) {
-      const tip = `📍 طلب ${serialNo(o)}: ${o.customer_address || ''}`;
+      const tip = `📍 طلب ${esc(serialNo(o))}: ${esc(o.customer_address || '')}`;
       if (!existingPin) {
         const mk = L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(liveMap).bindTooltip(tip);
         orderMarkers.set(pinKey, mk);
@@ -3933,13 +3968,16 @@ authScreen('admin', (user) => {
         if (!existingRoute || existingRoute._opsSig !== capCoords) {
           existingRoute?.layer?.remove?.();
           const tokenSig = capCoords;
-          makeRoute(liveMap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
-            if (tab === 'live' && liveMap && liveFilters.showRoutes) {
+          const rSeq = (liveRouteSeq.get(o.id) || 0) + 1;
+          liveRouteSeq.set(o.id, rSeq);
+          const targetLiveMap = liveMap;
+          makeRoute(targetLiveMap, [o.captain.lat, o.captain.lng], dest).then((layer) => {
+            if (rSeq === liveRouteSeq.get(o.id) && tab === 'live' && liveMap === targetLiveMap && liveFilters.showRoutes) {
               const prev = routeLayers.get(o.id);
               prev?.layer?.remove?.();
               routeLayers.set(o.id, { layer, _opsSig: tokenSig });
             } else {
-              layer.remove();
+              try { layer.remove(); } catch {}
             }
           });
         } else if (existingRoute.layer && !liveMap.hasLayer(existingRoute.layer)) {
@@ -3947,6 +3985,7 @@ authScreen('admin', (user) => {
         }
       }
     } else if (existingRoute) {
+      liveRouteSeq.set(o.id, (liveRouteSeq.get(o.id) || 0) + 1);
       existingRoute.layer?.remove?.();
       routeLayers.delete(o.id);
     }

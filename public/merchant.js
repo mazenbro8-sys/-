@@ -1,4 +1,4 @@
-import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner, getNotificationsController } from './shared.js?v=panther2026v35';
+import { $, $$, esc, time, badge, api, act, toast, connectWs, authScreen, header, makeMap, emoji, captainModal, animateMarker, makeRoute, fitMapToPoints, serialNo, renderInstallBanner, getNotificationsController } from './shared.js?v=panther2026v36';
 
 authScreen('merchant', (user) => {
   header(user.business_name || user.name || 'المنشأة', user);
@@ -80,11 +80,11 @@ authScreen('merchant', (user) => {
 
   const orders = new Map();
   let selected = null, capMarker = null, destMarkers = [];
-  let routeLayer = null, lastRouteTime = 0;
+  let routeLayer = null, lastRouteTime = 0, routeSeq = 0;
 
   const homeCenter = user.lat != null && user.lng != null ? [user.lat, user.lng] : undefined;
   const tm = makeMap('tmap', homeCenter, 14);
-  if (homeCenter) L.marker(homeCenter, { icon: emoji('🏪') }).addTo(tm).bindTooltip(`🏪 ${user.business_name || user.name}`);
+  if (homeCenter) L.marker(homeCenter, { icon: emoji('🏪') }).addTo(tm).bindTooltip(`🏪 ${esc(user.business_name || user.name || 'المنشأة')}`);
 
   function switchTab(tab) {
     $$('.tabs button').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tab));
@@ -184,9 +184,9 @@ authScreen('merchant', (user) => {
             <div class="merchant-order-status">
               ${badge(o.status)}
               ${isLiveTab && o.delay_until && o.delay_until > Date.now()
-                ? `<div class="mut">⏱️ مؤجل (${Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000))} د)</div>`
+                ? `<div class="mut">⏱️ مؤجل (${esc(Math.max(1, Math.ceil((o.delay_until - Date.now()) / 60000)))} د)</div>`
                 : isLiveTab && o.eta_minutes
-                  ? `<div class="mut">وصول خلال ~${o.eta_minutes} د</div>`
+                  ? `<div class="mut">وصول خلال ~${esc(Number(o.eta_minutes) || 0)} د</div>`
                   : ''}
             </div>
           </div>
@@ -393,24 +393,32 @@ authScreen('merchant', (user) => {
   function track(o) {
     if (!o) return;
     destMarkers.forEach((m) => m.remove()); destMarkers = [];
+    const seq = ++routeSeq;
     if (routeLayer) { routeLayer.remove(); routeLayer = null; }
     const pts = [];
     if (o.merchant?.lat != null) {
-      destMarkers.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(tm).bindTooltip(`🏪 ${o.merchant.name || user.business_name || 'المنشأة'}`));
+      destMarkers.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(tm).bindTooltip(`🏪 ${esc(o.merchant.name || user.business_name || 'المنشأة')}`));
       pts.push([o.merchant.lat, o.merchant.lng]);
     }
     if (o.customer_lat != null) {
-      destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm).bindTooltip(`📍 ${o.customer_address || ''}`));
+      destMarkers.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(tm).bindTooltip(`📍 ${esc(o.customer_address || '')}`));
       pts.push([o.customer_lat, o.customer_lng]);
     }
-    $('#trkinfo').innerHTML = `طلب <b dir="ltr">${serialNo(o)}</b> (📍 ${esc(o.customer_address || '—')}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${o.eta_minutes}</b> دقيقة` : ''}`;
+    $('#trkinfo').innerHTML = `طلب <b dir="ltr">${esc(serialNo(o))}</b> (📍 ${esc(o.customer_address || '—')}): ${badge(o.status)}${o.eta_minutes ? ` — الوصول خلال ~<b>${esc(Number(o.eta_minutes) || 0)}</b> دقيقة` : ''}`;
     if (o.captain?.lat != null) {
       moveCaptain(o.captain.lat, o.captain.lng, o.captain.name, false);
       pts.push([o.captain.lat, o.captain.lng]);
       const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
       if (dest?.lat != null) {
         lastRouteTime = Date.now();
-        makeRoute(tm, [o.captain.lat, o.captain.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
+        makeRoute(tm, [o.captain.lat, o.captain.lng], [dest.lat, dest.lng]).then((layer) => {
+          if (seq !== routeSeq || selected !== o.id) {
+            try { layer.remove(); } catch {}
+            return;
+          }
+          if (routeLayer) { try { routeLayer.remove(); } catch {} }
+          routeLayer = layer;
+        });
       }
     } else if (capMarker) {
       capMarker.remove(); capMarker = null;
@@ -419,8 +427,12 @@ authScreen('merchant', (user) => {
   }
 
   function moveCaptain(lat, lng, name = 'الكابتن', pan = true) {
-    if (!capMarker) capMarker = L.marker([lat, lng], { icon: emoji('🛵') }).addTo(tm).bindTooltip(`🛵 ${name}`);
-    else animateMarker(capMarker, [lat, lng]);
+    const safeCapTip = `🛵 ${esc(name || 'الكابتن')}`;
+    if (!capMarker) capMarker = L.marker([lat, lng], { icon: emoji('🛵') }).addTo(tm).bindTooltip(safeCapTip);
+    else {
+      animateMarker(capMarker, [lat, lng]);
+      capMarker.setTooltipContent?.(safeCapTip) || capMarker.bindTooltip(safeCapTip);
+    }
     if (pan) tm.panTo([lat, lng]);
   }
 
@@ -501,7 +513,15 @@ authScreen('merchant', (user) => {
           const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
           if (dest?.lat != null) {
             lastRouteTime = Date.now();
-            makeRoute(tm, [m.lat, m.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
+            const seq = ++routeSeq;
+            makeRoute(tm, [m.lat, m.lng], [dest.lat, dest.lng]).then((layer) => {
+              if (seq !== routeSeq || selected !== o.id) {
+                try { layer.remove(); } catch {}
+                return;
+              }
+              if (routeLayer) { try { routeLayer.remove(); } catch {} }
+              routeLayer = layer;
+            });
           }
         }
       }

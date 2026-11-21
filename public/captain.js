@@ -7,7 +7,7 @@ import {
   mountNotificationsBell, debounce,
   normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery,
   shouldSkipWebLocationPost
-} from './shared.js?v=panther2026v35';
+} from './shared.js?v=panther2026v36';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -235,8 +235,33 @@ authScreen('captain', (user) => {
   let allHistory = [], histFilter = 'all', histQuery = '';
   let cancelHistorySearch = null;
   let pos = null, lastGoodFixAt = 0, watchId = null, lastSent = 0, lastSentPos = null, lastStaleRecoveryAt = 0, staleRecoveryAttempts = 0, staleRecoveryInFlight = false;
-  let map = null, mk = [], me = null, idleMe = null, wake = null, cd = null;
-  let routeLayer = null, lastRouteTime = 0, selectedActiveId = null, lastAutoShownOfferId = null;
+  let map = null, mapOrderId = null, mk = [], merchMarker = null, custMarker = null, me = null, idleMe = null, wake = null, cd = null;
+  let routeLayer = null, lastRouteTime = 0, activeRouteSeq = 0, activeRouteKey = '', selectedActiveId = null, lastAutoShownOfferId = null;
+
+  function destroyActiveMap() {
+    activeRouteSeq++;
+    activeRouteKey = '';
+    if (routeLayer) {
+      try { routeLayer.remove(); } catch {}
+      routeLayer = null;
+    }
+    mk.forEach((m) => { try { m.remove(); } catch {} });
+    mk = [];
+    merchMarker = null;
+    custMarker = null;
+    if (me) {
+      try { me.remove(); } catch {}
+      me = null;
+    }
+    if (map) {
+      try { map.stop?.(); } catch {}
+      try { map.remove(); } catch {}
+      map = null;
+    }
+    const activeBox = $('#active');
+    if (activeBox) activeBox.innerHTML = '';
+    mapOrderId = null;
+  }
 
   // ---------- Grouped Notification Banner (> 5 unread) ----------
   const groupBannerEl = $('#capNotifGroupBanner');
@@ -458,8 +483,12 @@ authScreen('captain', (user) => {
 
   // ---------- Tab Navigation ----------
   function switchTab(tabName) {
+    const prevTab = currentTab;
     if (tabName !== 'history') cancelHistorySearch?.();
     currentTab = tabName;
+    if (prevTab === 'active' && tabName !== 'active') {
+      destroyActiveMap();
+    }
     $$('.cap-tab').forEach((sec) => sec.classList.toggle('hide', sec.id !== `tab-${tabName}`));
     $$('#bottomNav button[data-tab]').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabName));
     if (tabName === 'home' && $('#idleMapCard')?.open) {
@@ -468,7 +497,10 @@ authScreen('captain', (user) => {
         if (pos) idleMap?.setView([pos.lat, pos.lng], 15);
       }, 60);
     }
-    if (tabName === 'active') setTimeout(() => map?.invalidateSize(), 60);
+    if (tabName === 'active') {
+      renderActive();
+      setTimeout(() => map?.invalidateSize(), 60);
+    }
     if (tabName === 'wallet') loadCaptainWallet();
   }
 
@@ -817,8 +849,10 @@ authScreen('captain', (user) => {
   }
 
   function buildNavUrl(lat, lng) {
-    if (navApp === 'waze') return `https://waze.com/ul?ll=${lat},${lng}&navigate=yes`;
-    return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+    const a = Number(lat), b = Number(lng);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return '#';
+    if (navApp === 'waze') return `https://waze.com/ul?ll=${encodeURIComponent(`${a},${b}`)}&navigate=yes`;
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${a},${b}`)}`;
   }
 
   const NEXT = {
@@ -828,9 +862,14 @@ authScreen('captain', (user) => {
   };
 
   function renderActive() {
+    if (currentTab !== 'active') {
+      destroyActiveMap();
+      return;
+    }
     const allAct = st.activeOrders?.length ? st.activeOrders : (st.active ? [st.active] : []);
     const box = $('#active');
     if (!allAct.length) {
+      destroyActiveMap();
       box.innerHTML = `<div class="card" style="text-align:center;padding:36px 18px">
         <div style="font-size:46px;margin-bottom:8px">🛵</div>
         <h3>لا توجد طلبات نشطة حالياً</h3>
@@ -838,7 +877,6 @@ authScreen('captain', (user) => {
         <button type="button" class="sec" id="goHomeFromEmpty" style="margin-top:8px">🏠 العودة للرئيسية</button>
       </div>`;
       $('#goHomeFromEmpty').onclick = () => switchTab('home');
-      map = null;
       selectedActiveId = null;
       return;
     }
@@ -852,9 +890,9 @@ authScreen('captain', (user) => {
 
     const multiTabs = allAct.length > 1
       ? `<div class="card" style="padding:12px">
-          <div class="mut" style="margin-bottom:8px">📦 الطلبات النشطة المسندة إليك (${allAct.length}) — اختر طلباً لإدارته:</div>
+          <div class="mut" style="margin-bottom:8px">📦 الطلبات النشطة المسندة إليك (${enDigits(allAct.length)}) — اختر طلباً لإدارته:</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            ${allAct.map((x) => `<button type="button" class="${x.id === o.id ? 'ok' : 'sec'} sm" data-act-id="${x.id}"><span dir="ltr">${serialNo(x)}</span> — ${esc((x.customer_address || '').slice(0, 20))}</button>`).join('')}
+            ${allAct.map((x) => `<button type="button" class="${x.id === o.id ? 'ok' : 'sec'} sm" data-act-id="${esc(x.id)}"><span dir="ltr">${esc(serialNo(x))}</span> — ${esc((x.customer_address || '').slice(0, 20))}</button>`).join('')}
           </div>
         </div>`
       : '';
@@ -870,74 +908,135 @@ authScreen('captain', (user) => {
 
     const cleanPhone = (o.customer_phone || '').replace(/\D/g, '');
     const waPhone = cleanPhone.startsWith('0') ? '963' + cleanPhone.slice(1) : cleanPhone;
+    const safeMerchTel = String(o.merchant?.phone || '').replace(/[^0-9+*#()-]/g, '');
 
-    box.innerHTML = `
-      ${multiTabs}
-      <div class="card">
-        <div class="row-head">
-          <h3>طلب نشط <span dir="ltr">${serialNo(o)}</span></h3>
-          ${badge(o.status)}
-        </div>
-        ${stepperHtml}
+    const amapEl = box.querySelector('#amap');
+    const canReuse = Boolean(
+      map && mapOrderId === o.id && amapEl && box.querySelector('#actOrderTop') && box.querySelector('#actOrderBottom')
+    );
 
-        <!-- Merchant Box -->
-        <div style="padding:12px;border-radius:12px;background:var(--bg-subtle);border:1px solid var(--border-brand-soft);margin-bottom:10px">
-          <div style="font-weight:800;color:var(--brand-primary);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
-          <div><b>${esc(o.merchant.name)}</b> — <span class="mut">${esc(o.merchant.address)}</span></div>
-        </div>
+    if (!canReuse) {
+      destroyActiveMap();
+      box.innerHTML = `
+        <div id="actMultiTabs"></div>
+        <div class="card">
+          <div id="actOrderTop"></div>
+          <div id="amap" class="map" style="height:330px"></div>
+          <div id="actOrderBottom"></div>
+        </div>`;
+    }
 
-        <!-- Customer Box -->
-        <div style="padding:12px;border-radius:12px;background:var(--status-ok-soft);border:1px solid var(--status-ok-border);margin-bottom:10px">
-          <div class="clr-ok-soft" style="font-weight:800;margin-bottom:4px">📍 بيانات التوصيل والزبون</div>
-          <div style="font-size:16px;font-weight:800;margin-bottom:4px">${esc(o.customer_address || '—')}</div>
-          ${o.customer_name && o.customer_name !== '—' ? `<div>الزبون: <b>${esc(o.customer_name)}</b></div>` : ''}
-          ${o.notes ? `<div class="mut" style="margin-top:4px">📝 ملاحظات: ${esc(o.notes)}</div>` : ''}
-          ${o.customer_phone ? `<div class="row" style="margin-top:8px">
-            <a class="btn-nav sec sm" href="https://wa.me/${esc(waPhone)}" target="_blank" rel="noopener">💬 واتساب الزبون</a>
-          </div>` : ''}
-        </div>
+    const tabsSlot = box.querySelector('#actMultiTabs');
+    const topSlot = box.querySelector('#actOrderTop');
+    const bottomSlot = box.querySelector('#actOrderBottom');
 
-        <div id="amap" class="map" style="height:330px"></div>
+    tabsSlot.innerHTML = multiTabs;
+    topSlot.innerHTML = `
+      <div class="row-head">
+        <h3>طلب نشط <span dir="ltr">${esc(serialNo(o))}</span></h3>
+        ${badge(o.status)}
+      </div>
+      ${stepperHtml}
 
-        <div class="cap-quick-actions">
-          ${dest.lat != null
-            ? `<a id="qaNavBtn" class="btn-nav qa-nav" href="${buildNavUrl(dest.lat, dest.lng)}" target="_blank" rel="noopener noreferrer">🧭 <span>ملاحة</span></a>`
-            : `<button type="button" id="qaNavBtn" class="btn-nav qa-nav">🧭 <span>ملاحة</span></button>`}
-          ${o.merchant.phone
-            ? `<a id="qaMerchCallBtn" class="btn-nav qa-call" href="tel:${esc(o.merchant.phone)}">📞 <span>اتصال منشأة</span></a>`
-            : `<button type="button" id="qaMerchCallBtn" class="btn-nav qa-call">📞 <span>اتصال منشأة</span></button>`}
-        </div>
+      <!-- Merchant Box -->
+      <div style="padding:12px;border-radius:12px;background:var(--bg-subtle);border:1px solid var(--border-brand-soft);margin-bottom:10px">
+        <div style="font-weight:800;color:var(--brand-primary);margin-bottom:4px">🏪 بيانات المنشأة (الاستلام)</div>
+        <div><b>${esc(o.merchant?.name || '')}</b> — <span class="mut">${esc(o.merchant?.address || '')}</span></div>
+      </div>
 
-        <button type="button" class="big ok" id="nx">${n[1]}</button>
-        ${o.status !== 'accepted' ? '<div class="cap-danger-zone"><div class="cap-danger-label">منطقة الإجراءات الخطرة</div><button type="button" class="big bad" id="fl">⚠️ الزبون لا يرد / العنوان خطأ</button></div>' : ''}
+      <!-- Customer Box -->
+      <div style="padding:12px;border-radius:12px;background:var(--status-ok-soft);border:1px solid var(--status-ok-border);margin-bottom:10px">
+        <div class="clr-ok-soft" style="font-weight:800;margin-bottom:4px">📍 بيانات التوصيل والزبون</div>
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px">${esc(o.customer_address || '—')}</div>
+        ${o.customer_name && o.customer_name !== '—' ? `<div>الزبون: <b>${esc(o.customer_name)}</b></div>` : ''}
+        ${o.notes ? `<div class="mut" style="margin-top:4px">📝 ملاحظات: ${esc(o.notes)}</div>` : ''}
+        ${waPhone ? `<div class="row" style="margin-top:8px">
+          <a class="btn-nav sec sm" href="https://wa.me/${esc(waPhone)}" target="_blank" rel="noopener">💬 واتساب الزبون</a>
+        </div>` : ''}
       </div>`;
 
-    if (dest.lat == null) {
-      $('#qaNavBtn')?.addEventListener('click', () => toast('إحداثيات الوجهة غير متوفرة على الخريطة'));
+    bottomSlot.innerHTML = `
+      <div class="cap-quick-actions">
+        ${dest?.lat != null && dest?.lng != null
+          ? `<a id="qaNavBtn" class="btn-nav qa-nav" href="${esc(buildNavUrl(dest.lat, dest.lng))}" target="_blank" rel="noopener noreferrer">🧭 <span>ملاحة</span></a>`
+          : `<button type="button" id="qaNavBtn" class="btn-nav qa-nav">🧭 <span>ملاحة</span></button>`}
+        ${safeMerchTel
+          ? `<a id="qaMerchCallBtn" class="btn-nav qa-call" href="tel:${esc(safeMerchTel)}">📞 <span>اتصال منشأة</span></a>`
+          : `<button type="button" id="qaMerchCallBtn" class="btn-nav qa-call">📞 <span>اتصال منشأة</span></button>`}
+      </div>
+
+      <button type="button" class="big ok" id="nx">${esc(n[1])}</button>
+      ${o.status !== 'accepted' ? '<div class="cap-danger-zone"><div class="cap-danger-label">منطقة الإجراءات الخطرة</div><button type="button" class="big bad" id="fl">⚠️ الزبون لا يرد / العنوان خطأ</button></div>' : ''}`;
+
+    if (dest?.lat == null) {
+      $('#qaNavBtn', bottomSlot)?.addEventListener('click', () => toast('إحداثيات الوجهة غير متوفرة على الخريطة'));
     }
-    if (!o.merchant.phone) {
-      $('#qaMerchCallBtn')?.addEventListener('click', () => toast('رقم المنشأة غير متوفر'));
+    if (!safeMerchTel) {
+      $('#qaMerchCallBtn', bottomSlot)?.addEventListener('click', () => toast('رقم المنشأة غير متوفر'));
     }
 
-    box.querySelectorAll('[data-act-id]').forEach((btn) => {
+    tabsSlot.querySelectorAll('[data-act-id]').forEach((btn) => {
       btn.onclick = () => { selectedActiveId = Number(btn.dataset.actId); renderActive(); };
     });
 
-    map = makeMap('amap', dest.lat != null ? [dest.lat, dest.lng] : undefined, 14);
-    mk.forEach((m) => m.remove()); mk = [];
-    if (routeLayer) { routeLayer.remove(); routeLayer = null; }
-    if (o.merchant.lat != null) mk.push(L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(map).bindTooltip(`🏪 ${o.merchant.name}`));
-    if (o.customer_lat != null) mk.push(L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(map).bindTooltip(`📍 الزبون: ${o.customer_name}`));
-    me = null;
+    if (!canReuse) {
+      map = makeMap('amap', dest?.lat != null ? [dest.lat, dest.lng] : undefined, 14);
+      mapOrderId = o.id;
+    }
+
+    const merchTip = `🏪 ${esc(o.merchant?.name || 'المنشأة')}`;
+    if (o.merchant?.lat != null && o.merchant?.lng != null) {
+      if (!merchMarker) {
+        merchMarker = L.marker([o.merchant.lat, o.merchant.lng], { icon: emoji('🏪') }).addTo(map).bindTooltip(merchTip);
+        mk.push(merchMarker);
+      } else {
+        merchMarker.setLatLng([o.merchant.lat, o.merchant.lng]);
+        merchMarker.setTooltipContent?.(merchTip) || merchMarker.bindTooltip(merchTip);
+      }
+    }
+
+    const custTip = `📍 الزبون: ${esc(o.customer_name || '')}`;
+    if (o.customer_lat != null && o.customer_lng != null) {
+      if (!custMarker) {
+        custMarker = L.marker([o.customer_lat, o.customer_lng], { icon: emoji('📍') }).addTo(map).bindTooltip(custTip);
+        mk.push(custMarker);
+      } else {
+        custMarker.setLatLng([o.customer_lat, o.customer_lng]);
+        custMarker.setTooltipContent?.(custTip) || custMarker.bindTooltip(custTip);
+      }
+    }
+
     if (pos) showMe();
-    const pts = [];
-    if (o.merchant.lat != null) pts.push([o.merchant.lat, o.merchant.lng]);
-    if (o.customer_lat != null) pts.push([o.customer_lat, o.customer_lng]);
-    if (pos) pts.push([pos.lat, pos.lng]);
-    if (pts.length) fitMapToPoints(map, pts);
-    if (pos && dest.lat != null) {
-      lastRouteTime = Date.now();
-      makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
+    if (!canReuse) {
+      const pts = [];
+      if (o.merchant?.lat != null) pts.push([o.merchant.lat, o.merchant.lng]);
+      if (o.customer_lat != null) pts.push([o.customer_lat, o.customer_lng]);
+      if (pos) pts.push([pos.lat, pos.lng]);
+      if (pts.length) fitMapToPoints(map, pts);
+    }
+
+    const nextRouteKey = pos && dest?.lat != null && dest?.lng != null ? `${o.status}:${dest.lat},${dest.lng}` : '';
+    if (!canReuse || nextRouteKey !== activeRouteKey) {
+      activeRouteKey = nextRouteKey;
+      const seq = ++activeRouteSeq;
+      if (routeLayer) {
+        try { routeLayer.remove(); } catch {}
+        routeLayer = null;
+      }
+      if (pos && dest?.lat != null && dest?.lng != null) {
+        lastRouteTime = Date.now();
+        const targetMap = map;
+        makeRoute(targetMap, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => {
+          if (seq !== activeRouteSeq || map !== targetMap || !map) {
+            try { layer.remove(); } catch {}
+            return;
+          }
+          if (routeLayer) {
+            try { routeLayer.remove(); } catch {}
+          }
+          routeLayer = layer;
+        });
+      }
     }
 
     $('#nx').onclick = async () => {
@@ -1058,10 +1157,20 @@ authScreen('captain', (user) => {
     if (st.active && Date.now() - lastRouteTime > 30000) {
       const o = st.active;
       const dest = o.status === 'accepted' ? o.merchant : { lat: o.customer_lat, lng: o.customer_lng };
-      if (dest.lat != null) {
+      if (dest?.lat != null && dest?.lng != null) {
         lastRouteTime = Date.now();
-        if (routeLayer) { routeLayer.remove(); routeLayer = null; }
-        makeRoute(map, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => { routeLayer = layer; });
+        activeRouteKey = `${o.status}:${dest.lat},${dest.lng}`;
+        const seq = ++activeRouteSeq;
+        const targetMap = map;
+        if (routeLayer) { try { routeLayer.remove(); } catch {} routeLayer = null; }
+        makeRoute(targetMap, [pos.lat, pos.lng], [dest.lat, dest.lng]).then((layer) => {
+          if (seq !== activeRouteSeq || map !== targetMap || !map) {
+            try { layer.remove(); } catch {}
+            return;
+          }
+          if (routeLayer) { try { routeLayer.remove(); } catch {} }
+          routeLayer = layer;
+        });
       }
     }
   }

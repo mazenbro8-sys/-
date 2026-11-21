@@ -23,6 +23,17 @@ const toEnDigits = (v) => String(v ?? '')
   .replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x0660)
   .replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x06f0);
 
+const charLen = (s) => Array.from(s).length; // code points, matches SQLite length()
+
+/** Strip HTML and control characters; returns plain text only. */
+const stripHtml = (v) => String(v)
+  .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/<\/?[a-z!][^>]*>/gi, '')
+  .replace(/[<>]/g, '')
+  .replace(/\r\n?/g, '\n')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+
 const str = (v, name, min, max) => {
   if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
   const s = toEnDigits(v).trim();
@@ -30,6 +41,21 @@ const str = (v, name, min, max) => {
   return s;
 };
 const optStr = (v, name, max) => (v == null || v === '' ? null : str(v, name, 1, max));
+const plainStr = (v, name, min, max) => {
+  if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
+  const cleaned = toEnDigits(stripHtml(v)).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  const n = charLen(cleaned);
+  if (n < min || n > max) throw bad(`الحقل غير صالح: ${name}`);
+  return cleaned;
+};
+const optPlainStr = (v, name, max) => {
+  if (v == null || v === '') return null;
+  if (typeof v !== 'string') throw bad(`الحقل غير صالح: ${name}`);
+  const cleaned = toEnDigits(stripHtml(v)).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (!cleaned) return null;
+  if (charLen(cleaned) > max) throw bad(`الحقل غير صالح: ${name}`);
+  return cleaned;
+};
 const int = (v, name, min, max) => {
   const n = Number(typeof v === 'string' ? toEnDigits(v) : v);
   if (!Number.isInteger(n) || n < min || n > max) throw bad(`قيمة غير صالحة: ${name}`);
@@ -93,17 +119,6 @@ const parseSupportPhone = (raw) => {
   if (!/^[0-9+\-\s()]{3,20}$/.test(s)) throw bad('رقم الدعم غير صالح');
   return s;
 };
-const charLen = (s) => Array.from(s).length; // code points, matches SQLite length()
-
-/** Strip HTML and control characters; returns plain text only. */
-const stripHtml = (v) => String(v)
-  .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
-  .replace(/<!--[\s\S]*?-->/g, '')
-  .replace(/<\/?[a-z!][^>]*>/gi, '')
-  .replace(/[<>]/g, '')
-  .replace(/\r\n?/g, '\n')
-  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
-
 const oid = (req) => int(req.params.id, 'id', 1, 2 ** 31);
 
 const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phone, zone_id: u.zone_id, status: u.status, business_name: u.business_name, address: u.address, lat: u.lat, lng: u.lng, online: !!u.online, tag: u.tag ?? null });
@@ -201,7 +216,7 @@ const createAccount = wrap(async (req, res) => {
   const allowedRoles = isZoneAdmin ? ['merchant', 'captain'] : ['merchant', 'captain', 'zone_admin', 'admin'];
   if (!allowedRoles.includes(role)) throw bad('نوع الحساب غير صالح');
   const p = phone(b.phone);
-  const name = str(b.name, 'الاسم', 2, 60);
+  const name = plainStr(b.name, 'الاسم', 2, 60);
   const pass = str(b.password, 'كلمة المرور', 6, 72);
   assertPasswordComplexity(pass);
   let zone = null;
@@ -221,8 +236,8 @@ const createAccount = wrap(async (req, res) => {
   }
   let business = null, address = null, lat = null, lng = null, locationSource = null;
   if (role === 'merchant') {
-    business = str(b.business_name, 'اسم المنشأة', 2, 80);
-    address = str(b.address, 'العنوان', 3, 200);
+    business = plainStr(b.business_name, 'اسم المنشأة', 2, 80);
+    address = plainStr(b.address, 'العنوان', 3, 200);
     [lat, lng] = coord(b.lat, b.lng);
     locationSource = parseLocationSource(b.location_source);
   }
@@ -315,12 +330,12 @@ M.post('/orders', orderLimiter, wrap(async (req, res) => {
   const m = req.user;
   const [clat, clng] = coord(b.customer_lat, b.customer_lng);
   const o = {
-    name: b.customer_name ? str(b.customer_name, 'اسم الزبون', 1, 60) : '—',
+    name: b.customer_name ? (optPlainStr(b.customer_name, 'اسم الزبون', 60) || '—') : '—',
     phone: b.customer_phone ? phone(b.customer_phone) : '',
-    address: str(b.customer_address, 'عنوان التوصيل', 2, 250),
+    address: plainStr(b.customer_address, 'عنوان التوصيل', 2, 250),
     amount: int(b.product_amount ?? 0, 'ثمن المنتج', 0, 100_000_000),
     fee: int(b.delivery_fee ?? 0, 'أجرة التوصيل', 0, 10_000_000),
-    notes: optStr(b.notes, 'ملاحظات', 300),
+    notes: optPlainStr(b.notes, 'ملاحظات', 300),
   };
   const open = (await db.get("SELECT COUNT(*) c FROM orders WHERE merchant_id=? AND status IN ('searching','offered')", m.id)).c;
   if (open >= 10) throw bad('لديك طلبات كثيرة قيد البحث عن كابتن');
@@ -1121,7 +1136,7 @@ A.patch('/users/:id', wrap(async (req, res) => {
     }
   }
   if (b.name != null) {
-    const nm = str(b.name, 'الاسم', 2, 60);
+    const nm = plainStr(b.name, 'الاسم', 2, 60);
     await db.run('UPDATE users SET name=? WHERE id=?', nm, id);
   }
   if (b.phone != null) {
@@ -1132,11 +1147,11 @@ A.patch('/users/:id', wrap(async (req, res) => {
     await db.run('UPDATE users SET phone=? WHERE id=?', ph, id);
   }
   if (b.business_name !== undefined) {
-    const bn = u.role === 'merchant' ? str(b.business_name, 'اسم المنشأة', 2, 80) : optStr(b.business_name, 'اسم المنشأة', 80);
+    const bn = u.role === 'merchant' ? plainStr(b.business_name, 'اسم المنشأة', 2, 80) : optPlainStr(b.business_name, 'اسم المنشأة', 80);
     await db.run('UPDATE users SET business_name=? WHERE id=?', bn, id);
   }
   if (b.address !== undefined) {
-    const addr = u.role === 'merchant' ? str(b.address, 'العنوان', 3, 200) : optStr(b.address, 'العنوان', 200);
+    const addr = u.role === 'merchant' ? plainStr(b.address, 'العنوان', 3, 200) : optPlainStr(b.address, 'العنوان', 200);
     await db.run('UPDATE users SET address=? WHERE id=?', addr, id);
   }
   if (b.status != null) {
@@ -1234,7 +1249,7 @@ A.get('/zones', wrap(async (req, res) => {
 }));
 A.post('/zones', wrap(async (req, res) => {
   if (req.user.role === 'zone_admin') throw new HttpError(403, 'ليس لديك صلاحية لإضافة مناطق جديدة');
-  const name = str(req.body?.name, 'اسم المنطقة', 2, 60);
+  const name = plainStr(req.body?.name, 'اسم المنطقة', 2, 60);
   const supportPhone = parseSupportPhone(req.body?.support_phone);
   try {
     const r = await db.run('INSERT INTO zones(name, support_phone) VALUES(?,?)', name, supportPhone);
@@ -1287,7 +1302,10 @@ A.post('/orders', wrap(async (req, res) => {
       : await db.get("SELECT * FROM users WHERE role='merchant' AND status!='deleted' ORDER BY (status='active') DESC, id ASC LIMIT 1");
   }
   if (!m) throw bad('يرجى إضافة منشأة أولاً');
-  const address = str(b.customer_address, 'عنوان التوصيل', 2, 250);
+  const custName = b.customer_name ? (optPlainStr(b.customer_name, 'اسم الزبون', 60) || '—') : '—';
+  const custPhone = b.customer_phone ? phone(b.customer_phone) : '';
+  const address = plainStr(b.customer_address, 'عنوان التوصيل', 2, 250);
+  const orderNotes = optPlainStr(b.notes, 'ملاحظات', 300);
   let cap = null;
   if (b.captain_id != null && b.captain_id !== '') {
     const cid = int(b.captain_id, 'الكابتن', 1, 2 ** 31);
@@ -1319,8 +1337,8 @@ A.post('/orders', wrap(async (req, res) => {
   const orderId = await tx(async () => {
     const st = cap ? 'accepted' : 'searching';
     const r = await db.run(
-      'INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,status,captain_id,cost_points,cost_source,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?,?,?)',
-      m.id, zId ?? (m.zone_id || 1), '—', '', address, st, cap ? cap.id : null, costSnap.cost_points, costSnap.cost_source, cap ? now : null, now
+      'INSERT INTO orders(merchant_id,zone_id,customer_name,customer_phone,customer_address,product_amount,delivery_fee,notes,status,captain_id,cost_points,cost_source,accepted_at,created_at) VALUES(?,?,?,?,?,0,0,?,?,?,?,?,?,?)',
+      m.id, zId ?? (m.zone_id || 1), custName, custPhone, address, orderNotes, st, cap ? cap.id : null, costSnap.cost_points, costSnap.cost_source, cap ? now : null, now
     );
     await addEvent(r.lastInsertRowid, 'created', req.user.id);
     if (cap) {
@@ -1460,7 +1478,7 @@ A.post('/orders/:id/delay', wrap(async (req, res) => {
 A.post('/orders/:id/notify-merchant', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   const id = o.id;
-  const customMsg = optStr(req.body?.message, 'رسالة التنبيه', 250);
+  const customMsg = optPlainStr(req.body?.message, 'رسالة التنبيه', 250);
   const msg = customMsg || `🔔 تنبيه من الإدارة بخصوص الطلب #${String(id).padStart(4, '0')}: الطلب متأخر قليلاً، جاري البحث عن كابتن وتأمينه بأسرع وقت.`;
   await addEvent(id, 'merchant_notified', req.user.id, { message: msg });
   await audit(req.user.id, 'notify_merchant', { id, message: msg });
@@ -1470,7 +1488,7 @@ A.post('/orders/:id/notify-merchant', wrap(async (req, res) => {
 A.post('/orders/:id/cancel', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   if (CLOSED.includes(o.status)) throw new HttpError(409, 'تم إغلاق الطلب مسبقاً');
-  const customReason = optStr(req.body?.reason, 'سبب الإلغاء', 200);
+  const customReason = optPlainStr(req.body?.reason, 'سبب الإلغاء', 200);
   const reason = customReason || 'admin_cancelled';
   const closed = await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason });
   if (!closed) throw new HttpError(409, 'تم إغلاق الطلب مسبقاً');
@@ -1489,7 +1507,7 @@ A.post('/orders/:id/cancel', wrap(async (req, res) => {
 A.post('/orders/:id/force-pickup', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   if (o.status !== 'accepted') throw bad('يمكن تأكيد الاستلام القسري للطلبات المقبولة فقط');
-  const reason = optStr(req.body?.reason, 'السبب', 200) || 'تجاوز GPS من الإدارة';
+  const reason = optPlainStr(req.body?.reason, 'السبب', 200) || 'تجاوز GPS من الإدارة';
   await db.run(
     "UPDATE orders SET status='picked_up', picked_at=COALESCE(picked_at, ?) WHERE id=? AND status='accepted'",
     Date.now(),
@@ -1507,7 +1525,7 @@ A.post('/orders/:id/liability', requireSuperAdmin, wrap(async (req, res) => {
   const o = await getAdminOrder(req);
   if (!o.captain_id) throw bad('الطلب بلا كابتن');
   const pts = int(req.body?.points, 'النقاط', 1, 1_000_000);
-  const reason = str(req.body?.reason, 'السبب', 3, 200);
+  const reason = plainStr(req.body?.reason, 'السبب', 3, 200);
   const rawRef = req.body?.client_ref != null ? String(req.body.client_ref).trim() : '';
   const clientRef = rawRef ? str(rawRef, 'مرجع العملية', 1, 80) : null;
   const confirm = req.body?.confirm === true;
@@ -1750,7 +1768,7 @@ A.post('/captains/:id/topup', wrap(async (req, res) => {
   if (!cap) throw new HttpError(404, 'الكابتن غير موجود');
   const pts = int(req.body?.points, 'عدد النقاط', 1, 10_000_000);
   const rawNote = req.body?.note != null ? String(req.body.note).trim() : '';
-  const note = rawNote ? str(rawNote, 'الملاحظة', 1, 200) : 'شحن رصيد يدوي';
+  const note = rawNote ? (optPlainStr(rawNote, 'الملاحظة', 200) || 'شحن رصيد يدوي') : 'شحن رصيد يدوي';
   const rawRef = req.body?.client_ref != null ? String(req.body.client_ref).trim() : '';
   const clientRef = rawRef ? str(rawRef, 'مرجع العملية', 1, 80) : null;
   const r = await applyPointsEntry({

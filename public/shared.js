@@ -633,8 +633,16 @@ export async function performLogout({ isCaptain = false, hasActiveOrder = false,
 export const act = async (fn, okMsg) => { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message); } };
 
 export function connectWs(onMsg) {
-  let ws, stop = false, delay = 1000;
+  let ws = null, stop = false, delay = 1000, reconnectTimer = null;
+  const clearReconnect = () => {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
   const open = () => {
+    clearReconnect();
+    if (stop) return;
     const base = getServerUrl();
     if (isNativeApk() && !base) return;
     const wsUrl = base
@@ -643,10 +651,19 @@ export function connectWs(onMsg) {
     ws = new WebSocket(wsUrl);
     ws.onopen = () => { delay = 1000; ws.send(JSON.stringify({ type: 'auth', token })); };
     ws.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch {} };
-    ws.onclose = (e) => { if (!stop && e.code !== 4003) setTimeout(open, (delay = Math.min(delay * 2, 15000))); };
+    ws.onclose = (e) => {
+      if (!stop && e.code !== 4003) {
+        clearReconnect();
+        reconnectTimer = setTimeout(open, (delay = Math.min(delay * 2, 15000)));
+      }
+    };
   };
   open();
-  return () => { stop = true; ws?.close(); };
+  return () => {
+    stop = true;
+    clearReconnect();
+    try { ws?.close(); } catch {}
+  };
 }
 
 // ---------- maps (Google Maps Streets/Hybrid + Dark + OSM, zero API key, auto proxy fallback) ----------
@@ -776,7 +793,7 @@ export function makeMap(el, center = DAMASCUS, zoom = 13) {
 }
 
 export const emoji = (e) => L.divIcon({
-  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6))">${e}</div>`,
+  html: `<div style="font-size:26px;line-height:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6))">${esc(e)}</div>`,
   className: '', iconSize: [28, 28], iconAnchor: [14, 14],
 });
 
@@ -1029,8 +1046,9 @@ export function fitMapToPoints(map, points) {
 }
 
 export function createPulsingDot(color = '#10B981') {
+  const safeColor = esc(String(color || '#10B981').replace(/[^#a-zA-Z0-9(),.% -]/g, '')) || '#10B981';
   return L.divIcon({
-    html: `<div class="pulsing-dot" style="background:${color}"></div>`,
+    html: `<div class="pulsing-dot" style="background:${safeColor}"></div>`,
     className: '', iconSize: [14, 14], iconAnchor: [7, 7],
   });
 }
@@ -1197,28 +1215,41 @@ export function header(title, user, onLogout) {
   };
 }
 
+let capModalMap = null;
+function destroyCapModalMap() {
+  if (!capModalMap) return;
+  try { capModalMap.stop?.(); } catch {}
+  try { capModalMap.remove(); } catch {}
+  capModalMap = null;
+}
+
 /** Captain details modal: name, phone, live location on a map, and a direct call button. */
 export function captainModal(cap) {
   if (!cap) return;
+  destroyCapModalMap();
   document.getElementById('capmodal')?.remove();
   const el = document.createElement('div');
   el.id = 'capmodal';
   el.style.cssText = 'position:fixed;inset:0;z-index:var(--z-modal);background:var(--surface-overlay);backdrop-filter:var(--blur-sm);display:grid;place-items:center;padding:var(--space-4)';
   const hasLoc = cap.lat != null && cap.lng != null;
+  const safeTel = String(cap.phone || '').replace(/[^0-9+*#()-]/g, '');
   el.innerHTML = `<div class="card" style="width:100%;max-width:440px">
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🛵 ${esc(cap.name)}</h3><button type="button" class="ghost" id="capx">✕</button></div>
     <p style="margin:10px 0">📞 <b dir="ltr">${esc(cap.phone || '—')}</b></p>
     ${hasLoc ? '<div id="capmap" class="map" style="height:240px"></div>' : '<div class="mut">موقع الكابتن غير متوفر حالياً</div>'}
-    ${cap.phone ? `<a href="tel:${esc(cap.phone)}" style="display:inline-flex;align-items:center;justify-content:center;width:100%;min-height:var(--touch-min);text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:var(--status-ok);color:var(--text-on-ok);font-weight:800;text-decoration:none">📞 اتصال مباشر</a>` : ''}
+    ${safeTel ? `<a href="tel:${esc(safeTel)}" style="display:inline-flex;align-items:center;justify-content:center;width:100%;min-height:var(--touch-min);text-align:center;margin-top:12px;padding:12px;border-radius:12px;background:var(--status-ok);color:var(--text-on-ok);font-weight:800;text-decoration:none">📞 اتصال مباشر</a>` : ''}
   </div>`;
   document.body.appendChild(el);
-  const close = () => el.remove();
+  const close = () => {
+    destroyCapModalMap();
+    el.remove();
+  };
   el.onclick = (e) => { if (e.target === el) close(); };
   el.querySelector('#capx').onclick = close;
   if (hasLoc) {
-    const m = makeMap('capmap', [cap.lat, cap.lng], 15);
-    L.marker([cap.lat, cap.lng], { icon: emoji('🛵') }).addTo(m).bindTooltip(cap.name);
-    setTimeout(() => m.invalidateSize(), 60);
+    capModalMap = makeMap('capmap', [cap.lat, cap.lng], 15);
+    L.marker([cap.lat, cap.lng], { icon: emoji('🛵') }).addTo(capModalMap).bindTooltip(esc(cap.name || ''));
+    setTimeout(() => { if (capModalMap) capModalMap.invalidateSize(); }, 60);
   }
 }
 
