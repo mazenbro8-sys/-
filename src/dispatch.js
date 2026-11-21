@@ -3,6 +3,7 @@ import { config, dayOf } from './config.js';
 import { sendTo, sendToAdmins, isConnected } from './realtime.js';
 
 export const ACTIVE = ['accepted', 'picked_up', 'arrived'];
+export const CLOSED = ['delivered', 'cancelled', 'failed', 'expired'];
 
 export function haversineKm(a, b, c, d) {
   const R = 6371, rad = (x) => (x * Math.PI) / 180;
@@ -364,16 +365,28 @@ export async function releaseOffer(orderId, outcome) {
   }
 }
 
-export async function closeOrder(orderId, status, { actor, reason, liability = 0, liabilityReason = null } = {}) {
+export async function closeOrder(
+  orderId,
+  status,
+  { actor, reason, liability = 0, liabilityReason = null, expectedStatuses = null, expectedCaptainId = null } = {}
+) {
   let cancelledOfferedId = null;
   let deductionRes = null;
   let orderZoneId = null;
+  let closed = false;
   await tx(async () => {
     const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
+    if (!o || CLOSED.includes(o.status)) return;
+    if (expectedStatuses?.length && !expectedStatuses.includes(o.status)) return;
+    if (expectedCaptainId != null && o.captain_id !== expectedCaptainId) return;
     orderZoneId = o.zone_id;
     const now = Date.now();
-    await db.run(
-      `UPDATE orders SET status=?, closed_at=?, day=?, close_reason=?, commission=?, liability=?, liability_reason=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?`,
+    const statusClause = expectedStatuses?.length
+      ? `AND status IN (${expectedStatuses.map(() => '?').join(',')})`
+      : "AND status NOT IN ('delivered','cancelled','failed','expired')";
+    const capClause = expectedCaptainId != null ? ' AND captain_id=?' : '';
+    const upd = await db.run(
+      `UPDATE orders SET status=?, closed_at=?, day=?, close_reason=?, commission=?, liability=?, liability_reason=?, offered_captain_id=NULL, offer_expires_at=NULL WHERE id=? ${statusClause}${capClause}`,
       status,
       now,
       dayOf(now),
@@ -381,8 +394,11 @@ export async function closeOrder(orderId, status, { actor, reason, liability = 0
       0,
       liability,
       liabilityReason,
-      orderId
+      orderId,
+      ...(expectedStatuses?.length ? expectedStatuses : []),
+      ...(expectedCaptainId != null ? [expectedCaptainId] : [])
     );
+    if (!upd.changes) return;
     if (o.status === 'offered') {
       await db.run("UPDATE offers SET outcome='cancelled' WHERE order_id=? AND outcome='pending'", orderId);
       cancelledOfferedId = o.offered_captain_id;
@@ -398,13 +414,16 @@ export async function closeOrder(orderId, status, { actor, reason, liability = 0
       });
     }
     await addEvent(orderId, status, actor, { reason });
+    closed = true;
   });
+  if (!closed) return false;
   if (cancelledOfferedId) sendTo(cancelledOfferedId, { type: 'offer_end', order_id: orderId, reason: 'cancelled' });
   if (deductionRes && !deductionRes.duplicate) {
     sendTo(deductionRes.entry.captain_id, { type: 'balance', balance_points: deductionRes.balance_points, entry: deductionRes.entry });
     sendToAdmins({ type: 'balance', captain_id: deductionRes.entry.captain_id, balance_points: deductionRes.balance_points }, orderZoneId);
   }
   await notifyOrder(orderId);
+  return true;
 }
 
 const defaultAlertedTimeouts = new Set();
@@ -427,7 +446,7 @@ export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts
     let dispatched = false;
     if (o.status === 'searching') {
       if (elapsed > config.searchMaxMs) {
-        await closeOrder(o.id, 'expired', { reason: 'no_captain_available' });
+        await closeOrder(o.id, 'expired', { reason: 'no_captain_available', expectedStatuses: ['searching'] });
         alertedTimeouts.delete(o.id);
         continue;
       }

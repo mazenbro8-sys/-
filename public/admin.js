@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v32';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v33';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v29';
 import {
   getMarkerVisualSize,
@@ -3379,12 +3379,26 @@ authScreen('admin', (user) => {
       const btn = $('#liabSubmit');
       const pts = Number($('#liabPts').value);
       const reason = $('#liabReason').value.trim();
+      const clientRef = `liab_${orderId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       btn.disabled = true;
-      const res = await act(() => api(`/admin/orders/${orderId}/liability`, 'POST', { points: pts, reason }), 'تم خصم نقاط التسوية');
-      btn.disabled = false;
-      if (res) {
-        dlg.close();
-        if (onSaved) await onSaved(res);
+      let res = null;
+      try {
+        try {
+          res = await api(`/admin/orders/${orderId}/liability`, 'POST', { points: pts, reason, client_ref: clientRef });
+        } catch (err) {
+          if (err?.status === 409 && confirm(`${err.message}\n\nهل تريد تأكيد إضافة خصم تعويض آخر؟`)) {
+            res = await api(`/admin/orders/${orderId}/liability`, 'POST', { points: pts, reason, client_ref: `${clientRef}_c`, confirm: true });
+          } else if (err?.status !== 409) {
+            toast(err?.message || 'تعذر تنفيذ خصم النقاط');
+          }
+        }
+        if (res) {
+          toast('تم خصم نقاط التسوية');
+          dlg.close();
+          if (onSaved) await onSaved(res);
+        }
+      } finally {
+        btn.disabled = false;
       }
     };
   }

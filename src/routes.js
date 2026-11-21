@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { db, tx, addEvent, audit, orderCostPoints, walletEnforcement, pointsCutoverAt, pickupGpsRequired, applyPointsEntry, setSetting, generateUniqueCaptainTag, normalizeTag, NOTIFICATION_RETENTION_MS } from './db.js';
 import { config, dayOf } from './config.js';
 import { auth, signToken, sendTo, sendToAdmins, disconnectUser } from './realtime.js';
-import { ACTIVE, viewOrder, viewOrdersBatch, hydrateAdminOrders, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
+import { ACTIVE, CLOSED, viewOrder, viewOrdersBatch, hydrateAdminOrders, notifyOrder, dispatchOrder, releaseOffer, closeOrder, haversineKm, computeShortage, resolveOrderCost } from './dispatch.js';
 import { resolveAndParseGoogleMapsLink, GeoParseError } from './geo.js';
 
 export const api = express.Router();
@@ -328,8 +328,14 @@ M.get('/orders/:id', wrap(async (req, res) => {
 }));
 M.post('/orders/:id/cancel', wrap(async (req, res) => {
   const o = await ownOrder(req);
+  if (CLOSED.includes(o.status)) throw new HttpError(409, 'تم إغلاق الطلب مسبقاً');
   if (!['searching', 'offered'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب بعد قبول الكابتن، تواصل مع الإدارة');
-  await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason: 'merchant_cancelled' });
+  const closed = await closeOrder(o.id, 'cancelled', {
+    actor: req.user.id,
+    reason: 'merchant_cancelled',
+    expectedStatuses: ['searching', 'offered'],
+  });
+  if (!closed) throw new HttpError(409, 'تم قبول الطلب أو إغلاقه بالفعل');
   res.json({ ok: true });
 }));
 
@@ -474,6 +480,8 @@ async function captainWalletSummary(u) {
     reserved_points: reserved,
     available_points: avail,
     required_cost: rc.cost_points,
+    effective_cost_points: rc.cost_points,
+    exempt: rc.cost_points === 0,
     cost_source: rc.cost_source,
     wallet_enforcement: enforced ? 'on' : 'off',
     low_balance: enforced && avail < rc.cost_points,
@@ -643,20 +651,47 @@ C.post('/offers/:id/:action', wrap(async (req, res) => {
   res.json(await viewOrder(await db.get('SELECT * FROM orders WHERE id=?', id), 'captain'));
 }));
 
-const NEXT = { accepted: 'picked_up', picked_up: 'arrived', arrived: 'delivered' };
+const PREV_BY_NEXT = { picked_up: 'accepted', arrived: 'picked_up', delivered: 'arrived' };
+const STATUS_STEP = { accepted: 1, picked_up: 2, arrived: 3 };
 C.post('/orders/:id/status', wrap(async (req, res) => {
   const id = oid(req);
-  const o = await db.get('SELECT * FROM orders WHERE id=? AND captain_id=?', id, req.user.id);
-  if (!o || !ACTIVE.includes(o.status)) throw new HttpError(404, 'الطلب غير موجود أو مغلق');
   const to = req.body?.status;
+  if (!['picked_up', 'arrived', 'delivered', 'failed_customer'].includes(to)) {
+    throw bad('انتقال حالة غير صالح');
+  }
+  const o = await db.get('SELECT * FROM orders WHERE id=? AND captain_id=?', id, req.user.id);
+  if (!o) throw new HttpError(404, 'الطلب غير موجود');
+  if (CLOSED.includes(o.status) || !ACTIVE.includes(o.status)) {
+    throw new HttpError(409, 'تم إغلاق الطلب أو تغيرت حالته');
+  }
+  if (req.body?.expected_status != null && req.body.expected_status !== o.status) {
+    throw new HttpError(409, 'تغيرت حالة الطلب، يرجى تحديث الصفحة');
+  }
   if (to === 'failed_customer') {
     if (o.status === 'accepted') throw bad('لا يمكن الإبلاغ قبل استلام الطلب');
-    await closeOrder(id, 'failed', { actor: req.user.id, reason: 'customer_unreachable_or_wrong_address' });
+    const closed = await closeOrder(id, 'failed', {
+      actor: req.user.id,
+      reason: 'customer_unreachable_or_wrong_address',
+      expectedStatuses: ['picked_up', 'arrived'],
+      expectedCaptainId: req.user.id,
+    });
+    if (!closed) throw new HttpError(409, 'تم إغلاق الطلب أو تغيرت حالته');
     return res.json({ ok: true });
   }
-  if (NEXT[o.status] !== to) throw bad('انتقال حالة غير صالح');
+  const expectedPrev = PREV_BY_NEXT[to];
+  if (o.status !== expectedPrev) {
+    if (STATUS_STEP[o.status] >= STATUS_STEP[expectedPrev] + 1) {
+      throw new HttpError(409, 'تغيرت حالة الطلب مسبقاً، يرجى التحديث');
+    }
+    throw bad('انتقال حالة غير صالح');
+  }
   if (to === 'delivered') {
-    await closeOrder(id, 'delivered', { actor: req.user.id });
+    const closed = await closeOrder(id, 'delivered', {
+      actor: req.user.id,
+      expectedStatuses: ['arrived'],
+      expectedCaptainId: req.user.id,
+    });
+    if (!closed) throw new HttpError(409, 'تم إغلاق الطلب أو تغيرت حالته');
   } else {
     let pickupEventData = null;
     if (to === 'picked_up') {
@@ -690,8 +725,24 @@ C.post('/orders/:id/status', wrap(async (req, res) => {
         }
       }
     }
-    await db.run('UPDATE orders SET status=?, picked_at=COALESCE(picked_at, ?) WHERE id=?', to, to === 'picked_up' ? Date.now() : null, id);
-    await addEvent(id, to, req.user.id, pickupEventData);
+    await tx(async () => {
+      const fresh = await db.get('SELECT * FROM orders WHERE id=? AND captain_id=?', id, req.user.id);
+      if (!fresh || fresh.status !== expectedPrev) {
+        throw new HttpError(409, 'تم إغلاق الطلب أو تغيرت حالته');
+      }
+      const upd = await db.run(
+        'UPDATE orders SET status=?, picked_at=COALESCE(picked_at, ?) WHERE id=? AND captain_id=? AND status=?',
+        to,
+        to === 'picked_up' ? Date.now() : null,
+        id,
+        req.user.id,
+        expectedPrev
+      );
+      if (!upd.changes) {
+        throw new HttpError(409, 'تم إغلاق الطلب أو تغيرت حالته');
+      }
+      await addEvent(id, to, req.user.id, pickupEventData);
+    });
     await notifyOrder(id);
   }
   res.json({ ok: true });
@@ -716,7 +767,8 @@ C.get('/summary', wrap(async (req, res) => {
     total_delivered: totRow.n,
     deducted_today: deductedToday,
     balance_points: wallet.balance_points,
-    required_cost: wallet.effective_cost_points,
+    required_cost: wallet.required_cost,
+    effective_cost_points: wallet.effective_cost_points,
     exempt: wallet.exempt,
     zone_name: zoneRow?.name ?? null,
   });
@@ -1152,10 +1204,17 @@ A.post('/orders', wrap(async (req, res) => {
   let cap = null;
   if (b.captain_id != null && b.captain_id !== '') {
     const cid = int(b.captain_id, 'الكابتن', 1, 2 ** 31);
-    cap = zId != null
-      ? await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted' AND zone_id=?", cid, zId)
-      : await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted'", cid);
+    cap = await db.get("SELECT * FROM users WHERE id=? AND role='captain' AND status!='deleted'", cid);
     if (!cap) throw bad('الكابتن غير موجود');
+    if (zId != null && cap.zone_id !== zId) {
+      throw new HttpError(403, 'غير مصرح بالتعيين لكابتن خارج منطقتك');
+    }
+    if (cap.zone_id !== m.zone_id) {
+      throw bad('الكابتن لا ينتمي إلى منطقة المنشأة');
+    }
+    if (cap.status !== 'active') {
+      throw bad('حساب الكابتن غير مفعّل');
+    }
   }
   const now = Date.now();
   let costSnap = { cost_points: null, cost_source: null };
@@ -1178,7 +1237,7 @@ A.post('/orders', wrap(async (req, res) => {
     );
     await addEvent(r.lastInsertRowid, 'created', req.user.id);
     if (cap) {
-      await db.run("UPDATE users SET online=1, status='active', last_assigned_at=? WHERE id=?", now, cap.id);
+      await db.run('UPDATE users SET last_assigned_at=? WHERE id=?', now, cap.id);
       await addEvent(r.lastInsertRowid, 'admin_assigned', req.user.id, { captain_id: cap.id, cost_points: costSnap.cost_points, cost_source: costSnap.cost_source });
     }
     return Number(r.lastInsertRowid);
@@ -1322,10 +1381,11 @@ A.post('/orders/:id/notify-merchant', wrap(async (req, res) => {
 }));
 A.post('/orders/:id/cancel', wrap(async (req, res) => {
   const o = await getAdminOrder(req);
-  if (['delivered', 'cancelled', 'failed', 'expired'].includes(o.status)) throw bad('لا يمكن إلغاء الطلب');
+  if (CLOSED.includes(o.status)) throw new HttpError(409, 'تم إغلاق الطلب مسبقاً');
   const customReason = optStr(req.body?.reason, 'سبب الإلغاء', 200);
   const reason = customReason || 'admin_cancelled';
-  await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason });
+  const closed = await closeOrder(o.id, 'cancelled', { actor: req.user.id, reason });
+  if (!closed) throw new HttpError(409, 'تم إغلاق الطلب مسبقاً');
   await audit(req.user.id, 'order_cancel', { id: o.id, reason });
   if (customReason) {
     sendTo(o.merchant_id, {
@@ -1360,23 +1420,56 @@ A.post('/orders/:id/liability', requireSuperAdmin, wrap(async (req, res) => {
   if (!o.captain_id) throw bad('الطلب بلا كابتن');
   const pts = int(req.body?.points, 'النقاط', 1, 1_000_000);
   const reason = str(req.body?.reason, 'السبب', 3, 200);
+  const rawRef = req.body?.client_ref != null ? String(req.body.client_ref).trim() : '';
+  const clientRef = rawRef ? str(rawRef, 'مرجع العملية', 1, 80) : null;
+  const confirm = req.body?.confirm === true;
   const adj = await tx(async () => {
-    const res = await applyPointsEntry({
+    if (clientRef != null) {
+      const existingRef = await db.get('SELECT * FROM points_ledger WHERE client_ref=?', clientRef);
+      if (existingRef) {
+        if (existingRef.kind !== 'adjustment' || existingRef.order_id !== o.id || existingRef.captain_id !== o.captain_id) {
+          throw new HttpError(409, 'مرجع العملية مستخدم مسبقاً لعملية مختلفة');
+        }
+        const u = await db.get('SELECT balance_points FROM users WHERE id=?', existingRef.captain_id);
+        return {
+          duplicate: true,
+          balance_points: u?.balance_points ?? existingRef.balance_after,
+          entry: existingRef,
+          points: Math.abs(Number(existingRef.amount)),
+        };
+      }
+    }
+    const freshOrder = await db.get('SELECT liability FROM orders WHERE id=?', o.id);
+    const priorAdj = await db.get("SELECT id FROM points_ledger WHERE order_id=? AND kind='adjustment' LIMIT 1", o.id);
+    if ((Number(freshOrder?.liability ?? 0) > 0 || priorAdj) && !confirm) {
+      throw new HttpError(409, 'تم تسجيل خصم تعويض على هذا الطلب مسبقاً، يرجى التأكيد الصريح لإضافة خصم آخر');
+    }
+    const resEntry = await applyPointsEntry({
       captainId: o.captain_id,
       kind: 'adjustment',
       amount: -pts,
       orderId: o.id,
       actorId: req.user.id,
       note: reason,
+      clientRef,
     });
     await db.run('UPDATE orders SET liability=COALESCE(liability,0)+?, liability_reason=? WHERE id=?', pts, reason, o.id);
-    await addEvent(o.id, 'liability', req.user.id, { points: pts, reason, balance_after: res.balance_points });
-    await audit(req.user.id, 'order_liability', { id: o.id, points: pts, reason, ledger_id: res.entry.id, balance_after: res.balance_points });
-    return res;
+    await addEvent(o.id, 'liability', req.user.id, { points: pts, reason, balance_after: resEntry.balance_points });
+    await audit(req.user.id, 'order_liability', {
+      id: o.id,
+      points: pts,
+      reason,
+      client_ref: clientRef,
+      ledger_id: resEntry.entry.id,
+      balance_after: resEntry.balance_points,
+    });
+    return { ...resEntry, points: pts };
   });
-  sendTo(o.captain_id, { type: 'balance', balance_points: adj.balance_points, delta: -pts, kind: 'adjustment', order_id: o.id, note: reason });
-  await notifyOrder(o.id);
-  res.json({ ok: true, ledger_id: adj.entry.id, balance_points: adj.balance_points, points: pts });
+  if (!adj.duplicate) {
+    sendTo(o.captain_id, { type: 'balance', balance_points: adj.balance_points, delta: -pts, kind: 'adjustment', order_id: o.id, note: reason });
+    await notifyOrder(o.id);
+  }
+  res.json({ ok: true, duplicate: Boolean(adj.duplicate), ledger_id: adj.entry.id, balance_points: adj.balance_points, points: adj.points });
 }));
 
 A.get('/captains/:id/ledger', wrap(async (req, res) => {

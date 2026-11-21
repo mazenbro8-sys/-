@@ -7,7 +7,7 @@ import {
   mountNotificationsBell, debounce,
   normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery,
   shouldSkipWebLocationPost
-} from './shared.js?v=panther2026v32';
+} from './shared.js?v=panther2026v33';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -659,7 +659,7 @@ authScreen('captain', (user) => {
       const w = await api('/captain/wallet');
       const kindLbl = (k) => k === 'topup' ? 'شحن' : k === 'deduction' ? 'خصم طلب' : 'تعديل';
       setCaptainBalance(w.balance_points);
-      $('#capCostVal').textContent = `${w.required_cost ?? 25} نقطة`;
+      $('#capCostVal').textContent = `${w.effective_cost_points ?? w.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = formatAvailablePoints(w);
       syncLowBalWarn(w.low_balance);
       $('#capLedgerRows').innerHTML = (w.entries || []).map((e) => `<tr>
@@ -712,7 +712,7 @@ authScreen('captain', (user) => {
     $('#stActiveCount').textContent = allAct.length;
     if (st.balance_points !== undefined) {
       setCaptainBalance(st.balance_points);
-      $('#capCostVal').textContent = `${st.required_cost ?? 25} نقطة`;
+      $('#capCostVal').textContent = `${st.effective_cost_points ?? st.required_cost ?? 25} نقطة`;
       $('#capAvailVal').textContent = formatAvailablePoints(st);
       syncLowBalWarn(st.low_balance);
     }
@@ -763,10 +763,12 @@ authScreen('captain', (user) => {
       await act(() => api(`/captain/offers/${o.id}/reject`, 'POST'), 'تم رفض العرض');
       await refresh();
     };
+    const offerCostPoints = st.effective_cost_points ?? st.required_cost ?? 0;
+    const offerIsExempt = st.exempt === true || (st.exempt == null && offerCostPoints === 0);
     notifCtrl?.syncCaptainOffer({
       offer: o,
-      exempt: st.exempt,
-      effective_cost_points: st.effective_cost_points,
+      exempt: offerIsExempt,
+      effective_cost_points: offerCostPoints,
       onAccept: acceptCurrentOffer,
       onReject: rejectCurrentOffer,
     });
@@ -780,7 +782,7 @@ authScreen('captain', (user) => {
   <p style="background:var(--brand-primary-soft);padding:12px 14px;border-radius:12px;border:1px solid var(--border-brand-soft);margin:10px 0">
     <b>📍 عنوان التوصيل:</b> ${esc(o.customer_address || '—')}
   </p>
-  <p class="mut">تكلفة الطلب عند التسليم: <b>${st.exempt ? 'معفى (0 نقطة)' : points(st.effective_cost_points ?? 0)}</b></p>
+  <p class="mut">تكلفة الطلب عند التسليم: <b>${offerIsExempt ? 'معفى (0 نقطة)' : points(offerCostPoints)}</b></p>
   <div id="cd" style="text-align:center;font-size:18px;font-weight:900;color:var(--status-warn-text);padding:8px">
     ⏱️ الوقت المتبقي: <span id="cdVal">--</span> ثانية
   </div>

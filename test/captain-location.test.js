@@ -431,8 +431,8 @@ test('Android APK 1.4.4 manifest, build.gradle, and cache-bust v31 match backgro
   assert.match(gradle, /versionCode 10/);
   assert.match(gradle, /versionName "1\.4\.4"/);
 
-  assert.ok(captainHtml.includes('captain.js?v=panther2026v32'));
-  assert.ok(captainJs.includes('./shared.js?v=panther2026v32'));
+  assert.ok(captainHtml.includes('captain.js?v=panther2026v33'));
+  assert.ok(captainJs.includes('./shared.js?v=panther2026v33'));
 });
 
 test('CaptainService.java corrective pass: 90s native window, seq == sendSeq guard, FGS stopSelf fallback, and permission-revoked downgrade', () => {
