@@ -219,8 +219,6 @@ export async function computeShortage(zoneId = null, preloaded = null) {
         ...(hasZ ? [zoneId] : [])
       );
 
-  const reachableOnlineRows = onlineRows.filter((c) => isCaptainReachable(c, now));
-
   const searchingIds = [];
   for (const o of waitingRows) {
     const effectiveStart = o.delay_until && o.delay_until > o.created_at ? o.delay_until : o.created_at;
@@ -255,14 +253,14 @@ export async function computeShortage(zoneId = null, preloaded = null) {
     }
     if (o.status !== 'searching') continue;
     const tried = triedByOrder.get(o.id);
-    const hasEligible = reachableOnlineRows.some(
+    const hasEligible = onlineRows.some(
       (c) => c.zone_id === o.zone_id && !(tried && tried.has(c.id)) && isWalletEligible(c, defaultCost, enforced, now)
     );
     if (!hasEligible) escalatedRaw.push(o);
   }
 
   const escalatedOrders = await hydrateAdminOrders(escalatedRaw, preloaded?.userById);
-  const eligibleRows = reachableOnlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
+  const eligibleRows = onlineRows.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
   const freeOnlineCaptains = eligibleRows.filter((r) => !r.is_busy).length;
   const onlineCaptains = eligibleRows.length;
   const alert = escalatedOrders.length > 0;
@@ -273,6 +271,7 @@ export async function computeShortage(zoneId = null, preloaded = null) {
     freeOnlineCaptains,
     onlineCaptains,
     orders: escalatedOrders,
+    shortageTimeoutMs: config.shortageTimeoutMs,
   };
 }
 
@@ -311,9 +310,10 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
-  const freeRows = freeAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now) && isCaptainReachable(r, now));
-  const freeConnected = freeRows.find((r) => isConnected(r.id));
-  if (freeConnected) return freeConnected;
+  const freeRows = freeAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
+  const freeReachable = freeRows.find((r) => isCaptainReachable(r, now));
+  if (freeReachable) return freeReachable;
+  if (freeRows.length) return freeRows[0];
 
   const busyAll = await db.all(
     `SELECT u.id, u.balance_points, u.cost_override, u.exempt_from, u.exempt_until, u.last_loc_at,
@@ -326,9 +326,9 @@ async function pickCaptain(order) {
     order.zone_id,
     order.id
   );
-  const busyRows = busyAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now) && isCaptainReachable(r, now));
-  const busyConnected = busyRows.find((r) => isConnected(r.id));
-  return busyConnected ?? freeRows[0] ?? busyRows[0] ?? null;
+  const busyRows = busyAll.filter((r) => isWalletEligible(r, defaultCost, enforced, now));
+  const busyReachable = busyRows.find((r) => isCaptainReachable(r, now));
+  return busyReachable ?? busyRows[0] ?? null;
 }
 
 export async function dispatchOrder(orderId) {
@@ -349,15 +349,19 @@ export async function dispatchOrder(orderId) {
     if (!o) return;
     const c = await pickCaptain(o);
     if (!c) return;
-    const exp = Date.now() + config.offerTimeoutMs;
-    await db.run("UPDATE orders SET status='offered', offered_captain_id=?, offer_expires_at=? WHERE id=?", c.id, exp, o.id);
-    await db.run("INSERT INTO offers(order_id,captain_id,outcome,at) VALUES(?,?, 'pending', ?)", o.id, c.id, Date.now());
+    const exp = now + config.offerTimeoutMs;
+    const upd = await db.run(
+      "UPDATE orders SET status='offered', offered_captain_id=?, offer_expires_at=? WHERE id=? AND status='searching'",
+      c.id, exp, o.id
+    );
+    if (!upd.changes) return;
+    await db.run("INSERT INTO offers(order_id,captain_id,outcome,at) VALUES(?,?, 'pending', ?)", o.id, c.id, now);
     await addEvent(o.id, 'offered', c.id, { expires_at: exp });
     offered = { captain: c.id };
   });
   if (offered) {
     const o = await db.get('SELECT * FROM orders WHERE id=?', orderId);
-    sendTo(offered.captain, { type: 'offer', order: await viewOrder(o, 'captain') });
+    sendTo(offered.captain, { type: 'offer', order: await viewOrder(o, 'captain'), server_now: Date.now() });
     await notifyOrder(orderId);
   }
   return !!offered;
@@ -367,15 +371,19 @@ export async function dispatchOrder(orderId) {
 export async function releaseOffer(orderId, outcome) {
   let prevCaptainId = null;
   let merchantId = null;
+  let released = false;
   await tx(async () => {
     const o = await db.get("SELECT * FROM orders WHERE id=? AND status='offered'", orderId);
     if (!o) return;
     prevCaptainId = o.offered_captain_id;
     merchantId = o.merchant_id;
     await db.run("UPDATE offers SET outcome=? WHERE order_id=? AND captain_id=? AND outcome='pending'", outcome, o.id, o.offered_captain_id);
-    await db.run("UPDATE orders SET status='searching', offered_captain_id=NULL, offer_expires_at=NULL WHERE id=?", o.id);
+    const upd = await db.run("UPDATE orders SET status='searching', offered_captain_id=NULL, offer_expires_at=NULL WHERE id=? AND status='offered'", o.id);
+    if (!upd.changes) return;
     await addEvent(o.id, outcome, o.offered_captain_id);
+    released = true;
   });
+  if (!released) return false;
   if (prevCaptainId) sendTo(prevCaptainId, { type: 'offer_end', order_id: orderId, reason: outcome });
   const reoffered = await dispatchOrder(orderId);
   if (reoffered) {
@@ -391,6 +399,7 @@ export async function releaseOffer(orderId, outcome) {
   } else {
     await notifyOrder(orderId);
   }
+  return true;
 }
 
 export async function closeOrder(
@@ -456,9 +465,8 @@ export async function closeOrder(
 
 const defaultAlertedTimeouts = new Set();
 
-/** Single periodic dispatcher sweep: expire timed-out offers, dispatch searching orders only when a captain exists, and alert once on 5m timeout. */
-export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts) {
-  const now = Date.now();
+/** Single periodic dispatcher sweep: expire timed-out offers, dispatch searching orders only when a captain exists, and alert once on shortage timeout. */
+export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts, now = Date.now()) {
   for (const o of await db.all("SELECT id FROM orders WHERE status='offered' AND offer_expires_at<?", now)) {
     await releaseOffer(o.id, 'timeout');
   }
@@ -489,10 +497,12 @@ export async function runDispatcherTick(alertedTimeouts = defaultAlertedTimeouts
 
 /**
  * Sweep idle captains stuck online=1 with no WS and no GPS/heartbeat signal for > config.captainSweepStaleMs (30m).
+ * Disabled by default when `config.captainSweepEnabled` is false (enable via CAPTAIN_SWEEP_ENABLED=true).
  * Never sweeps captains with an active order or pending offer, nor newly-created captains in their first 30m.
- * Performs zero writes when no candidates qualify; otherwise executes one conditional UPDATE and broadcasts for changed rows.
+ * Performs zero writes when disabled or no candidates qualify; otherwise executes one conditional UPDATE and broadcasts for changed rows.
  */
 export async function sweepStaleCaptains(now = Date.now()) {
+  if (!config.captainSweepEnabled) return [];
   const cutoff = now - config.captainSweepStaleMs;
   const candidates = await db.all(
     `SELECT id, zone_id, last_loc_at, created_at
@@ -552,7 +562,7 @@ export async function sweepStaleCaptains(now = Date.now()) {
   return changedRows;
 }
 
-/** Periodic tick: expire offers, (re)dispatch waiting orders, trigger 5m shortage timeout, expire stale searches, and run 60s zombie sweep. */
+/** Periodic tick: expire offers, (re)dispatch waiting orders, trigger shortage timeout, expire stale searches, and optionally run zombie sweep when enabled. */
 export function startDispatcher() {
   let running = false;
   setInterval(async () => {
@@ -564,15 +574,17 @@ export function startDispatcher() {
     finally { running = false; }
   }, 5_000);
 
-  let sweeping = false;
-  const runSweep = async () => {
-    if (sweeping) return;
-    sweeping = true;
-    try {
-      await sweepStaleCaptains();
-    } catch (e) { console.error('presence sweep', e); }
-    finally { sweeping = false; }
-  };
-  setTimeout(runSweep, 10_000).unref?.();
-  setInterval(runSweep, config.captainSweepIntervalMs).unref?.();
+  if (config.captainSweepEnabled) {
+    let sweeping = false;
+    const runSweep = async () => {
+      if (sweeping) return;
+      sweeping = true;
+      try {
+        await sweepStaleCaptains();
+      } catch (e) { console.error('presence sweep', e); }
+      finally { sweeping = false; }
+    };
+    setTimeout(runSweep, 10_000).unref?.();
+    setInterval(runSweep, config.captainSweepIntervalMs).unref?.();
+  }
 }

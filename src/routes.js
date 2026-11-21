@@ -542,7 +542,12 @@ C.get('/state', wrap(async (req, res) => {
     activeOrders: actViews,
     offer: offView,
     ...wallet,
-    intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
+    server_now: Date.now(),
+    intervals: {
+      active: config.activeLocIntervalMs,
+      idle: config.idleLocIntervalMs,
+      offerTimeoutMs: config.offerTimeoutMs,
+    },
   });
 }));
 
@@ -940,7 +945,13 @@ A.get('/live', wrap(async (req, res) => {
     shortage,
     order_cost_points: defaultCost,
     wallet_enforcement: enforced ? 'on' : 'off',
-    intervals: { active: config.activeLocIntervalMs, idle: config.idleLocIntervalMs },
+    intervals: {
+      active: config.activeLocIntervalMs,
+      idle: config.idleLocIntervalMs,
+      offerTimeoutMs: config.offerTimeoutMs,
+      shortageTimeoutMs: config.shortageTimeoutMs,
+      searchMaxMs: config.searchMaxMs,
+    },
   });
 }));
 
@@ -1365,11 +1376,12 @@ A.post('/orders/:id/assign-captain', wrap(async (req, res) => {
     return res.json({ needs_confirm: true, warning, order_id: id, captain_id: cap.id });
   }
   await tx(async () => {
-    await db.run('DELETE FROM offers WHERE order_id=?', id);
-    await db.run(
-      'UPDATE orders SET status=?, captain_id=?, cost_points=?, cost_source=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=?',
+    const upd = await db.run(
+      "UPDATE orders SET status=?, captain_id=?, cost_points=?, cost_source=?, accepted_at=COALESCE(accepted_at, ?), offered_captain_id=NULL, offer_expires_at=NULL, delay_until=NULL, closed_at=NULL, close_reason=NULL WHERE id=? AND status NOT IN ('delivered','cancelled','failed','expired','picked_up','arrived')",
       'accepted', cap.id, costSnap.cost_points, costSnap.cost_source, now, id
     );
+    if (!upd.changes) throw new HttpError(409, 'تغيرت حالة الطلب، يرجى التحديث');
+    await db.run('DELETE FROM offers WHERE order_id=?', id);
     await db.run('UPDATE users SET last_assigned_at=? WHERE id=?', now, cap.id);
     await addEvent(id, 'admin_assigned', req.user.id, { captain_id: cap.id, from_captain: oldCapId, cost_points: costSnap.cost_points, cost_source: costSnap.cost_source });
   });

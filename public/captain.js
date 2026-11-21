@@ -7,7 +7,7 @@ import {
   mountNotificationsBell, debounce,
   normalizeGpsReading, shouldAcceptGpsReading, evaluateCaptainLocationSend, evaluateStaleRecovery,
   shouldSkipWebLocationPost
-} from './shared.js?v=panther2026v34';
+} from './shared.js?v=panther2026v35';
 
 if ('serviceWorker' in navigator && !isNativeApk()) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -230,7 +230,8 @@ authScreen('captain', (user) => {
 
   // ---------- State & Preferences ----------
   let currentTab = 'home';
-  let st = { online: false, active: null, activeOrders: [], offer: null, intervals: { active: 10000, idle: 60000 } };
+  let st = { online: false, active: null, activeOrders: [], offer: null, intervals: { active: 10000, idle: 60000, offerTimeoutMs: 60000 } };
+  let serverClockOffsetMs = 0;
   let allHistory = [], histFilter = 'all', histQuery = '';
   let cancelHistorySearch = null;
   let pos = null, lastGoodFixAt = 0, watchId = null, lastSent = 0, lastSentPos = null, lastStaleRecoveryAt = 0, staleRecoveryAttempts = 0, staleRecoveryInFlight = false;
@@ -611,6 +612,9 @@ authScreen('captain', (user) => {
   // ---------- Data Refresh & Rendering ----------
   async function refresh() {
     st = await api('/captain/state');
+    if (Number.isFinite(Number(st?.server_now))) {
+      serverClockOffsetMs = Date.now() - Number(st.server_now);
+    }
     try {
       window.PantherNative?.syncState(getServerUrl() || location.origin, getToken() || '', Boolean(st.online));
     } catch {}
@@ -729,6 +733,12 @@ authScreen('captain', (user) => {
     st.online ? startGps() : stopGps();
   }
 
+  function getOfferRemainingSecs(offer) {
+    const exp = Number(offer?.offer_expires_at || 0);
+    if (!Number.isFinite(exp) || exp <= 0) return 0;
+    return Math.max(0, Math.round((exp - (Date.now() - serverClockOffsetMs)) / 1000));
+  }
+
   function renderOffer() {
     clearInterval(cd);
     const o = st.offer, box = $('#offer');
@@ -769,9 +779,11 @@ authScreen('captain', (user) => {
       offer: o,
       exempt: offerIsExempt,
       effective_cost_points: offerCostPoints,
+      clockOffsetMs: serverClockOffsetMs,
       onAccept: acceptCurrentOffer,
       onReject: rejectCurrentOffer,
     });
+    const initSecs = getOfferRemainingSecs(o);
     box.innerHTML = `<div class="card offer offer-sheet">
   <div class="row-head">
     <h3>🔔 طلب توصيل جديد — <span dir="ltr">${serialNo(o)}</span></h3>
@@ -784,7 +796,7 @@ authScreen('captain', (user) => {
   </p>
   <p class="mut">تكلفة الطلب عند التسليم: <b>${offerIsExempt ? 'معفى (0 نقطة)' : points(offerCostPoints)}</b></p>
   <div id="cd" style="text-align:center;font-size:18px;font-weight:900;color:var(--status-warn-text);padding:8px">
-    ⏱️ الوقت المتبقي: <span id="cdVal">--</span> ثانية
+    ⏱️ الوقت المتبقي: <span id="cdVal">${enDigits(initSecs)}</span> ثانية
   </div>
   <div class="row" style="margin-top:12px">
     <button type="button" class="ok big" id="acc">✅ قبول الطلب</button>
@@ -792,9 +804,9 @@ authScreen('captain', (user) => {
   </div>
 </div>`;
     const tick = () => {
-      const s = Math.max(0, Math.round((o.offer_expires_at - Date.now()) / 1000));
+      const s = getOfferRemainingSecs(o);
       const e = document.getElementById('cdVal');
-      if (e) e.textContent = s;
+      if (e) e.textContent = enDigits(s);
       notifCtrl?.updateCaptainOfferCountdown?.(s);
       if (!s) { clearInterval(cd); setTimeout(refresh, 1500); }
     };
@@ -1220,6 +1232,9 @@ authScreen('captain', (user) => {
       toast('💳 تم تحديث رصيد محفظتك');
       refresh();
     } else if (m.type === 'offer' || m.type === 'offer_end' || m.type === 'order') {
+      if (Number.isFinite(Number(m.server_now))) {
+        serverClockOffsetMs = Date.now() - Number(m.server_now);
+      }
       refresh();
     }
   });

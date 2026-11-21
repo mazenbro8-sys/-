@@ -184,7 +184,7 @@ test('F-05: /auth/password and /admin/users/:id/reset-password immediately disco
   assert.equal(isConnected(u1.id), false);
 });
 
-test('F-02: pickCaptain and computeShortage ignore unreachable online=1 captains and prefer connected over recent unconnected', async () => {
+test('F-02: online unreachable captains remain eligible while reachable captains are tried first per pass (free before busy)', async () => {
   const zTest = (await call('/admin/zones', 'POST', { name: 'منطقة-وصول-2' }, admTok)).data.id;
   const mZ = await createUser({
     role: 'merchant', phone: '0928882001', name: 'تاجر وصول', business_name: 'مطعم وصول',
@@ -201,42 +201,46 @@ test('F-02: pickCaptain and computeShortage ignore unreachable online=1 captains
 
   assert.equal(isCaptainReachable({ id: cZombie.id, last_loc_at: now - (config.captainReachableMs + 120_000) }, now), false);
 
-  // Creating an order with ONLY cZombie online=1 must stay searching and raise computeShortage alert!
+  // Creating an order with ONLY cZombie online=1 now still offers to cZombie and does NOT raise shortage!
   const ordZombie = (await call('/merchant/orders', 'POST', { customer_address: 'طلب منطقة الزومبي' }, mZ.tok)).data;
-  assert.equal(ordZombie.status, 'searching');
-  assert.equal(ordZombie.offered_captain_id ?? null, null);
+  assert.equal(ordZombie.status, 'offered');
+  assert.equal((await db.get('SELECT offered_captain_id FROM orders WHERE id=?', ordZombie.id)).offered_captain_id, cZombie.id);
   const shortOnlyZombie = await computeShortage(zTest);
-  assert.equal(shortOnlyZombie.alert, true);
-  assert.equal(shortOnlyZombie.onlineCaptains, 0);
+  assert.equal(shortOnlyZombie.alert, false);
+  assert.equal(shortOnlyZombie.onlineCaptains, 1);
+  assert.equal(shortOnlyZombie.freeOnlineCaptains, 1);
 
-  // Give cRecent online=1 + /captain/state heartbeat (no GPS, no WS) -> reachable!
+  await call(`/admin/orders/${ordZombie.id}/cancel`, 'POST', {}, admTok);
+
+  // When both cZombie (earlier last_assigned_at/id, unreachable) and cRecent (free, heartbeat reachable) exist, cRecent wins Pass 1!
   await db.run('UPDATE users SET online=1, last_loc_at=NULL WHERE id=?', cRecent.id);
   const stCall = await call('/captain/state', 'GET', null, cRecent.tok);
   assert.equal(stCall.status, 200);
   assert.equal(isCaptainReachable({ id: cRecent.id, last_loc_at: null }), true);
 
-  assert.equal(await dispatchOrder(ordZombie.id), true);
-  const afterDispatch1 = await db.get('SELECT status, offered_captain_id FROM orders WHERE id=?', ordZombie.id);
-  assert.equal(afterDispatch1.status, 'offered');
-  assert.equal(afterDispatch1.offered_captain_id, cRecent.id, 'must skip zombie and offer to reachable heartbeat captain');
-  const shortWithRecent = await computeShortage(zTest);
-  assert.equal(shortWithRecent.onlineCaptains, 1);
+  const ordPreferReachable = (await call('/merchant/orders', 'POST', { customer_address: 'تفضيل المتاح قريباً' }, mZ.tok)).data;
+  assert.equal(ordPreferReachable.status, 'offered');
+  assert.equal(
+    (await db.get('SELECT offered_captain_id FROM orders WHERE id=?', ordPreferReachable.id)).offered_captain_id,
+    cRecent.id,
+    'reachable free captain must be tried before unreachable free captain'
+  );
+  await call(`/admin/orders/${ordPreferReachable.id}/cancel`, 'POST', {}, admTok);
 
-  // Cancel ordZombie; now test connected Pass 2 captain preferred over unconnected-but-recent Pass 1 captain
-  await call(`/admin/orders/${ordZombie.id}/cancel`, 'POST', {}, admTok);
+  // Pass 1 (free) remains ahead of Pass 2 (busy even if WS-connected)
   await db.run('UPDATE users SET online=1, last_loc_at=? WHERE id=?', now - 10_000, cConnBusy.id);
   const activeForBusy = (await call('/admin/orders', 'POST', {
     merchant_id: mZ.id, captain_id: cConnBusy.id, customer_address: 'طلب نشط لمتصل',
   }, admTok)).data;
   const connBusyWs = await connectTestWs(cConnBusy.tok);
-  touchCaptainSeen(cRecent.id, now); // free, recent, no WS
+  touchCaptainSeen(cRecent.id, now);
 
-  const ordPreferConn = (await call('/merchant/orders', 'POST', { customer_address: 'تفضيل المتصل' }, mZ.tok)).data;
-  assert.equal(ordPreferConn.status, 'offered');
-  const rowPrefer = await db.get('SELECT offered_captain_id FROM orders WHERE id=?', ordPreferConn.id);
-  assert.equal(rowPrefer.offered_captain_id, cConnBusy.id, 'connected captain across both passes beats unconnected recent captain');
+  const ordPreferFree = (await call('/merchant/orders', 'POST', { customer_address: 'الحر قبل المشغول' }, mZ.tok)).data;
+  assert.equal(ordPreferFree.status, 'offered');
+  const rowPrefer = await db.get('SELECT offered_captain_id FROM orders WHERE id=?', ordPreferFree.id);
+  assert.equal(rowPrefer.offered_captain_id, cRecent.id, 'Pass 1 free captain remains before Pass 2 busy WS captain');
 
-  await call(`/admin/orders/${ordPreferConn.id}/cancel`, 'POST', {}, admTok);
+  await call(`/admin/orders/${ordPreferFree.id}/cancel`, 'POST', {}, admTok);
   await call(`/admin/orders/${activeForBusy.id}/cancel`, 'POST', {}, admTok);
   connBusyWs.ws.close();
   await db.run('UPDATE users SET online=0 WHERE id IN (?,?,?)', cZombie.id, cRecent.id, cConnBusy.id);
@@ -244,7 +248,7 @@ test('F-02: pickCaptain and computeShortage ignore unreachable online=1 captains
   clearCaptainSeen(cConnBusy.id);
 });
 
-test('F-02: sweepStaleCaptains only sweeps idle stale (>30m) captains without WS/heartbeat/active/offered', async () => {
+test('F-02: sweepStaleCaptains (when enabled) only sweeps idle stale (>30m) captains without WS/heartbeat/active/offered', async () => {
   const admWs = await connectTestWs(admTok);
   const zSweep = (await call('/admin/zones', 'POST', { name: 'منطقة-كنس-2' }, admTok)).data.id;
   const mSw = await createUser({
@@ -290,8 +294,15 @@ test('F-02: sweepStaleCaptains only sweeps idle stale (>30m) captains without WS
     mSw.id, zSweep, '—', '', 'معروض محمي', cOffered.id, now + 60_000, now
   );
 
-  const swept = await sweepStaleCaptains(now);
-  assert.deepEqual(swept.map((x) => x.id), [cStale.id], 'only the idle stale captain without WS or heartbeat must be swept');
+  const prevSweep = config.captainSweepEnabled;
+  config.captainSweepEnabled = true;
+  let swept = [];
+  try {
+    swept = await sweepStaleCaptains(now);
+  } finally {
+    config.captainSweepEnabled = prevSweep;
+  }
+  assert.deepEqual(swept.map((x) => x.id), [cStale.id], 'only the idle stale captain without WS or heartbeat must be swept when enabled');
 
   assert.equal((await db.get('SELECT online FROM users WHERE id=?', cStale.id)).online, 0);
   assert.equal((await db.get('SELECT online FROM users WHERE id=?', cBrandNew.id)).online, 1);

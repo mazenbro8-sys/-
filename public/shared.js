@@ -1762,7 +1762,7 @@ export function mountNotificationsBell(containerEl, { insertBefore = null } = {}
         offerSlotEl.classList.add('hide');
         return;
       }
-      const secs = Math.max(0, Math.round(((o.offer_expires_at || 0) - Date.now()) / 1000));
+      const secs = Math.max(0, Math.round(((o.offer_expires_at || 0) - (Date.now() - (activeOfferState?.clockOffsetMs || 0))) / 1000));
       offerSlotEl.classList.remove('hide');
       offerSlotEl.innerHTML = `
         <div class="notif-offer-priority-head">

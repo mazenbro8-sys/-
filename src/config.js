@@ -31,12 +31,13 @@ export const config = {
   jwtSecret: loadSecret(),
   jwtTtl: '30d',
   prod: process.env.NODE_ENV === 'production',
-  offerTimeoutMs: Number(process.env.OFFER_TIMEOUT_MS || 30_000), // 30 seconds
-  shortageTimeoutMs: Number(process.env.SHORTAGE_TIMEOUT_MS || 5 * 60_000), // 5 minutes
-  searchMaxMs: 10 * 60_000,
+  offerTimeoutMs: Number(process.env.OFFER_TIMEOUT_MS || 60_000), // 60 seconds
+  shortageTimeoutMs: Number(process.env.SHORTAGE_TIMEOUT_MS || 8 * 60_000), // 8 minutes
+  searchMaxMs: Number(process.env.SEARCH_MAX_MS || 20 * 60_000), // 20 minutes
   activeLocIntervalMs: 10_000,
   idleLocIntervalMs: 60_000,
   captainReachableMs: Number(process.env.CAPTAIN_REACHABLE_MS || 5 * 60_000), // 5 minutes
+  captainSweepEnabled: process.env.CAPTAIN_SWEEP_ENABLED === 'true',
   captainSweepStaleMs: Number(process.env.CAPTAIN_SWEEP_STALE_MS || 30 * 60_000), // 30 minutes
   captainSweepIntervalMs: Number(process.env.CAPTAIN_SWEEP_INTERVAL_MS || 60_000), // 60 seconds
   defaultCommission: 2000,

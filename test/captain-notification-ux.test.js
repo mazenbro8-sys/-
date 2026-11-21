@@ -99,7 +99,7 @@ test('CaptainService.java groups admin messages under one Android notification g
   assert.equal(vibrateCalls.length, 1, 'checkUnreadMessages must vibrate at most once per canChime burst');
 });
 
-test('Public assets and CSS use non-overlapping top toast, 48px targets, bottom-sheet inbox, and consistent v34 cache busting', () => {
+test('Public assets and CSS use non-overlapping top toast, 48px targets, bottom-sheet inbox, and consistent v35 JS cache busting', () => {
   const appCss = fs.readFileSync(new URL('../public/app.css', import.meta.url), 'utf8');
   assert.match(appCss, /#toast\.toast-region\s*\{[\s\S]*?inset-block-start:/);
   assert.doesNotMatch(appCss, /body:has\(\.bottom-nav\)\s+#toast\s*\{/);
@@ -113,10 +113,10 @@ test('Public assets and CSS use non-overlapping top toast, 48px targets, bottom-
   }
   for (const file of ['captain.js', 'admin.js', 'merchant.js', 'download.js']) {
     const js = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
-    assert.match(js, /shared\.js\?v=panther2026v34/, `${file} must import shared.js?v=panther2026v34`);
+    assert.match(js, /shared\.js\?v=panther2026v35/, `${file} must import shared.js?v=panther2026v35`);
   }
-  assert.ok(fs.readFileSync(new URL('../public/captain.html', import.meta.url), 'utf8').includes('captain.js?v=panther2026v34'));
-  assert.ok(fs.readFileSync(new URL('../public/admin.html', import.meta.url), 'utf8').includes('/admin.js?v=panther2026v34'));
-  assert.ok(fs.readFileSync(new URL('../public/merchant.html', import.meta.url), 'utf8').includes('/merchant.js?v=panther2026v34'));
-  assert.ok(fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8').includes('/download.js?v=panther2026v34'));
+  assert.ok(fs.readFileSync(new URL('../public/captain.html', import.meta.url), 'utf8').includes('captain.js?v=panther2026v35'));
+  assert.ok(fs.readFileSync(new URL('../public/admin.html', import.meta.url), 'utf8').includes('/admin.js?v=panther2026v35'));
+  assert.ok(fs.readFileSync(new URL('../public/merchant.html', import.meta.url), 'utf8').includes('/merchant.js?v=panther2026v35'));
+  assert.ok(fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8').includes('/download.js?v=panther2026v35'));
 });

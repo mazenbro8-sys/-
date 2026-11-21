@@ -1,4 +1,4 @@
-import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v34';
+import { $, $$, esc, points, time, badge, STATUS, api, act, toast, connectWs, authScreen, header, makeMap, pickLocation, emoji, DAMASCUS, captainModal, animateMarker, makeRoute, fitMapToPoints, createPulsingDot, enDigits, serialNo, ALARM_SOUNDS, normalizeAdminTone, playAdminTone, lStore, sStore, mountNotificationsBell, debounce } from './shared.js?v=panther2026v35';
 import { getCaptainVisualState as deriveCaptainVisualState } from './live-state.js?v=panther2026v29';
 import {
   getMarkerVisualSize,
@@ -251,7 +251,13 @@ authScreen('admin', (user) => {
   const LIVE_HINT_DISMISSED_KEY = 'panther_live_hint_dismissed';
   let liveLegendCollapsed = window.innerWidth <= 767;
   let liveHintOverride = null;
-  let locIntervals = { active: 10_000, idle: 60_000 };
+  let locIntervals = {
+    active: 10_000,
+    idle: 60_000,
+    offerTimeoutMs: 60_000,
+    shortageTimeoutMs: 8 * 60_000,
+    searchMaxMs: 20 * 60_000,
+  };
   const ordersIndex = new Map();
   const rememberOrders = (list = []) => { list.forEach((o) => { if (o?.id) ordersIndex.set(o.id, o); }); };
   let refreshTimer;
@@ -464,11 +470,14 @@ authScreen('admin', (user) => {
     box.classList.remove('hide');
     rememberOrders(shortage.orders);
     const key = shortage.orders.map((o) => `${o.id}:${o.status}`).join(',');
+    const shortageMs = shortage.shortageTimeoutMs || locIntervals.shortageTimeoutMs || 8 * 60_000;
+    const shortageMin = Math.max(1, Math.round(shortageMs / 60_000));
+    const shortageMinLabel = shortageMin === 1 ? 'دقيقة' : shortageMin === 2 ? 'دقيقتين' : (shortageMin <= 10 ? `${enDigits(shortageMin)} دقائق` : `${enDigits(shortageMin)} دقيقة`);
     box.innerHTML = `<div class="card offer shortage-panel">
       <div class="row-head shortage-panel-head">
         <div class="shortage-title-wrap">
           <h3>⚠️ لوحة تحكم الطلب المرفوض (${shortage.orders.length})</h3>
-          <span class="shortage-sub">رفض جميع الكباتن المتاحين استلام الطلب أو تجاوز الانتظار 5 دقائق — اختر الإجراء الفوري:</span>
+          <span class="shortage-sub">رفض جميع الكباتن المتاحين استلام الطلب أو تجاوز الانتظار ${shortageMinLabel} — اختر الإجراء الفوري:</span>
         </div>
         <button type="button" class="bad sm" id="muteShortageBtn">🔕 كتم</button>
       </div>
